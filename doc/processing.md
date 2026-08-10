@@ -14,16 +14,16 @@
 
 ```text
             +---------------- cluster i ----------------+
-RX/TX queue | core0 core1 core2 core3 -> shared L2      |
+Rx/TxFifo   | core0 core1 core2 core3 -> shared L2      |
 devices --->|                         <-> DMA slave port  |
             +--------------------------------------------+
 ```
 
-## Queue devices
+## FIFO devices
 
-- RX-QUEUE, TX-QUEUE, CMD-FIFO and SYSTEM-REQ-FIFO are memory-mapped special devices.
-- Any core in any cluster may access an allowed queue.
-- Access control maps queue IDs to cluster/core or tenant.
+- RxFifo, TxFifo, CMD-FIFO and SYSTEM-REQ-FIFO are memory-mapped special devices.
+- Any core in any cluster may access an allowed FIFO.
+- Access control maps FIFO IDs to cluster/core or tenant.
 - RX operations:
   - Read availability without consuming.
   - Atomically claim one descriptor.
@@ -34,7 +34,7 @@ devices --->|                         <-> DMA slave port  |
   - Write descriptor beats.
   - Commit atomically after all fields and payload writes are visible.
 - Blocking operations use wait/interrupt; polling operations never lock the interconnect.
-- Queue devices expose overflow, underflow and malformed-operation counters.
+- FIFO devices expose overflow, underflow and malformed-operation counters.
 - SYSTEM-REQ-FIFO delivers bounded host/system work to a selected cluster.
 - A core answers a system request with a normal completion and, when data must move, a `HOST` DMA command.
 
@@ -44,7 +44,8 @@ devices --->|                         <-> DMA slave port  |
 
 - One logical DMA master owns command ordering, validation and completion.
 - It contains `N` independently schedulable 256-bit cache adapters.
-- It presents `N` logical read/write ports to RX-RAM and TX-RAM.
+- It presents `N` logical read/write ports to RX-RAM and eight packet-stream
+  write paths to the TxFifos.
 - It may also route a flagged command to the system-level DMA service.
 - A command names source and destination spaces; it does not expose physical RAM-bank wiring.
 
@@ -76,7 +77,8 @@ devices --->|                         <-> DMA slave port  |
 - Fixed, versioned and naturally aligned CMD-FIFO record.
 - Fields:
   - Opcode and flags.
-  - Source/destination space: RX-RAM, TX-RAM, L2 cluster, system/host.
+  - Source/destination space: RX-RAM, a selected TxFifo, L2 cluster,
+    system/host.
   - Packet handle or local address.
   - Cluster ID and L2 address.
   - Byte length and optional stride.
@@ -116,7 +118,7 @@ devices --->|                         <-> DMA slave port  |
    - Enforces fences without globally serializing unrelated clusters.
 
 4. Direct system DMA path
-   - Connects host DMA directly to RX-RAM/TX-RAM.
+   - Connects host DMA directly to RX-RAM and the eight TxFifo write ports.
    - Never routes line-rate host traffic through a Tribe L2.
    - Accepts CPU-originated host commands through a small request/completion FIFO.
 
@@ -134,11 +136,12 @@ devices --->|                         <-> DMA slave port  |
   - Ten active 256-bit lanes for 800G in one direction.
 - Therefore the normal path sends only descriptors and selected packet regions to L2.
 - Dedicated system DMA must sustain host line rate without consuming L2 bandwidth.
-- Packet RAM must concurrently support:
-  - RX wire writes and TX wire reads.
-  - Direct host reads/writes at the configured host rate.
+- RX-RAM must concurrently support:
+  - RX wire writes.
+  - Direct host reads at the configured host rate.
   - Reserved processing traffic and metadata operations.
-- RX and TX pools should be physically separate so opposite directions do not conflict.
+- TxFifos buffer complete egress packets independently of RX-RAM, so transmit
+  traffic cannot consume RX packet-memory bandwidth.
 - Bank arbitration must meet bounded network latency, not only average throughput.
 - Data movers require end-to-end ECC/parity status where the selected FPGA memories support it.
 - Performance counters must expose useful bytes, bubbles, bank conflicts, queue waits and cache stalls.

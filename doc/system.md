@@ -16,7 +16,7 @@
 PCIe requests ----->| BAR / queue manager  |----> control and doorbells
                     +----------+-----------+
                                |
- host memory <======> host DMA engines <======> RX-RAM / TX-RAM
+ host memory <======> host DMA engines <======> RX-RAM / eight TxFifos
                                ^
                      CPU system-request FIFO
 ```
@@ -43,10 +43,11 @@ PCIe requests ----->| BAR / queue manager  |----> control and doorbells
 - Reassemble out-of-order completions by tag.
 - Direct paths:
   - RX-RAM to host receive buffers.
-  - Host transmit buffers to TX-RAM.
+  - Host transmit buffers directly into a selected TxFifo.
   - Descriptor/statistics blocks to host.
 - The direct packet path does not enter an L2 cache.
-- Reserve enough packet-RAM service to sustain the configured host line rate.
+- Reserve enough RX-RAM and TxFifo service to sustain the configured host line
+  rate.
 
 ## CPU-originated system DMA
 

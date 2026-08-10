@@ -36,7 +36,7 @@
    - Balances frames over eight internal streams.
    - Parses RX headers and forms descriptors.
    - Stores packet contents in RX-RAM.
-   - Reads packet contents from the smaller TX-RAM.
+   - Accepts packet streams into eight packet-committed TxFifos.
    - Inserts requested TX fields and sends frames.
    - Owns packet accounting, flow control and wire-rate deadlines.
 
@@ -44,7 +44,7 @@
    - Contains `N` Tribe CPU clusters.
    - Each cluster contains four RISC-V cores and one shared L2 cache.
    - L2 data width is 256 bits; target clock is 400 MHz.
-   - Exposes RX-QUEUE, TX-QUEUE and CMD-FIFO devices to every core.
+   - Exposes RxFifo, TxFifo and CMD-FIFO devices to every core.
    - Moves selected packet data between packet RAM, L2 caches and system level.
 
 3. System level
@@ -58,10 +58,9 @@
 
 ```text
 RX: MAC -> balance -> parse -> CDC -> RX-RAM -> process or host
-                         +-------> RX-QUEUE -> CPU decision
+                         +-------> RxFifo -> CPU decision
 
-TX: host or CPU -> TX-RAM -> CDC -> insert -> schedule -> MAC
-                      CPU -> TX-QUEUE -----------+
+TX: host or CPU DMA -> TxFifo[0..7] -> output merge -> MAC
 ```
 
 - Control and payload are separate after parsing.
@@ -69,7 +68,8 @@ TX: host or CPU -> TX-RAM -> CDC -> insert -> schedule -> MAC
 - A packet handle, not a raw RAM address, crosses level boundaries.
 - Handle validation uses pool ID, buffer index and generation.
 - RX buffers are reference-counted when both CPU and host own a packet.
-- TX buffers return to their free list only after MAC completion or discard.
+- A TxFifo packet becomes visible only after EOP commits it and its storage is
+  reclaimed as the output merger consumes it.
 
 ## Packet descriptor
 
@@ -86,23 +86,24 @@ TX: host or CPU -> TX-RAM -> CDC -> insert -> schedule -> MAC
   - `RAW`: the first 128 packet bytes without reordering.
   - `DISSECTED`: a versioned 128-byte normalized parser result.
 - The common header records truncation and parser depth.
-- The full packet remains in RX-RAM or TX-RAM; a descriptor never replaces it.
+- An RX descriptor references the full packet in RX-RAM. A transmitted packet
+  is supplied in full through a TxFifo; there is no separate transmit RAM.
 - Unknown protocols fall back to `RAW` and preserve the packet handle.
 
-## Descriptor queues
+## Descriptor FIFOs
 
-- RX-QUEUE
+- RxFifo
   - Producer: network level.
   - Consumers: CPU clusters and, when configured, system DMA.
   - Operations: `PEEK`, atomic `CLAIM`, `COMPLETE`, `DROP`.
-- TX-QUEUE
+- TxFifo
   - Producers: CPU clusters and system level.
   - Consumer: network level.
   - Operations: `RESERVE`, `WRITE`, ordered `COMMIT`, `CANCEL`.
-- Completion queues return status and release ownership.
-- Each queue has programmable depth, watermarks, interrupt threshold and timer.
-- Queue IDs provide traffic-class and tenant isolation.
-- Queue state uses monotonic producer/consumer counters; wrapped indices are not ownership tokens.
+- Completion FIFOs return status and release ownership.
+- Each FIFO has programmable depth, watermarks, interrupt threshold and timer.
+- FIFO IDs provide traffic-class and tenant isolation.
+- FIFO state uses monotonic producer/consumer counters; wrapped indices are not ownership tokens.
 
 ## Clock and reset domains
 
@@ -154,7 +155,7 @@ ctest --test-dir build
 1. Define stream, descriptor, queue and packet-handle types.
 2. Implement native C++ models for packet RAM, FIFOs and scoreboards.
 3. Implement 400G balancing, CDC and lossless RX/TX loopback.
-4. Add RAW descriptors and queue devices.
+4. Add RAW descriptors and FIFO devices.
 5. Integrate one four-core Tribe cluster and its coherent L2 DMA port.
 6. Add parser/dissector and TX field insertion.
 7. Add scalable `N` clusters and processing DMA scheduling.

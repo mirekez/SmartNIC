@@ -147,38 +147,44 @@ net_clk 312.5 MHz                    proc_clk 400 MHz
 - Store complete frames in fixed-size cells or chained buffers.
 - Recommended first implementation: 2 KiB cells plus chaining for jumbo frames.
 
-### TX-RAM
-
-- Smaller packet pool; size is a separate parameter.
-- Eight wire-side read paths, one for each TX stream.
-- `N` logical processing-side read/write ports.
-- Dedicated system-side write path for direct host-to-card DMA.
-- Supports header patch writes without copying the full packet.
-
 ### Physical organization
 
 - Bank memory by 256-bit word, not by complete packet.
 - Use at least eight independently schedulable bank groups.
-- Give each wire stream a home bank group for deterministic network service.
+- Give each RX wire stream a home bank group for deterministic network service.
 - Stripe words across sub-banks inside a group for host and processing concurrency.
 - Use true dual-port memory where possible: wire traffic uses the deadline port and host/processing traffic uses the fabric port.
 - Increase sub-bank count until worst-case conflict tests meet throughput.
 - Present logical ports through queued bank arbiters; do not require a physically multiported RAM macro.
-- Reserve bank service for wire RX/TX first, system line-rate DMA second and processing DMA third.
-- Maintain per-pool free lists, generation counters and reference counts.
+- Reserve bank service for wire RX first, system line-rate DMA second and
+  processing DMA third.
+- Maintain the RX pool free list, generation counters and reference counts.
 - Detect stale handles, double-free, overflow and underflow in hardware.
 
-## TX field insertion
+## TX FIFOs and output merging
 
-- Read the descriptor and packet handle before starting a frame.
-- Patch fields selected by descriptor flags:
-  - Ethernet/VLAN addresses and tags.
-  - IPv4/IPv6 addresses and lengths.
-  - TCP/UDP ports, lengths and checksums.
-  - Sequence, offload and tunnel fields defined by later engines.
-- Incremental checksum update is preferred for small patches.
-- Full checksum streaming remains available for generated or transformed payloads.
-- Reject a descriptor with offsets outside packet bounds.
+- Provide eight independent packet-committed TxFifos. A CPU or host DMA engine
+  writes one 160-bit or 320-bit word per selected FIFO per clock with byte
+  keep, SOP and EOP.
+- Do not expose a partially written packet to the wire side. EOP atomically
+  commits all pending words for that packet, allowing arbitrary pauses during
+  DMA writes without wire underflow.
+- Interleave each FIFO over eight memory banks and expose an eight-word
+  show-ahead window so the merger can construct one aggregate `8 x 160/320`
+  output word per clock.
+- Select committed packets round robin at frame boundaries. Never interleave
+  bytes belonging to different frames.
+- Carry a partial FIFO word between output clocks and shift subsequent packets
+  to any byte offset. Insert exactly the 12-byte minimum IPG when another
+  committed packet is ready; a bounded show-ahead-window refill may extend,
+  but never shorten, that gap.
+- Apply backpressure independently at every TxFifo DMA input. The aggregate
+  output holds data, keep, SOP and EOP stable while its ready input is low.
+- Header changes, padding and checksum work must be completed before TxFifo
+  EOP commit, or applied by a later streaming stage without requiring a
+  transmit packet RAM.
+- Detect zero or non-prefix keep masks, malformed SOP/EOP sequencing, FIFO
+  overflow/underflow and output framing errors with sticky status.
 
 ## Accounting and statistics
 

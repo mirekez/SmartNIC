@@ -34,8 +34,8 @@
 
 ## Memory and performance
 
-1. Are RX-RAM/TX-RAM on-chip only, or may HBM/DDR be used?
-2. Target RX-RAM and TX-RAM capacities?
+1. Is RX-RAM on-chip only, or may HBM/DDR be used?
+2. Target RX-RAM capacity and per-stream TxFifo depth?
 3. Is 2 KiB cell allocation acceptable, including chained jumbo packets?
 4. What sustained processing-DMA fraction is expected in addition to host line rate?
 5. Must every packet payload be processed by a CPU?
@@ -75,7 +75,7 @@
 
 - First timing target: 400G, one port, full duplex.
 - `N=1` for bring-up; scale to `N=4` after queue and DMA validation.
-- 9 KiB maximum frame, 2 KiB cells, separate RX/TX pools.
+- 9 KiB maximum frame, 2 KiB RX cells, and eight packet-committed TxFifos.
 - 160-byte descriptors and descriptor-first CPU decisions.
 - Coherent burst-capable L2 DMA port; uncached local window only for bring-up.
 - Direct packet-RAM-to-host DMA with no L2 traversal.
