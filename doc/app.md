@@ -3,7 +3,7 @@
 ## Common deployment
 
 - Host loads and starts one program per Tribe cluster.
-- Host assigns RX/TX queues and policy tables.
+- Host assigns Rx/TxFifos and policy tables.
 - Network level produces RX descriptors continuously.
 - CPU software makes a decision from the descriptor when possible.
 - Payload DMA is requested only for data needed by the algorithm.
@@ -69,7 +69,8 @@ RX descriptor -> flow lookup -> action -> TX descriptor
 - Descriptor-only decision is preferred.
 - DMA only the required header, crypto block or payload range into a cluster.
 - Long payload transforms use streaming accelerators or multiple DMA lanes.
-- Completed data is written to TX-RAM and committed through TX-QUEUE.
+- Completed packets are streamed into one of the eight TxFifos and become
+  eligible for transmission only when EOP commits the complete packet.
 - Keys and tenant state never appear in host-visible debug apertures.
 
 ### Correctness requirements

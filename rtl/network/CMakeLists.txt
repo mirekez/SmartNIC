@@ -1,8 +1,40 @@
 add_executable(input_balancer_tests tests/input_balancer.cpp)
+add_executable(packet_parser_tests tests/packet_parser.cpp)
+add_executable(rx_ram_tests tests/rx_ram.cpp)
+add_executable(output_merger_tests tests/ouput_merger.cpp)
+add_executable(network_basic_tests tests/network_basic.cpp)
 
 target_include_directories(input_balancer_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/cpphdl/include"
     "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+target_include_directories(packet_parser_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/cpphdl/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}"
+)
+
+target_include_directories(rx_ram_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/cpphdl/include"
+    "${PROJECT_SOURCE_DIR}/rtl/common"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}"
+)
+
+target_include_directories(network_basic_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/cpphdl/include"
+    "${PROJECT_SOURCE_DIR}/rtl/common"
+    "${PROJECT_SOURCE_DIR}/rtl/testing"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}"
+)
+
+target_include_directories(output_merger_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/cpphdl/include"
+    "${PROJECT_SOURCE_DIR}/rtl/common"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}"
 )
 
 include(CheckCXXCompilerFlag)
@@ -14,10 +46,54 @@ foreach(flag -std=c++26 -std=c++2c -std=c++23)
     endif()
 endforeach()
 
+foreach(flag -std=c++26 -std=c++2c -std=c++23)
+    if(SMARTNIC_HAS_${flag})
+        target_compile_options(output_merger_tests PRIVATE "${flag}")
+        break()
+    endif()
+endforeach()
+
+foreach(flag -std=c++26 -std=c++2c -std=c++23)
+    if(SMARTNIC_HAS_${flag})
+        target_compile_options(network_basic_tests PRIVATE "${flag}")
+        break()
+    endif()
+endforeach()
+
+foreach(flag -std=c++26 -std=c++2c -std=c++23)
+    if(SMARTNIC_HAS_${flag})
+        target_compile_options(rx_ram_tests PRIVATE "${flag}")
+        break()
+    endif()
+endforeach()
+
+foreach(flag -std=c++26 -std=c++2c -std=c++23)
+    if(SMARTNIC_HAS_${flag})
+        target_compile_options(packet_parser_tests PRIVATE "${flag}")
+        break()
+    endif()
+endforeach()
+
 target_compile_options(input_balancer_tests PRIVATE -fno-strict-aliasing)
+target_compile_options(packet_parser_tests PRIVATE -fno-strict-aliasing)
+target_compile_options(rx_ram_tests PRIVATE -fno-strict-aliasing)
+target_compile_options(output_merger_tests PRIVATE -fno-strict-aliasing)
+target_compile_options(network_basic_tests PRIVATE -fno-strict-aliasing)
 cpphdl_add_host_opt_flags(input_balancer_tests)
+cpphdl_add_host_opt_flags(packet_parser_tests)
+cpphdl_add_host_opt_flags(rx_ram_tests)
+cpphdl_add_host_opt_flags(output_merger_tests)
+cpphdl_add_host_opt_flags(network_basic_tests)
 cpphdl_link_stdcxxexp_if_available(input_balancer_tests)
+cpphdl_link_stdcxxexp_if_available(packet_parser_tests)
+cpphdl_link_stdcxxexp_if_available(rx_ram_tests)
+cpphdl_link_stdcxxexp_if_available(output_merger_tests)
+cpphdl_link_stdcxxexp_if_available(network_basic_tests)
 cpphdl_add_converter_dependency(input_balancer_tests)
+cpphdl_add_converter_dependency(packet_parser_tests)
+cpphdl_add_converter_dependency(rx_ram_tests)
+cpphdl_add_converter_dependency(output_merger_tests)
+cpphdl_add_converter_dependency(network_basic_tests)
 
 # The exported conda GCC runtime keeps the C++23 stacktrace support library in
 # its versioned GCC directory, outside CMake's default find_library paths.
@@ -26,6 +102,10 @@ file(GLOB SMARTNIC_STDCXXEXP
 if(SMARTNIC_STDCXXEXP)
     list(GET SMARTNIC_STDCXXEXP 0 SMARTNIC_STDCXXEXP_LIBRARY)
     target_link_libraries(input_balancer_tests PRIVATE "${SMARTNIC_STDCXXEXP_LIBRARY}")
+    target_link_libraries(packet_parser_tests PRIVATE "${SMARTNIC_STDCXXEXP_LIBRARY}")
+    target_link_libraries(rx_ram_tests PRIVATE "${SMARTNIC_STDCXXEXP_LIBRARY}")
+    target_link_libraries(output_merger_tests PRIVATE "${SMARTNIC_STDCXXEXP_LIBRARY}")
+    target_link_libraries(network_basic_tests PRIVATE "${SMARTNIC_STDCXXEXP_LIBRARY}")
 endif()
 
 set(INPUT_BALANCER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -43,12 +123,114 @@ add_custom_command(
     VERBATIM
 )
 
+set(NETWORK_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_network")
+add_custom_command(
+    TARGET network_basic_tests
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${NETWORK_GENERATED_DIR}"
+    COMMAND $<TARGET_FILE:cpphdl>
+        --generated-dir "${NETWORK_GENERATED_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/network_basic.cpp"
+        -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
+        -I "${PROJECT_SOURCE_DIR}/rtl/common"
+        -I "${PROJECT_SOURCE_DIR}/rtl/testing"
+        -I "${CMAKE_CURRENT_SOURCE_DIR}"
+        -I "${PROJECT_SOURCE_DIR}"
+        ${CPPHDL_TOOLCHAIN_ARGS}
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM
+)
+
+set(OUTPUT_MERGER_GENERATED_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_output_merger")
+add_custom_command(
+    TARGET output_merger_tests
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${OUTPUT_MERGER_GENERATED_DIR}"
+    COMMAND $<TARGET_FILE:cpphdl>
+        --generated-dir "${OUTPUT_MERGER_GENERATED_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/ouput_merger.cpp"
+        -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
+        -I "${PROJECT_SOURCE_DIR}/rtl/common"
+        -I "${CMAKE_CURRENT_SOURCE_DIR}"
+        -I "${PROJECT_SOURCE_DIR}"
+        ${CPPHDL_TOOLCHAIN_ARGS}
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM
+)
+
+set(RX_RAM_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_rx_ram")
+add_custom_command(
+    TARGET rx_ram_tests
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${RX_RAM_GENERATED_DIR}"
+    COMMAND $<TARGET_FILE:cpphdl>
+        --generated-dir "${RX_RAM_GENERATED_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/rx_ram.cpp"
+        -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
+        -I "${PROJECT_SOURCE_DIR}/rtl/common"
+        -I "${CMAKE_CURRENT_SOURCE_DIR}"
+        -I "${PROJECT_SOURCE_DIR}"
+        ${CPPHDL_TOOLCHAIN_ARGS}
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM
+)
+
+set(PACKET_PARSER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_parser")
+add_custom_command(
+    TARGET packet_parser_tests
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${PACKET_PARSER_GENERATED_DIR}"
+    COMMAND $<TARGET_FILE:cpphdl>
+        --generated-dir "${PACKET_PARSER_GENERATED_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/packet_parser.cpp"
+        -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
+        -I "${CMAKE_CURRENT_SOURCE_DIR}"
+        -I "${PROJECT_SOURCE_DIR}"
+        ${CPPHDL_TOOLCHAIN_ARGS}
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM
+)
+
 if(BUILD_TESTING)
     add_test(NAME network_input_balancer COMMAND input_balancer_tests)
+    add_test(NAME network_packet_parser COMMAND packet_parser_tests)
+    add_test(NAME network_rx_ram COMMAND rx_ram_tests)
+    add_test(NAME network_output_merger COMMAND output_merger_tests)
+    add_test(NAME network_basic COMMAND network_basic_tests)
     set_tests_properties(network_input_balancer PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         LABELS "network;cpphdl;verilator"
         TIMEOUT 900
+        ENVIRONMENT
+            "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
+    )
+    set_tests_properties(network_packet_parser PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "network;cpphdl;verilator"
+        TIMEOUT 900
+        ENVIRONMENT
+            "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
+    )
+    set_tests_properties(network_rx_ram PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "network;cpphdl;verilator"
+        TIMEOUT 900
+        ENVIRONMENT
+            "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
+    )
+    set_tests_properties(network_output_merger PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "network;cpphdl;verilator"
+        TIMEOUT 1200
+        ENVIRONMENT
+            "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
+    )
+    set_tests_properties(network_basic PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "network;cpphdl;verilator;integration"
+        TIMEOUT 1200
         ENVIRONMENT
             "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
     )
