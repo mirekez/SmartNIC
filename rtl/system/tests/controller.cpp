@@ -482,7 +482,7 @@ static bool build_verilator()
     const char* output_name = "Controller_avalon_verilator";
 #endif
     return VerilatorCompileInExactFolderFromGenerated(source.string(), output_name,
-        "Controller", fs::current_path() / generated_name, {"Memory"},
+        "Controller", fs::current_path() / generated_name, {"SmartNicMemory"},
         {source.parent_path().string(), source.parent_path().parent_path().string(),
             (source.parent_path().parent_path().parent_path() / "common").string(),
             (source.parent_path().parent_path().parent_path().parent_path()

@@ -90,8 +90,8 @@ public:
     _PORT(bool) protocol_error_out;
 
 private:
-    Memory<16, RING_DEPTH, true> rx_ring;
-    Memory<16, RING_DEPTH, true> tx_ring;
+    SmartNicMemory<16, RING_DEPTH, true> rx_ring;
+    SmartNicMemory<16, RING_DEPTH, true> tx_ring;
     reg<u1> enabled_reg;
     reg<u<RING_BITS>> rx_producer_reg;
     reg<u<RING_BITS>> rx_consumer_reg;

@@ -1175,7 +1175,7 @@ static bool build_verilator_model(const char* source_file, const char* program_f
         "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
         "PacketParserCursor_pkg", "PacketParserFlags_pkg", "RxRAMWritePair_pkg",
         "RxDescriptor_pkg", "RxDescriptorWord_pkg", "RxDescriptorFlags_pkg",
-        "Memory", "Fifo", "RAM", "InputBalancer", "PacketParser", "RxRAM",
+        "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser", "RxRAM",
         "RxFifo", "TxFifo", "OutputMerger", "Network",
         "AsyncFifoNetToL2", "AsyncFifoL2ToNet",
         "AsyncPacketStreamNetToL2", "AsyncPacketStreamL2ToNet"};

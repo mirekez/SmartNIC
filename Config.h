@@ -1,6 +1,8 @@
 #pragma once
 
+#ifndef ENABLE_800G
 #define ENABLE_800G 0
+#endif
 #define CPUS_USED   4
 #define CPU_MEMORY (1024*1024*1024)
 #ifndef HOST_AXI4

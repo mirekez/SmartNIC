@@ -99,13 +99,7 @@ private:
 public:
     void _assign() {}
 
-#if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
-    void _work_clk(bool reset)
-#elif defined(ASYNC_FIFO_SYSTEM_CLOCK_NAMES)
-    void _work_l2_clock(bool reset)
-#else
-    void _work_net_clk(bool reset)
-#endif
+    void ASYNC_FIFO_FIRST_WORK(bool reset)
     {
 #if ASYNC_FIFO_WRITE_ON_NET
         work_write(reset);
@@ -113,13 +107,7 @@ public:
         work_read(reset);
 #endif
     }
-#if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
-    void _strobe_clk()
-#elif defined(ASYNC_FIFO_SYSTEM_CLOCK_NAMES)
-    void _strobe_l2_clock()
-#else
-    void _strobe_net_clk()
-#endif
+    void ASYNC_FIFO_FIRST_STROBE()
     {
 #if ASYNC_FIFO_WRITE_ON_NET
         data_mem.apply();
@@ -134,13 +122,7 @@ public:
         write_gray_read2_reg.strobe();
 #endif
     }
-#if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
-    void _work_l2_clock(bool reset)
-#elif defined(ASYNC_FIFO_SYSTEM_CLOCK_NAMES)
-    void _work_system_clock(bool reset)
-#else
-    void _work_l2_clk(bool reset)
-#endif
+    void ASYNC_FIFO_SECOND_WORK(bool reset)
     {
 #if ASYNC_FIFO_WRITE_ON_NET
         work_read(reset);
@@ -148,13 +130,7 @@ public:
         work_write(reset);
 #endif
     }
-#if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
-    void _strobe_l2_clock()
-#elif defined(ASYNC_FIFO_SYSTEM_CLOCK_NAMES)
-    void _strobe_system_clock()
-#else
-    void _strobe_l2_clk()
-#endif
+    void ASYNC_FIFO_SECOND_STROBE()
     {
 #if ASYNC_FIFO_WRITE_ON_NET
         read_bin_reg.strobe();

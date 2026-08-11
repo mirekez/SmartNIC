@@ -9,7 +9,7 @@
 using namespace cpphdl;
 
 template<size_t WIDTH, size_t DEPTH>
-class RAM : public Module
+class SmartNicRAM : public Module
 {
 public:
     _PORT(u<clog2(DEPTH)>) addr_in;
@@ -55,5 +55,5 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class RAM<160, 4096>;
-template class RAM<320, 4096>;
+template class SmartNicRAM<160, 4096>;
+template class SmartNicRAM<320, 4096>;

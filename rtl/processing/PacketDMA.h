@@ -6,6 +6,10 @@
 
 #include "../common/Axi4Master.h"
 
+#ifndef SYNTHESIS
+#include <print>
+#endif
+
 using namespace cpphdl;
 
 enum PacketDmaOperation : uint8_t
@@ -27,6 +31,21 @@ enum PacketDmaState : uint8_t
     PACKET_DMA_READ_ADDRESS,
     PACKET_DMA_READ_DATA,
     PACKET_DMA_SEND_OUTPUT
+};
+
+enum PacketDmaError : uint8_t
+{
+    PACKET_DMA_ERROR_NONE,
+    PACKET_DMA_ERROR_COMMAND_QUEUE_FULL,
+    PACKET_DMA_ERROR_ZERO_LENGTH,
+    PACKET_DMA_ERROR_FLAGS,
+    PACKET_DMA_ERROR_DESTINATION_ALIGNMENT,
+    PACKET_DMA_ERROR_SOURCE_ALIGNMENT,
+    PACKET_DMA_ERROR_KEEP_GAP,
+    PACKET_DMA_ERROR_SOP,
+    PACKET_DMA_ERROR_BEAT_LENGTH,
+    PACKET_DMA_ERROR_EOP_LENGTH,
+    PACKET_DMA_ERROR_NON_EOP_LENGTH
 };
 
 template<size_t HANDLE_BITS = 16, size_t FRAME_LENGTH_BITS = 14,
@@ -117,6 +136,7 @@ public:
     _PORT(u<32>) completed_count_out;
     _PORT(u<2>) last_operation_out;
     _PORT(bool) protocol_error_out;
+    _PORT(u<4>) protocol_error_reason_out;
 
 private:
     reg<Command> command_reg[CMD_DEPTH];
@@ -143,6 +163,7 @@ private:
     reg<u<32>> completed_reg;
     reg<u<2>> last_operation_reg;
     reg<u1> protocol_error_reg;
+    reg<u<4>> protocol_error_reason_reg;
 
     reg<u<AXI_ADDR_WIDTH>> write_addr_reg;
     reg<u<AXI_ID_WIDTH>> write_id_reg;
@@ -242,7 +263,10 @@ private:
         bool gap = false;
         for (index = 0; index < AXI_BYTES; ++index) {
             if (beat_keep_reg[index]) {
-                if (gap) protocol_error_reg._next = true;
+                if (gap) {
+                    protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next = PACKET_DMA_ERROR_KEEP_GAP;
+                }
                 ++count;
             }
             else gap = true;
@@ -314,6 +338,7 @@ public:
         completed_count_out = _ASSIGN_REG(completed_reg);
         last_operation_out = _ASSIGN_REG(last_operation_reg);
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
+        protocol_error_reason_out = _ASSIGN_REG(protocol_error_reason_reg);
     }
 
     void _work(bool reset)
@@ -353,10 +378,28 @@ public:
             else if (address == REG_FLAGS) stage_flags_reg._next = value;
             else if (address == REG_COMMAND && (value & COMMAND_PUSH) != 0) {
                 push = count < CMD_DEPTH;
-                if (!push || (uint32_t)stage_length_reg == 0
-                    || ((uint32_t)stage_flags_reg
+                if (!push) {
+                    protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next =
+                        PACKET_DMA_ERROR_COMMAND_QUEUE_FULL;
+#ifndef SYNTHESIS
+                    std::print(stderr,
+                        "{}: PacketDMA command queue full count={} completed={} length={} flags={}\n",
+                        __inst_name, count, (uint32_t)completed_reg,
+                        (uint32_t)stage_length_reg,
+                        (uint32_t)stage_flags_reg);
+#endif
+                }
+                else if ((uint32_t)stage_length_reg == 0) {
+                    protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next =
+                        PACKET_DMA_ERROR_ZERO_LENGTH;
+                    push = false;
+                }
+                else if (((uint32_t)stage_flags_reg
                         & ~(FLAG_OPERATION_MASK | FLAG_CACHE_ALLOCATE)) != 0) {
                     protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next = PACKET_DMA_ERROR_FLAGS;
                     push = false;
                 }
                 if (push && ((((uint32_t)stage_flags_reg & FLAG_OPERATION_MASK)
@@ -365,6 +408,8 @@ public:
                             == DMA_SYSTEM_CPU))
                     && ((uint32_t)stage_destination_reg & (AXI_BYTES - 1)) != 0) {
                     protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next =
+                        PACKET_DMA_ERROR_DESTINATION_ALIGNMENT;
                     push = false;
                 }
                 if (push && ((((uint32_t)stage_flags_reg & FLAG_OPERATION_MASK)
@@ -373,6 +418,8 @@ public:
                             == DMA_CPU_NETWORK))
                     && ((uint32_t)stage_source_reg & (AXI_BYTES - 1)) != 0) {
                     protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next =
+                        PACKET_DMA_ERROR_SOURCE_ALIGNMENT;
                     push = false;
                 }
             }
@@ -442,6 +489,7 @@ public:
                 beat_eop_reg._next = input_eop;
                 if ((bool)first_beat_reg != input_sop) {
                     protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next = PACKET_DMA_ERROR_SOP;
                 }
                 first_beat_reg._next = false;
                 state_reg._next = PACKET_DMA_WRITE_ADDRESS;
@@ -460,10 +508,12 @@ public:
             bytes = beat_bytes();
             if (bytes == 0 || bytes > (uint32_t)remaining_reg) {
                 protocol_error_reg._next = true;
+                protocol_error_reason_reg._next = PACKET_DMA_ERROR_BEAT_LENGTH;
             }
             if (beat_eop_reg) {
                 if (bytes != (uint32_t)remaining_reg) {
                     protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next = PACKET_DMA_ERROR_EOP_LENGTH;
                 }
                 completed_reg._next = completed_reg + 1;
                 last_operation_reg._next = operation_reg;
@@ -473,6 +523,8 @@ public:
             else {
                 if (bytes != AXI_BYTES || bytes >= (uint32_t)remaining_reg) {
                     protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next =
+                        PACKET_DMA_ERROR_NON_EOP_LENGTH;
                 }
                 destination_reg._next = destination_reg + AXI_BYTES;
                 remaining_reg._next = remaining_reg - bytes;
@@ -536,6 +588,7 @@ public:
             completed_reg.clr();
             last_operation_reg.clr();
             protocol_error_reg.clr();
+            protocol_error_reason_reg.clr();
             write_addr_reg.clr();
             write_id_reg.clr();
             write_addr_valid_reg.clr();
@@ -572,6 +625,7 @@ public:
         completed_reg.strobe();
         last_operation_reg.strobe();
         protocol_error_reg.strobe();
+        protocol_error_reason_reg.strobe();
         write_addr_reg.strobe();
         write_id_reg.strobe();
         write_addr_valid_reg.strobe();

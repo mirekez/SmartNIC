@@ -88,7 +88,7 @@ public:
     _PORT(bool) storage_full_out;
 
 private:
-    RAM<LANE_WIDTH, BANK_DEPTH> banks[PHYSICAL_BANKS];
+    SmartNicRAM<LANE_WIDTH, BANK_DEPTH> banks[PHYSICAL_BANKS];
 
     reg<logic<LANE_WIDTH>> pack_data_reg[STREAMS];
     reg<u<clog2(LANE_BYTES + 1)>> pack_count_reg[STREAMS];
