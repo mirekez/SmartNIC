@@ -1,0 +1,517 @@
+// PacketDMA native C++ and generated-SystemVerilog/Verilator test.  A small
+// RxRAM source model supplies randomized packet bytes while a coherent-L2 AXI
+// responder records masked 256-bit writes and applies randomized backpressure.
+
+#include "../PacketDMA.h"
+
+#if !defined(SYNTHESIS)
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <iostream>
+#include <print>
+#include <random>
+#include <vector>
+
+#include "../../../cpphdl/examples/tools.h"
+
+#ifdef VERILATOR
+#define MAKE_HEADER(name) STRINGIFY(name.h)
+#include MAKE_HEADER(VERILATOR_MODEL)
+#endif
+
+long _system_clock = -1;
+
+namespace
+{
+
+using Dma = PacketDMA<16, 14, 8, 32, 4, 256>;
+
+template<typename T, typename V>
+static void copy_to_verilator(T& target, const V& value)
+{
+    std::memset(&target, 0, sizeof(target));
+    std::memcpy(&target, &value, std::min(sizeof(target), sizeof(value)));
+}
+
+template<typename V, typename T>
+static V copy_from_verilator(const T& source)
+{
+    V value = 0;
+    std::memcpy(&value, &source, std::min(sizeof(source), sizeof(value)));
+    return value;
+}
+
+class PacketDmaTest
+{
+#ifdef VERILATOR
+    VERILATOR_MODEL dut;
+#else
+    Dma dut;
+#endif
+    Axi4Driver<32, 4, 256> mmio = {};
+    Axi4Responder<4, 256> l2 = {};
+    bool rx_read_ready = false;
+    bool rx_valid = false;
+    logic<256> rx_data = 0;
+    logic<32> rx_keep = 0;
+    bool rx_sop = false;
+    bool rx_eop = false;
+    uint32_t pending_aw = 0;
+    bool have_aw = false;
+    std::vector<uint8_t> memory = std::vector<uint8_t>(4096, 0);
+    std::mt19937 random{0x51a7d00d};
+    bool error = false;
+
+    void fail(const char* message)
+    {
+        std::print("{} PacketDMA: {}\n",
+#ifdef VERILATOR
+            "Verilator",
+#else
+            "CppHDL C++",
+#endif
+            message);
+        error = true;
+    }
+
+    void bind_native()
+    {
+#ifndef VERILATOR
+        dut.mmio = mmio;
+        dut.l2_dma = l2;
+        dut.rx_read_ready_in = _ASSIGN(rx_read_ready);
+        dut.rx_valid_in = _ASSIGN(rx_valid);
+        dut.rx_data_in = _ASSIGN(rx_data);
+        dut.rx_keep_in = _ASSIGN(rx_keep);
+        dut.rx_sop_in = _ASSIGN(rx_sop);
+        dut.rx_eop_in = _ASSIGN(rx_eop);
+        dut.__inst_name = "packet_dma";
+        dut._assign();
+#endif
+    }
+
+    void drive_verilator(bool reset, bool clock)
+    {
+#ifdef VERILATOR
+        dut.clk = clock;
+        dut.reset = reset;
+        dut.rx_read_ready_in = rx_read_ready;
+        dut.rx_valid_in = rx_valid;
+        copy_to_verilator(dut.rx_data_in, rx_data);
+        dut.rx_keep_in = (uint32_t)(uint64_t)rx_keep;
+        dut.rx_sop_in = rx_sop;
+        dut.rx_eop_in = rx_eop;
+
+        dut.mmio___05Fawvalid_in = mmio.aw.valid;
+        dut.mmio___05Fawaddr_in = (uint32_t)mmio.aw.addr;
+        dut.mmio___05Fawid_in = (uint8_t)(uint32_t)mmio.aw.id;
+        dut.mmio___05Fwvalid_in = mmio.w.valid;
+        copy_to_verilator(dut.mmio___05Fwdata_in, mmio.w.data);
+        dut.mmio___05Fwstrb_in = (uint32_t)(uint64_t)mmio.w.strb;
+        dut.mmio___05Fwlast_in = mmio.w.last;
+        dut.mmio___05Fbready_in = mmio.b.ready;
+        dut.mmio___05Farvalid_in = mmio.ar.valid;
+        dut.mmio___05Faraddr_in = (uint32_t)mmio.ar.addr;
+        dut.mmio___05Farid_in = (uint8_t)(uint32_t)mmio.ar.id;
+        dut.mmio___05Frready_in = mmio.r.ready;
+
+        dut.l2_dma___05Fawready_in = l2.aw.ready;
+        dut.l2_dma___05Fwready_in = l2.w.ready;
+        dut.l2_dma___05Fbvalid_in = l2.b.valid;
+        dut.l2_dma___05Fbid_in = (uint8_t)(uint32_t)l2.b.id;
+        dut.l2_dma___05Farready_in = l2.ar.ready;
+        dut.l2_dma___05Frvalid_in = l2.r.valid;
+        copy_to_verilator(dut.l2_dma___05Frdata_in, l2.r.data);
+        dut.l2_dma___05Frlast_in = l2.r.last;
+        dut.l2_dma___05Frid_in = (uint8_t)(uint32_t)l2.r.id;
+        dut.eval();
+#else
+        (void)reset;
+        (void)clock;
+#endif
+    }
+
+    bool l2_awvalid()
+    {
+#ifdef VERILATOR
+        return dut.l2_dma___05Fawvalid_out;
+#else
+        return dut.l2_dma.awvalid_out();
+#endif
+    }
+    uint32_t l2_awaddr()
+    {
+#ifdef VERILATOR
+        return dut.l2_dma___05Fawaddr_out;
+#else
+        return (uint32_t)dut.l2_dma.awaddr_out();
+#endif
+    }
+    bool l2_wvalid()
+    {
+#ifdef VERILATOR
+        return dut.l2_dma___05Fwvalid_out;
+#else
+        return dut.l2_dma.wvalid_out();
+#endif
+    }
+    logic<256> l2_wdata()
+    {
+#ifdef VERILATOR
+        return copy_from_verilator<logic<256>>(dut.l2_dma___05Fwdata_out);
+#else
+        return dut.l2_dma.wdata_out();
+#endif
+    }
+    logic<32> l2_wstrb()
+    {
+#ifdef VERILATOR
+        return logic<32>(dut.l2_dma___05Fwstrb_out);
+#else
+        return dut.l2_dma.wstrb_out();
+#endif
+    }
+    bool l2_bready()
+    {
+#ifdef VERILATOR
+        return dut.l2_dma___05Fbready_out;
+#else
+        return dut.l2_dma.bready_out();
+#endif
+    }
+
+    void update_l2_after_edge(bool aw_handshake, uint32_t aw_address,
+        bool w_handshake, logic<256> write_data, logic<32> write_strobe,
+        bool b_handshake)
+    {
+        if (b_handshake) l2.b.valid = false;
+        if (aw_handshake) {
+            pending_aw = aw_address;
+            have_aw = true;
+        }
+        if (w_handshake) {
+            if (!have_aw) {
+                fail("AXI write data arrived without an address");
+            }
+            for (uint32_t byte = 0; byte < 32; ++byte) {
+                if (write_strobe[byte]) {
+                    if (pending_aw + byte >= memory.size()) fail("DMA wrote outside test memory");
+                    else memory[pending_aw + byte] =
+                        (uint8_t)write_data.bits(byte * 8 + 7, byte * 8);
+                }
+            }
+            have_aw = false;
+            l2.b.valid = true;
+            l2.b.id = 0;
+        }
+        l2.aw.ready = random() % 4 != 0;
+        l2.w.ready = random() % 4 != 0;
+    }
+
+    void cycle(bool reset = false)
+    {
+        bool aw_handshake;
+        bool w_handshake;
+        bool b_handshake;
+        uint32_t aw_address;
+        logic<256> write_data;
+        logic<32> write_strobe;
+#ifdef VERILATOR
+        drive_verilator(reset, false);
+        aw_handshake = l2_awvalid() && l2.aw.ready;
+        w_handshake = l2_wvalid() && l2.w.ready;
+        b_handshake = l2.b.valid && l2_bready();
+        aw_address = l2_awaddr();
+        write_data = l2_wdata();
+        write_strobe = l2_wstrb();
+        drive_verilator(reset, true);
+        update_l2_after_edge(aw_handshake, aw_address, w_handshake,
+            write_data, write_strobe, b_handshake);
+        drive_verilator(reset, false);
+#else
+        aw_handshake = l2_awvalid() && l2.aw.ready;
+        w_handshake = l2_wvalid() && l2.w.ready;
+        b_handshake = l2.b.valid && l2_bready();
+        aw_address = l2_awaddr();
+        write_data = l2_wdata();
+        write_strobe = l2_wstrb();
+        dut._work(reset);
+        update_l2_after_edge(aw_handshake, aw_address, w_handshake,
+            write_data, write_strobe, b_handshake);
+        dut._strobe();
+#endif
+        ++_system_clock;
+    }
+
+    bool mmio_awready()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.mmio___05Fawready_out;
+#else
+        return dut.mmio.awready_out();
+#endif
+    }
+    bool mmio_wready()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.mmio___05Fwready_out;
+#else
+        return dut.mmio.wready_out();
+#endif
+    }
+    bool mmio_bvalid()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.mmio___05Fbvalid_out;
+#else
+        return dut.mmio.bvalid_out();
+#endif
+    }
+    bool mmio_arready()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.mmio___05Farready_out;
+#else
+        return dut.mmio.arready_out();
+#endif
+    }
+    bool mmio_rvalid()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.mmio___05Frvalid_out;
+#else
+        return dut.mmio.rvalid_out();
+#endif
+    }
+    logic<256> mmio_rdata()
+    {
+#ifdef VERILATOR
+        return copy_from_verilator<logic<256>>(dut.mmio___05Frdata_out);
+#else
+        return dut.mmio.rdata_out();
+#endif
+    }
+
+    void write32(uint32_t address, uint32_t value)
+    {
+        uint32_t lane = address & 31u;
+        mmio.aw.valid = true;
+        mmio.aw.addr = address;
+        mmio.aw.id = 1;
+        mmio.b.ready = true;
+        if (!mmio_awready()) fail("MMIO AW not ready");
+        cycle();
+        mmio.aw.valid = false;
+        mmio.w.valid = true;
+        mmio.w.data = 0;
+        mmio.w.data.bits(lane * 8 + 31, lane * 8) = value;
+        mmio.w.strb = 0;
+        mmio.w.strb.bits(lane + 3, lane) = 0xf;
+        mmio.w.last = true;
+        if (!mmio_wready()) fail("MMIO W not ready");
+        cycle();
+        mmio.w.valid = false;
+        if (!mmio_bvalid()) fail("MMIO B not valid");
+        cycle();
+        mmio.b.ready = false;
+    }
+
+    uint32_t read32(uint32_t address)
+    {
+        uint32_t lane = address & 31u;
+        mmio.ar.valid = true;
+        mmio.ar.addr = address;
+        mmio.ar.id = 2;
+        if (!mmio_arready()) fail("MMIO AR not ready");
+        cycle();
+        mmio.ar.valid = false;
+        if (!mmio_rvalid()) {
+            fail("MMIO R not valid");
+            return 0;
+        }
+        uint32_t value = (uint32_t)mmio_rdata().bits(lane * 8 + 31, lane * 8);
+        mmio.r.ready = true;
+        cycle();
+        mmio.r.ready = false;
+        return value;
+    }
+
+    bool read_command_valid()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.rx_read_valid_out;
+#else
+        return dut.rx_read_valid_out();
+#endif
+    }
+    uint32_t read_handle()
+    {
+#ifdef VERILATOR
+        return dut.rx_read_handle_out;
+#else
+        return (uint32_t)dut.rx_read_handle_out();
+#endif
+    }
+    uint32_t read_length()
+    {
+#ifdef VERILATOR
+        return dut.rx_read_length_out;
+#else
+        return (uint32_t)dut.rx_read_length_out();
+#endif
+    }
+    bool rx_ready()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.rx_ready_out;
+#else
+        return dut.rx_ready_out();
+#endif
+    }
+    bool busy()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.busy_out;
+#else
+        return dut.busy_out();
+#endif
+    }
+    bool protocol_error()
+    {
+#ifdef VERILATOR
+        return dut.protocol_error_out;
+#else
+        return dut.protocol_error_out();
+#endif
+    }
+
+public:
+    bool run()
+    {
+        bind_native();
+        l2.aw.ready = true;
+        l2.w.ready = true;
+        for (int i = 0; i < 3; ++i) cycle(true);
+
+        const uint32_t handle = 0x3456;
+        const uint32_t destination = 0x400;
+        std::vector<uint8_t> packet(77);
+        for (uint32_t i = 0; i < packet.size(); ++i) packet[i] = (uint8_t)random();
+
+        write32(Dma::REG_RX_HANDLE, handle);
+        write32(Dma::REG_LENGTH, packet.size());
+        write32(Dma::REG_DESTINATION, destination);
+        write32(Dma::REG_FLAGS, Dma::FLAG_CACHE_ALLOCATE);
+        write32(Dma::REG_COMMAND, Dma::COMMAND_PUSH);
+
+        bool command_seen = false;
+        size_t position = 0;
+        for (uint32_t timeout = 0; timeout < 1000 && busy(); ++timeout) {
+            if (read_command_valid()) {
+                if (read_handle() != handle || read_length() != packet.size()) {
+                    fail("RxRAM read command mismatch");
+                }
+                command_seen = true;
+                rx_read_ready = true;
+            }
+            if (rx_ready() && position < packet.size()) {
+                uint32_t bytes = std::min<size_t>(32, packet.size() - position);
+                rx_valid = true;
+                rx_data = 0;
+                rx_keep = 0;
+                for (uint32_t byte = 0; byte < bytes; ++byte) {
+                    rx_data.bits(byte * 8 + 7, byte * 8) = packet[position + byte];
+                    rx_keep[byte] = true;
+                }
+                rx_sop = position == 0;
+                rx_eop = position + bytes == packet.size();
+                position += bytes;
+            }
+            else {
+                rx_valid = false;
+                rx_sop = false;
+                rx_eop = false;
+            }
+            cycle();
+        }
+        rx_valid = false;
+        if (!command_seen) fail("DMA never issued its RxRAM command");
+        if (busy()) {
+            std::print("DMA timeout diagnostics: consumed={} aw={} w={} bready={}\n",
+                position, l2_awvalid(), l2_wvalid(), l2_bready());
+            fail("DMA did not complete");
+        }
+        if (position != packet.size()) fail("DMA did not consume the complete packet");
+        for (uint32_t i = 0; i < packet.size(); ++i) {
+            if (memory[destination + i] != packet[i]) {
+                fail("coherent L2 write payload mismatch");
+                break;
+            }
+        }
+        if (read32(Dma::REG_COMPLETED) != 1) fail("completion count mismatch");
+        if (protocol_error()) fail("valid packet transfer set protocol error");
+
+        std::print("{} PacketDMA test {}\n",
+#ifdef VERILATOR
+            "Verilator",
+#else
+            "CppHDL C++",
+#endif
+            error ? "FAILED" : "PASSED");
+        return !error;
+    }
+};
+
+static bool build_verilator()
+{
+#ifdef VERILATOR
+    return true;
+#else
+    namespace fs = std::filesystem;
+    fs::path source = fs::absolute(__FILE__);
+    fs::path generated = fs::current_path() / "generated_packet_dma";
+    std::vector<std::string> includes = {
+        source.parent_path().string(),
+        source.parent_path().parent_path().string(),
+        (source.parent_path().parent_path().parent_path().parent_path()
+            / "cpphdl" / "include").string(),
+        (source.parent_path().parent_path().parent_path().parent_path()
+            / "cpphdl" / "tribe_cpu" / "common").string()};
+    return VerilatorCompileInExactFolderFromGenerated(source.string(),
+        "PacketDMA_verilator", "PacketDMA", generated, {"PacketDMA"}, includes,
+        16, 14, 8, 32, 4, 256);
+#endif
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+#ifdef VERILATOR
+    Verilated::commandArgs(argc, argv);
+#endif
+    bool noveril = false;
+    for (int i = 1; i < argc; ++i) noveril |= std::strcmp(argv[i], "--noveril") == 0;
+    bool ok = true;
+#ifndef VERILATOR
+    if (!noveril) {
+        ok = build_verilator();
+        if (ok) ok = std::system("PacketDMA_verilator/obj_dir/VPacketDMA --noveril") == 0;
+    }
+#endif
+    return PacketDmaTest().run() && ok ? 0 : 1;
+}
+
+#endif

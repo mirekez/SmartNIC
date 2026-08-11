@@ -50,7 +50,7 @@ static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
 static constexpr size_t NET_BYTES = NET_BITS / 8;
 static constexpr size_t L2_WIDTH = 256;
 static constexpr size_t L2_BYTES = L2_WIDTH / 8;
-static constexpr size_t READ_PORTS = 4;
+static constexpr size_t READ_PORTS = 8;
 static constexpr size_t HANDLE_BITS = SmartNIC<LANE_WIDTH>::HANDLE_BITS;
 static constexpr size_t FRAME_LENGTH_BITS = 14;
 

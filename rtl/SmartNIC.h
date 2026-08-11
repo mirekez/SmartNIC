@@ -13,7 +13,8 @@
 
 using namespace cpphdl;
 
-#define SMARTNIC_FOR_EACH_RX_PORT(M) M(0) M(1) M(2) M(3)
+#define SMARTNIC_FOR_EACH_RX_PORT(M) \
+    M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
 #define SMARTNIC_FOR_EACH_TX_STREAM(M) \
     M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
 
@@ -23,7 +24,7 @@ class SmartNIC : public Module
 {
 public:
     static constexpr size_t STREAMS = 8;
-    static constexpr size_t READ_PORTS = 4;
+    static constexpr size_t READ_PORTS = 8;
     static constexpr size_t L2_WIDTH = 256;
     static constexpr size_t L2_BYTES = L2_WIDTH / 8;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
@@ -64,7 +65,7 @@ public:
     _PORT(bool) l2_descriptor_eop_out;
     _PORT(bool) l2_descriptor_ready_in;
 
-    // Four packet read engines.  A command supplies the RxRAM handle from the
+    // Eight packet read engines.  A command supplies the RxRAM handle from the
     // descriptor and exact packet length; output is a framed 256-bit stream.
     _PORT(logic<READ_PORTS>) l2_rx_read_valid_in;
     _PORT(logic<READ_PORTS * HANDLE_BITS>) l2_rx_read_handle_in;

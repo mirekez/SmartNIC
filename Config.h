@@ -1,6 +1,8 @@
 #pragma once
 
 #define ENABLE_800G 0
+#define CPUS_USED   4
+#define CPU_MEMORY (1024*1024*1024)
 
 // Datapath clocks.  The L2 clock is rate-matched to one balanced Ethernet
 // stream so a 256-bit CPU/DMA lane has exactly the same raw byte rate.
