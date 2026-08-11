@@ -4,6 +4,7 @@
 // this common copy so the RTL does not depend on a CPU implementation path.
 
 #include <cpphdl.h>
+#include "ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -37,9 +38,22 @@ public:
         }
     }
 
-    void _strobe(FILE* checkpoint_fd = nullptr)
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
     {
-        buffer.apply(checkpoint_fd);
-        q_out_reg.strobe(checkpoint_fd);
+        buffer.apply();
+        q_out_reg.strobe();
     }
+#endif
+
+    void _strobe()
+    {
+        buffer.apply();
+        q_out_reg.strobe();
+    }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
+
+template class RAM<160, 4096>;
+template class RAM<320, 4096>;

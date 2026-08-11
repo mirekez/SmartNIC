@@ -5,8 +5,49 @@
 - Own all wire-rate RX/TX operations.
 - PCS, FEC and SerDes are outside this level.
 - Run the external datapath at 312.5 MHz.
-- Run packet RAM and processing-side ports at 400 MHz.
+- Keep RX-RAM storage and native `160/320`-bit ports in `net_clk`.
+- Rate-match each 256-bit processing lane to its network lane:
+  - 400G: 195.3125 MHz (`312.5 * 160 / 256`).
+  - 800G: 390.625 MHz (`312.5 * 320 / 256`).
 - Never depend on CPUs responding before an Ethernet deadline.
+
+### PCS adapter and integration verification
+
+- The production Network boundary remains post-PCS/MAC-client data; PCS, FEC,
+  PMA and SerDes are not synthesized as part of the SmartNIC.
+- `smartnic_test` nevertheless instantiates the selected `eth_pcs` front end:
+  - `PCS400G<1280,8>` when `ENABLE_800G == 0`.
+  - `PCS800G<2560,8>` when `ENABLE_800G == 1`.
+- The test traverses XGMII encode, scramble, virtual-lane distribution,
+  descramble and decode in both RX and TX directions before checking frames,
+  descriptors and RxRAM contents.
+- The current `eth_pcs` 400G/800G aliases end at the Clause 119/172 64B/66B
+  front-end boundary.  A standards-complete wire PCS still requires the
+  256B/257B transcoder, RS-FEC, alignment-marker insertion/removal, symbol
+  interleaving, PMA gearbox and deskew stages documented by that project.
+- `/I/` is an explicit XGMII control character.  Deasserting PCS `valid` is
+  permitted only between frames for testbench/gearbox rate adaptation; a
+  continuous-rate wire adapter must emit idles instead of creating missing
+  wire time.
+- RX cannot rely on immediate PCS backpressure.  The test therefore requires
+  zero Network RX stalls for the generated full-rate traffic.
+
+### IPG accounting
+
+- A transmitting MAC nominally supplies a 12-octet IPG.
+- Clause 46/81 deficit-idle accounting aligns `/S/` and may add or remove at
+  most three idles while keeping the cumulative deficit bounded.  Starting
+  from a 12-octet MAC gap, its transmit-side minimum is therefore 9 octets,
+  not 8.
+- The integration test intentionally injects RX gaps down to 8 idle octets as
+  the requested interoperability/stress case, while keeping the complete
+  randomized burst average at least 12 octets.  Passing it is robustness
+  evidence; it does not redefine the conforming transmit rule.
+- The alignment rule is at the MAC reconciliation/XGMII boundary.  It is not
+  an 8-byte PCS quantum and is not caused by alignment-marker insertion;
+  downstream transcoding, FEC and marker scheduling are separate.
+- SmartNIC TX currently emits at least 12 octets on every boundary and thus
+  does not need a deficit counter.
 
 ## Input balancing
 
@@ -119,7 +160,7 @@ The IP address tables are consumed by filtering, parsing and offload logic. They
 ## CDC and width conversion
 
 ```text
-net_clk 312.5 MHz                    proc_clk 400 MHz
+net_clk 312.5 MHz               l2_clk 195.3125/390.625 MHz
 160/320b stream -> pack -> async FIFO -> unpack -> 256b stream
 256b stream     <- pack <- async FIFO <- unpack <- 160/320b stream
 ```
@@ -127,14 +168,17 @@ net_clk 312.5 MHz                    proc_clk 400 MHz
 - Instantiate one RX and one TX asynchronous FIFO per balanced stream.
 - RX converts 160-bit or 320-bit beats to 256-bit beats.
 - TX converts 256-bit beats to 160-bit or 320-bit beats.
-- Carry data, byte-valid mask, SOP, EOP, error and packet handle through the FIFO.
+- Pack packet data into 64-byte CDC entries; unpack them to the destination width.
+- Carry data, byte-valid mask, SOP and EOP through the stream FIFOs.
+- Cross RX descriptors atomically, then expose them as five 256-bit words.
+- Cross RxRAM `{handle, length}` commands toward `net_clk`; return framed
+  256-bit packet data through a separate CDC stream per read port.
 - Pointer synchronization uses Gray code; reset uses a two-domain empty handshake.
 - A partial packing register is part of the FIFO occupancy calculation.
 - No packet bytes are exposed after reset until both domains report ready.
-- For 800G, each 256-bit/400 MHz lane has only 2.4% raw margin:
-  - Keep the steady-state path bubble-free.
-  - Size FIFOs for clock tolerance, arbitration latency and maximum packet bursts.
-  - Provide a build option for 512-bit processing beats or a faster processing clock if timing analysis removes the margin.
+- The nominal clocks are exact-rate, so CDC buffers absorb phase, arbitration
+  and short stalls but do not provide sustained excess bandwidth.
+- Keep steady-state paths bubble-free and size FIFOs for bounded stalls.
 
 ## Packet RAM
 
@@ -142,7 +186,8 @@ net_clk 312.5 MHz                    proc_clk 400 MHz
 
 - Larger packet pool; size is a top-level parameter.
 - Eight wire-side write paths, one for each balanced stream.
-- `N` logical processing-side read/write ports.
+- Four current logical processing-side packet-read engines; make the count a
+  top-level parameter when the processing DMA is integrated.
 - Dedicated system-side read path for direct card-to-host DMA.
 - Store complete frames in fixed-size cells or chained buffers.
 - Recommended first implementation: 2 KiB cells plus chaining for jumbo frames.
@@ -153,7 +198,10 @@ net_clk 312.5 MHz                    proc_clk 400 MHz
 - Use at least eight independently schedulable bank groups.
 - Give each RX wire stream a home bank group for deterministic network service.
 - Stripe words across sub-banks inside a group for host and processing concurrency.
-- Use true dual-port memory where possible: wire traffic uses the deadline port and host/processing traffic uses the fabric port.
+- Current RTL keeps RxRAM in `net_clk` and crosses queued commands/responses.
+- Add a true dual-clock/dual-port RAM only when the direct host/system path is
+  implemented or measured arbitration cannot meet throughput; do not infer an
+  unsafe multi-clock RAM from ordinary registers.
 - Increase sub-bank count until worst-case conflict tests meet throughput.
 - Present logical ports through queued bank arbiters; do not require a physically multiported RAM macro.
 - Reserve bank service for wire RX first, system line-rate DMA second and

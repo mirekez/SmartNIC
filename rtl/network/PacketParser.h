@@ -5,8 +5,9 @@
 // one 64-byte record.  A packet sampled with raw_in set produces two 64-byte
 // words containing the first 128 bytes of the original frame instead.
 
-#include "../../config.h"
+#include "../../Config.h"
 #include <cpphdl.h>
+#include "../common/ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -866,7 +867,8 @@ public:
         }
     }
 
-    void _strobe()
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
     {
         uint32_t stream;
         uint32_t slot;
@@ -889,6 +891,29 @@ public:
         }
         protocol_error_reg.strobe();
     }
+#endif
+
+    void _strobe()
+    {
+        uint32_t stream;
+        uint32_t slot;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            aligned_header_reg[stream].strobe(); header_count_reg[stream].strobe();
+            frame_length_reg[stream].strobe(); in_frame_reg[stream].strobe();
+            frame_raw_reg[stream].strobe(); header_truncated_reg[stream].strobe();
+            fifo_head_reg[stream].strobe(); fifo_tail_reg[stream].strobe();
+            fifo_count_reg[stream].strobe();
+            for (slot = 0; slot < OUTPUT_FIFO_WORDS; ++slot) {
+                fifo_data_reg[stream][slot].strobe();
+                fifo_keep_reg[stream][slot].strobe();
+                fifo_last_reg[stream][slot].strobe();
+                fifo_raw_reg[stream][slot].strobe();
+            }
+        }
+        protocol_error_reg.strobe();
+    }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
 template class PacketParser<160>;

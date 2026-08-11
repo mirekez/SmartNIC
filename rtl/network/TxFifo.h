@@ -6,6 +6,7 @@
 // EOP commits the complete packet, so a DMA pause cannot underflow the wire.
 
 #include <cpphdl.h>
+#include "../common/ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -310,7 +311,8 @@ public:
         }
     }
 
-    void _strobe()
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
     {
 #define TX_FIFO_APPLY_BANK(number) \
         data_bank_##number.apply(); \
@@ -327,6 +329,21 @@ public:
         in_packet_reg.strobe();
         protocol_error_reg.strobe();
     }
+#endif
+
+    void _strobe()
+    {
+#define TX_FIFO_APPLY_LEGACY_BANK(number) \
+        data_bank_##number.apply(); keep_bank_##number.apply(); \
+        sop_bank_##number.apply(); eop_bank_##number.apply();
+        TX_FIFO_FOR_EACH_BANK(TX_FIFO_APPLY_LEGACY_BANK)
+#undef TX_FIFO_APPLY_LEGACY_BANK
+        head_reg.strobe(); tail_reg.strobe(); total_count_reg.strobe();
+        committed_count_reg.strobe(); pending_count_reg.strobe();
+        in_packet_reg.strobe(); protocol_error_reg.strobe();
+    }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
 template class TxFifo<160, 1024>;

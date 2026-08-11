@@ -68,6 +68,26 @@ link_up_in
 - A real Ethernet link cannot be stopped immediately.
 - RX-RAM watermarks request pause/PFC generation before buffers exhaust.
 - Unsupported or disabled flow control ends in a configured drop policy with accounting.
+- XGMII `/I/` characters represent available inter-packet idle budget.
+- A PCS-side `valid` pause is legal only between frames and models a stopped
+  abstract transfer/rate adapter; it must never interrupt a frame.  A
+  continuous wire-side implementation fills that interval with legal idles.
+- PAUSE and PFC negotiation are MAC control frames, distinct from deasserting
+  the local PCS transfer-valid signal.
+- Clause 46/81 deficit-idle accounting may remove at most three idles from a
+  nominal 12-octet transmit gap.  The 8-idle pattern used by the integration
+  test is an RX robustness case, not the SmartNIC transmit contract.
+
+### Processing-side network boundary
+
+- Clock: `L2_CLK_HZ = 312500000 * NET_LANE_WIDTH / 256`.
+- RX descriptor stream: 256-bit `valid/ready`, five words, word index, SOP/EOP.
+- RxRAM read command per port: packet handle plus exact byte length.
+- RxRAM response per port: 256-bit data, byte keep, SOP/EOP, `valid/ready`.
+- TX: eight independent 256-bit data/keep/SOP/EOP `valid/ready` streams.
+- All crossings use packet-aware Gray-pointer asynchronous FIFOs even though
+  the nominal clocks are frequency-related; their phase and reset release are
+  not assumed synchronous.
 
 ## System interface (PCIe)
 

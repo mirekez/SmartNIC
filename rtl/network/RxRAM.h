@@ -6,6 +6,7 @@
 // EOP to commit both a completed word and its final partial word in one clock.
 
 #include "../common/RAM.h"
+#include "../common/ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -714,7 +715,8 @@ public:
         }
     }
 
-    void _strobe()
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
     {
         uint32_t stream;
         uint32_t slot;
@@ -748,6 +750,35 @@ public:
         protocol_error_reg.strobe();
         storage_full_reg.strobe();
     }
+#endif
+
+    void _strobe()
+    {
+        uint32_t stream, slot, port, bank;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            pack_data_reg[stream].strobe(); pack_count_reg[stream].strobe();
+            next_row_reg[stream].strobe(); packet_start_reg[stream].strobe();
+            packet_length_reg[stream].strobe(); in_frame_reg[stream].strobe();
+            completion_head_reg[stream].strobe();
+            completion_tail_reg[stream].strobe();
+            completion_count_reg[stream].strobe();
+            for (slot = 0; slot < COMPLETION_FIFO_WORDS; ++slot) {
+                completion_handle_reg[stream][slot].strobe();
+                completion_length_reg[stream][slot].strobe();
+            }
+        }
+        for (port = 0; port < READ_PORTS; ++port) {
+            read_pipe_valid_reg[port].strobe(); read_pipe_bank_reg[port].strobe();
+            read_response_valid_reg[port].strobe();
+            read_response_data_reg[port].strobe();
+        }
+        for (bank = 0; bank < PHYSICAL_BANKS; ++bank) {
+            read_rr_reg[bank].strobe(); banks[bank]._strobe();
+        }
+        protocol_error_reg.strobe(); storage_full_reg.strobe();
+    }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
 template class RxRAM<160, 4, 4096>;

@@ -43,7 +43,8 @@
 2. Processing level
    - Contains `N` Tribe CPU clusters.
    - Each cluster contains four RISC-V cores and one shared L2 cache.
-   - L2 data width is 256 bits; target clock is 400 MHz.
+   - L2 data width is 256 bits; its clock is rate-matched to the configured
+     network lane (195.3125 MHz for 400G, 390.625 MHz for 800G).
    - Exposes RxFifo, TxFifo and CMD-FIFO devices to every core.
    - Moves selected packet data between packet RAM, L2 caches and system level.
 
@@ -57,10 +58,11 @@
 ## Datapath
 
 ```text
-RX: MAC -> balance -> parse -> CDC -> RX-RAM -> process or host
-                         +-------> RxFifo -> CPU decision
+RX: MAC -> balance -> parse + RX-RAM
+                         +-> descriptor CDC -> CPU decision
+ RX-RAM -> read-command engine -> data CDC -> process
 
-TX: host or CPU DMA -> TxFifo[0..7] -> output merge -> MAC
+TX: CPU 256b stream -> CDC -> TxFifo[0..7] -> output merge -> MAC
 ```
 
 - Control and payload are separate after parsing.
@@ -108,7 +110,7 @@ TX: host or CPU DMA -> TxFifo[0..7] -> output merge -> MAC
 ## Clock and reset domains
 
 - `net_clk`: 312.5 MHz; MAC datapath and network-side packet streams.
-- `proc_clk`: 400 MHz; packet RAM fabric, DMA and Tribe L2 interfaces.
+- `l2_clk`: `312.5 MHz * NET_LANE_WIDTH / 256`; processing DMA and Tribe L2 interfaces.
 - `sys_clk`: selected by the PCIe hard block; system DMA and PCIe transaction logic.
 - `mgmt_clk`: low-rate reset, MDIO and configuration.
 - All domain crossings use asynchronous FIFOs, synchronizers or reset handshakes.
@@ -119,8 +121,9 @@ TX: host or CPU DMA -> TxFifo[0..7] -> output merge -> MAC
 
 - 400G port: `8 * 160 * 312.5 MHz = 400 Gb/s` raw datapath capacity.
 - 800G port: `8 * 320 * 312.5 MHz = 800 Gb/s` raw datapath capacity.
-- One processing lane: `256 * 400 MHz = 102.4 Gb/s` theoretical.
-- 800G width conversion has only 2.4% raw clock-rate margin per lane.
+- One processing lane is exactly rate-matched: 50 Gb/s in 400G builds and
+  100 Gb/s in 800G builds.
+- Exact-rate CDC has no sustained bandwidth margin; buffering covers phase and bounded stalls only.
 - Network ingress and egress receive deadline-reserved packet-RAM bandwidth.
 - Host line-rate transfer bypasses L2 caches and processing DMA.
 - CPU DMA is for headers, selected payloads and exceptional packets.

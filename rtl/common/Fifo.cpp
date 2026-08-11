@@ -6,6 +6,7 @@
 
 #include <cpphdl.h>
 #include "Memory.cpp"
+#include "ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -195,6 +196,19 @@ public:
         }
     }
 
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
+    {
+        mem._strobe();
+        wp_reg.strobe();
+        rp_reg.strobe();
+        full_reg.strobe();
+        afull_reg.strobe();
+        read_valid_reg.strobe();
+        read_data_reg.strobe();
+    }
+#endif
+
     void _strobe()
     {
         mem._strobe();
@@ -205,4 +219,8 @@ public:
         read_valid_reg.strobe();
         read_data_reg.strobe();
     }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
+
+template class Fifo<160, 64, true, false>;

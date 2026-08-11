@@ -6,6 +6,7 @@
 
 #include "PacketParser.h"
 #include "../common/Fifo.cpp"
+#include "../common/ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -185,7 +186,8 @@ public:
         }
     }
 
-    void _strobe()
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
     {
         uint32_t stream;
         for (stream = 0; stream < STREAMS; ++stream) {
@@ -193,6 +195,16 @@ public:
         }
         rr_reg.strobe();
     }
+#endif
+
+    void _strobe()
+    {
+        uint32_t stream;
+        for (stream = 0; stream < STREAMS; ++stream) fifos[stream]._strobe();
+        rr_reg.strobe();
+    }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
 template class RxFifo<64>;

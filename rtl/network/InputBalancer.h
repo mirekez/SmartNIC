@@ -12,6 +12,7 @@
 // destination in a single aggregate input clock.
 
 #include <cpphdl.h>
+#include "../common/ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -538,7 +539,8 @@ public:
         in_frame_reg._next = in_frame;
     }
 
-    void _strobe()
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
     {
         size_t output;
 #define INPUT_BALANCER_APPLY_BANK(output_number, bank_number) \
@@ -565,6 +567,30 @@ public:
         in_frame_reg.strobe();
         protocol_error_reg.strobe();
     }
+#endif
+
+    void _strobe()
+    {
+        size_t output;
+#define INPUT_BALANCER_APPLY_LEGACY_BANK(output_number, bank_number) \
+        data_##output_number##_##bank_number.apply(); \
+        keep_##output_number##_##bank_number.apply(); \
+        sop_##output_number##_##bank_number.apply(); \
+        eop_##output_number##_##bank_number.apply();
+        INPUT_BALANCER_FOR_EACH_BANK(INPUT_BALANCER_APPLY_LEGACY_BANK)
+#undef INPUT_BALANCER_APPLY_LEGACY_BANK
+        for (output = 0; output < LANES; ++output) {
+            head_reg[output].strobe(); tail_reg[output].strobe();
+            count_reg[output].strobe(); pack_data_reg[output].strobe();
+            pack_keep_reg[output].strobe(); pack_sop_reg[output].strobe();
+            pack_eop_reg[output].strobe(); pack_count_reg[output].strobe();
+            pack_boundary_reg[output].strobe(); pack_age_reg[output].strobe();
+        }
+        rr_reg.strobe(); frame_dest_reg.strobe(); in_frame_reg.strobe();
+        protocol_error_reg.strobe();
+    }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
 template class InputBalancer<160>;

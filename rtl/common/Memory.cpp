@@ -3,6 +3,7 @@
 // Module-only copy of the memory used by cpphdl/examples/basic/Fifo.cpp.
 
 #include <cpphdl.h>
+#include "ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -62,9 +63,21 @@ public:
         }
     }
 
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
+    {
+        buffer.apply();
+        data_out_reg.strobe();
+    }
+#endif
+
     void _strobe()
     {
         buffer.apply();
         data_out_reg.strobe();
     }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
+
+template class Memory<160, 64, true>;
