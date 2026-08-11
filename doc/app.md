@@ -9,6 +9,32 @@
 - Payload DMA is requested only for data needed by the algorithm.
 - Host receives selected packets, flow records or completions.
 
+## Implemented capture application
+
+- `test/capture.elf` is the first complete firmware workload.
+- One hart per four-core Tribe cluster enables its `DescriptorFetcher` and
+  polls for descriptors.
+- For every descriptor it issues:
+  1. `DMA_NETWORK_CPU`: packet bytes from the assigned RxRAM port to coherent
+     L2 at local address `0x10000`.
+  2. `DMA_CPU_SYSTEM`: the same bytes from L2 to the corresponding System
+     `RxQueue`.
+  3. Descriptor pop, then repeat.
+- The host posts 32 receive buffers across the eight Controller RX queues.
+- Controller and MasterDMA drain the queues into host memory.
+
+```text
+post-PCS traffic -> Network/RxRAM -> descriptor -> capture firmware
+ -> coherent L2 -> System RxQueue -> host ring buffer
+```
+
+- The test mixes 64, 128, 256, 300, 512, 768, 1024 and 1516-byte frames.
+- It runs with a 12-byte IPG and fails if the aggregate Network input stalls.
+- Both 400G and 800G configurations capture all 32 packets byte-for-byte.
+- Input balancing permits independent streams to complete out of global order.
+  Applications needing ordering must select a per-queue/per-flow rule; the
+  capture checker matches unique packets independent of global completion order.
+
 ## 1. Packet analysis and flow steering
 
 ### Functions

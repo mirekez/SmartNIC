@@ -31,6 +31,9 @@
   wire time.
 - RX cannot rely on immediate PCS backpressure.  The test therefore requires
   zero Network RX stalls for the generated full-rate traffic.
+- The shared `capture` system test starts at the post-PCS aggregate boundary
+  and verifies Network, Processing and System together. PCS encode/decode
+  compatibility remains covered separately by `smartnic_test`.
 
 ### IPG accounting
 
@@ -186,9 +189,10 @@ net_clk 312.5 MHz               l2_clk 195.3125/390.625 MHz
 
 - Larger packet pool; size is a top-level parameter.
 - Eight wire-side write paths, one for each balanced stream.
-- Four current logical processing-side packet-read engines; make the count a
-  top-level parameter when the processing DMA is integrated.
-- Dedicated system-side read path for direct card-to-host DMA.
+- Eight logical processing-side packet-read engines in `SmartNIC`; the current
+  four-cluster Processing instance connects four of them.
+- A dedicated system-side read path for direct card-to-host DMA is planned,
+  not part of the current RTL.
 - Store complete frames in fixed-size cells or chained buffers.
 - Recommended first implementation: 2 KiB cells plus chaining for jumbo frames.
 
@@ -211,9 +215,9 @@ net_clk 312.5 MHz               l2_clk 195.3125/390.625 MHz
 
 ## TX FIFOs and output merging
 
-- Provide eight independent packet-committed TxFifos. A CPU or host DMA engine
-  writes one 160-bit or 320-bit word per selected FIFO per clock with byte
-  keep, SOP and EOP.
+- Provide eight independent packet-committed TxFifos. Processing writes a
+  256-bit stream per selected FIFO; the L2-to-Network CDC converts it to the
+  configured 160-bit or 320-bit Network width with byte keep, SOP and EOP.
 - Do not expose a partially written packet to the wire side. EOP atomically
   commits all pending words for that packet, allowing arbitrary pauses during
   DMA writes without wire underflow.
@@ -233,6 +237,17 @@ net_clk 312.5 MHz               l2_clk 195.3125/390.625 MHz
   transmit packet RAM.
 - Detect zero or non-prefix keep masks, malformed SOP/EOP sequencing, FIFO
   overflow/underflow and output framing errors with sticky status.
+
+## Current verification status
+
+- Native and Verilator input-balancer tests cover fixed and mixed frame sizes,
+  EOP+SOP boundaries, minimum gaps and both lane widths.
+- `smartnic_test` verifies the 400G/800G `eth_pcs` adapter and SmartNIC Network
+  interface in C++ and Verilator flows.
+- `capture` drives 32 mixed-size frames at an unstalled aggregate source and
+  checks the complete Network-to-host path for 400G and 800G configurations.
+- The capture traffic uses a 12-byte IPG. Any deassertion of input `ready`
+  while a beat is offered is reported as a wire-speed failure.
 
 ## Accounting and statistics
 
