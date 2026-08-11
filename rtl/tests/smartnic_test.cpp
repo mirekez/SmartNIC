@@ -407,9 +407,11 @@ public:
         pcs.tx_valid_in = _ASSIGN_REG(tx_valid);
         pcs.tx_data_in = _ASSIGN_REG(tx_data);
         pcs.tx_control_in = _ASSIGN_REG(tx_control);
+        pcs.tx_ready_in = _ASSIGN(true);
         pcs.rx_valid_in = _ASSIGN_REG(rx_valid);
         pcs.rx_blocks_in = _ASSIGN_REG(rx_blocks);
         pcs.rx_block_valid_in = _ASSIGN_REG(rx_block_valid);
+        pcs.rx_ready_in = _ASSIGN(true);
         pcs.__inst_name = "pcs";
         pcs._assign();
     }

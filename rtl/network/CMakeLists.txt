@@ -152,9 +152,6 @@ add_custom_command(
         -I "${PROJECT_SOURCE_DIR}/rtl"
         -I "${PROJECT_SOURCE_DIR}"
         ${CPPHDL_TOOLCHAIN_ARGS}
-    COMMAND "${CMAKE_COMMAND}"
-        -DGENERATED_DIR=${SMARTNIC_GENERATED_DIR}
-        -P "${PROJECT_SOURCE_DIR}/cmake/PatchCpphdlClockWrappers.cmake"
     COMMAND "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator"
         --lint-only -Wno-fatal --top-module SmartNIC
         -I"${SMARTNIC_GENERATED_DIR}"
