@@ -935,7 +935,7 @@ int main(int argc, char** argv)
             "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
             "PacketParserCursor_pkg", "PacketParserFlags_pkg",
             "RxRAMWritePair_pkg", "RxDescriptor_pkg", "RxDescriptorWord_pkg",
-            "Memory", "Fifo", "RAM", "InputBalancer", "PacketParser",
+            "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser",
             "RxRAM", "RxFifo", "TxFifo", "OutputMerger"};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "Network_160",
             "Network", generated, modules, includes, 160, 4, 4096, 64);

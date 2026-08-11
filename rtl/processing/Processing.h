@@ -9,9 +9,7 @@
 #include "CPU.h"
 #include "DescriptorFetcher.h"
 #include "PacketDMA.h"
-#define ASYNC_FIFO_CPU_CLOCK_NAMES 1
 #include "../common/AsyncFifo.h"
-#undef ASYNC_FIFO_CPU_CLOCK_NAMES
 #include "../../cpphdl/tribe_cpu/common/Axi4RegionMux.h"
 
 using namespace cpphdl;
@@ -93,12 +91,12 @@ public:
     _PORT(bool) cache_invalidate_in[CPU_COUNT];
 
 private:
-    AsyncFifoL2ToNet<DESCRIPTOR_CDC_BITS, 16> descriptor_cdc[CPU_COUNT];
-    AsyncFifoNetToL2<READ_COMMAND_BITS, 16> read_command_cdc[CPU_COUNT];
-    AsyncFifoL2ToNet<RX_STREAM_BITS, 16> rx_stream_cdc[CPU_COUNT];
-    AsyncFifoNetToL2<RX_STREAM_BITS, 16> to_system_cdc[CPU_COUNT];
-    AsyncFifoL2ToNet<RX_STREAM_BITS, 16> from_system_cdc[CPU_COUNT];
-    AsyncFifoNetToL2<RX_STREAM_BITS, 16> to_network_cdc[CPU_COUNT];
+    AsyncFifoL2ToCpu<DESCRIPTOR_CDC_BITS, 16> descriptor_cdc[CPU_COUNT];
+    AsyncFifoCpuToL2<READ_COMMAND_BITS, 16> read_command_cdc[CPU_COUNT];
+    AsyncFifoL2ToCpu<RX_STREAM_BITS, 16> rx_stream_cdc[CPU_COUNT];
+    AsyncFifoCpuToL2<RX_STREAM_BITS, 16> to_system_cdc[CPU_COUNT];
+    AsyncFifoL2ToCpu<RX_STREAM_BITS, 16> from_system_cdc[CPU_COUNT];
+    AsyncFifoCpuToL2<RX_STREAM_BITS, 16> to_network_cdc[CPU_COUNT];
     Axi4RegionMux<2, 32, 4, 256> iomem_mux[CPU_COUNT];
     reg<u<TARGET_BITS>> descriptor_target_reg;
 
@@ -454,6 +452,29 @@ public:
             descriptor_fetcher[index]._assign();
             packet_dma[index]._assign();
             iomem_mux[index]._assign();
+
+            // The child modules above create their output function bindings
+            // in _assign(). Refresh peer and boundary links afterward so a
+            // single parent elaboration pass cannot retain an empty port from
+            // the earlier top-down setup.
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(iomem_mux[index].slave_in,
+                cpu[index].iomem);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(cpu[index].iomem,
+                iomem_mux[index].slave_in);
+            AXI4_DRIVER_FROM(descriptor_fetcher[index].mmio,
+                iomem_mux[index].masters_out[0]);
+            AXI4_RESPONDER_FROM(iomem_mux[index].masters_out[0],
+                descriptor_fetcher[index].mmio);
+            AXI4_DRIVER_FROM(packet_dma[index].mmio,
+                iomem_mux[index].masters_out[1]);
+            AXI4_RESPONDER_FROM(iomem_mux[index].masters_out[1],
+                packet_dma[index].mmio);
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(cpu[index].dma_in,
+                packet_dma[index].l2_dma);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].l2_dma,
+                cpu[index].dma_in);
+            AXI4_MASTER_FROM_MASTER(ddr[index], cpu[index].memory);
+            AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory, ddr[index]);
         }
     }
 

@@ -18,7 +18,8 @@ class Fifo : public Module
             && (FIFO_DEPTH & (FIFO_DEPTH - 1)) == 0,
         "Fifo depth must be a power of two greater than one");
 
-    Memory<FIFO_WIDTH_BYTES, FIFO_DEPTH, OUTPUT_REG ? true : SHOWAHEAD> mem;
+    SmartNicMemory<FIFO_WIDTH_BYTES, FIFO_DEPTH,
+        OUTPUT_REG ? true : SHOWAHEAD> mem;
 
 public:
     _PORT(bool) write_in;

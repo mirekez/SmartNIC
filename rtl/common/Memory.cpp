@@ -8,7 +8,7 @@
 using namespace cpphdl;
 
 template<size_t MEM_WIDTH_BYTES, size_t MEM_DEPTH, bool SHOWAHEAD = true>
-class Memory : public Module
+class SmartNicMemory : public Module
 {
 public:
     _PORT(u<clog2(MEM_DEPTH)>) write_addr_in;
@@ -84,4 +84,4 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class Memory<160, 64, true>;
+template class SmartNicMemory<160, 64, true>;

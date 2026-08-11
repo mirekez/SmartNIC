@@ -10,9 +10,7 @@
 #include "MasterDMA.h"
 #include "RxQueue.h"
 #include "TxQueue.h"
-#define ASYNC_FIFO_SYSTEM_CLOCK_NAMES 1
 #include "../common/AsyncFifo.h"
-#undef ASYNC_FIFO_SYSTEM_CLOCK_NAMES
 
 using namespace cpphdl;
 
@@ -59,8 +57,8 @@ private:
     MasterDMA<HOST_ADDR_WIDTH, HOST_DATA_WIDTH, 4, 16> master_dma;
     RxQueue<QUEUE_DEPTH> rx_queue[QUEUES];
     TxQueue<QUEUE_DEPTH> tx_queue[QUEUES];
-    AsyncFifoNetToL2<STREAM_BITS, 16> rx_cdc[QUEUES];
-    AsyncFifoL2ToNet<STREAM_BITS, 16> tx_cdc[QUEUES];
+    AsyncFifoL2ToSystem<STREAM_BITS, 16> rx_cdc[QUEUES];
+    AsyncFifoSystemToL2<STREAM_BITS, 16> tx_cdc[QUEUES];
 
     logic<STREAM_BITS> rx_pack_comb[QUEUES];
     logic<QUEUES> l2_rx_ready_comb;

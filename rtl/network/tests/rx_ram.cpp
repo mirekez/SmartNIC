@@ -615,7 +615,7 @@ int main(int argc, char** argv)
             (project_root / "cpphdl" / "include").string(),
             (project_root / "cpphdl" / "tribe_cpu" / "common").string(),
             project_root.string()};
-        const std::vector<std::string> modules = {"Predef_pkg", "RAM"};
+        const std::vector<std::string> modules = {"Predef_pkg", "SmartNicRAM"};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "RxRAM_160",
             "RxRAM", generated, modules, includes, 160, 4, 4096);
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "RxRAM_320",
