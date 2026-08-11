@@ -8,7 +8,9 @@
   - Private L1 caches.
   - One shared L2 cache.
   - 256-bit L2 memory/DMA datapath.
-- Target processing clock: 400 MHz.
+- Processing clock is derived from the selected network lane rate:
+  - 195.3125 MHz for 160-bit network lanes.
+  - 390.625 MHz for 320-bit network lanes.
 - Each cluster has independent boot, reset, fault and performance state.
 - Interrupts identify queue, DMA completion, timer, system request and fault sources.
 
@@ -129,11 +131,10 @@ devices --->|                         <-> DMA slave port  |
 
 ### Requirements
 
-- One 256-bit lane at 400 MHz peaks at 102.4 Gb/s before arbitration overhead.
+- One 256-bit lane peaks at 50 Gb/s in a 400G build or 100 Gb/s in an 800G build.
 - A single lane is insufficient for either 400G or 800G full-payload movement.
-- At 85% sustained efficiency, full-payload processing would require at least:
-  - Five active 256-bit lanes for 400G in one direction.
-  - Ten active 256-bit lanes for 800G in one direction.
+- Eight ideal lanes equal the port rate; at 85% sustained efficiency, either
+  port width requires ten active 256-bit lanes for full-payload movement.
 - Therefore the normal path sends only descriptors and selected packet regions to L2.
 - Dedicated system DMA must sustain host line rate without consuming L2 bandwidth.
 - RX-RAM must concurrently support:

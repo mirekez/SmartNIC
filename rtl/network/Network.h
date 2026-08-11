@@ -9,6 +9,7 @@
 #include "RxRAM.h"
 #include "RxFifo.h"
 #include "OutputMerger.h"
+#include "../common/ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -379,7 +380,8 @@ public:
         output_merger._work(false);
     }
 
-    void _strobe()
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
     {
         uint32_t stream;
         for (stream = 0; stream < STREAMS; ++stream) {
@@ -399,6 +401,22 @@ public:
         rx_fifo._strobe();
         output_merger._strobe();
     }
+#endif
+
+    void _strobe()
+    {
+        uint32_t stream;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            parser_word0_reg[stream].strobe(); parser_word1_reg[stream].strobe();
+            parser_raw_reg[stream].strobe(); parser_first_reg[stream].strobe();
+            parser_complete_reg[stream].strobe(); ram_address_reg[stream].strobe();
+            ram_length_reg[stream].strobe(); ram_complete_reg[stream].strobe();
+        }
+        protocol_error_reg.strobe(); balancer._strobe(); parser._strobe();
+        rx_ram._strobe(); rx_fifo._strobe(); output_merger._strobe();
+    }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
 template class Network<160, 4, 4096, 64, 1024>;

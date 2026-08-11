@@ -5,7 +5,7 @@
 1. Which FPGA family, part and speed grade is the first target?
    - Determines RAM type, clock feasibility and PCIe wrapper.
 2. Is the first milestone 400G only, with 800G parameterized but not timing-closed?
-   - Recommended until the 312.5/400 MHz CDC margin is measured.
+   - Recommended until 390.625 MHz L2 timing and exact-rate CDC behavior are closed.
 3. What is the exact MAC/PCS adapter contract?
    - Define byte/lane order, preamble/FCS ownership, idles and error signals.
    - Confirm that the eight input lanes form one time-ordered aggregate stream, not eight pre-separated frame streams.

@@ -1,4 +1,17 @@
+#pragma once
+
 #define ENABLE_800G 0
+
+// Datapath clocks.  The L2 clock is rate-matched to one balanced Ethernet
+// stream so a 256-bit CPU/DMA lane has exactly the same raw byte rate.
+#define NET_CLK_HZ 312500000ULL
+#define L2_DATA_WIDTH 256
+#if ENABLE_800G
+#define NET_LANE_WIDTH 320
+#else
+#define NET_LANE_WIDTH 160
+#endif
+#define L2_CLK_HZ ((NET_CLK_HZ * NET_LANE_WIDTH) / L2_DATA_WIDTH)
 
 // PacketParser bounds.  These are deliberately finite: the parser examines a
 // fixed header window and reports PACKET_PARSER_FLAG_LIMIT instead of allowing

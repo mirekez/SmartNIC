@@ -6,6 +6,7 @@
 // configured IPG whenever another committed packet is immediately available.
 
 #include "TxFifo.h"
+#include "../common/ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -585,7 +586,8 @@ public:
         }
     }
 
-    void _strobe()
+#ifdef SMARTNIC_TWO_CLOCKS
+    void _strobe_net_clk()
     {
         size_t stream;
         for (stream = 0; stream < STREAMS; ++stream) {
@@ -603,6 +605,19 @@ public:
         carry_eop_reg.strobe();
         protocol_error_reg.strobe();
     }
+#endif
+
+    void _strobe()
+    {
+        size_t stream;
+        for (stream = 0; stream < STREAMS; ++stream) fifos[stream]._strobe();
+        rr_reg.strobe(); active_reg.strobe(); stream_reg.strobe();
+        gap_reg.strobe(); carry_valid_reg.strobe(); carry_offset_reg.strobe();
+        carry_data_reg.strobe(); carry_keep_reg.strobe(); carry_sop_reg.strobe();
+        carry_eop_reg.strobe(); protocol_error_reg.strobe();
+    }
+
+    SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
 template class OutputMerger<160, 1024, 12>;
