@@ -1,5 +1,19 @@
 # Architecture questions
 
+## Resolved for the current functional model
+
+- Both 400G (`8 x 160`) and 800G (`8 x 320`) variants are built and tested.
+- Current integration uses `N=4` Tribe clusters, four cores per cluster.
+- Network clock is 312.5 MHz; L2 is exact-rate at 195.3125/390.625 MHz;
+  primary CPU clock is four times L2; System test clock is 250 MHz.
+- Processing exports one DDR AXI master per cluster.
+- System currently uses eight RX/TX queue pairs, 256-bit datapaths and Avalon
+  in the shared harness; AXI4 is compile-time selectable.
+- The first firmware application copies RxRAM to L2 and L2 to host queues.
+- Global packet order is not guaranteed across balanced streams; order is a
+  queue/flow policy decision.
+- The current descriptor is 160 bytes: 32-byte common header plus 128-byte view.
+
 ## Blocking for the first RTL milestone
 
 1. Which FPGA family, part and speed grade is the first target?
@@ -11,7 +25,8 @@
    - Confirm that the eight input lanes form one time-ordered aggregate stream, not eight pre-separated frame streams.
 4. What maximum frame size and required RX buffering interval are needed?
    - Determines cell size and RX-RAM capacity.
-5. What value or range of `N` must synthesize in the first product?
+5. What value of `N` must meet product timing and throughput beyond the tested
+   `N=4` functional configuration?
    - Determines L2 ports, queue count, interrupts and RAM arbitration.
 6. Must DMA into L2 be coherent with cached CPU mappings?
    - Recommended: yes, using the existing external coherent L2 slave path after burst upgrades.
@@ -74,10 +89,11 @@
 ## Suggested defaults until answered
 
 - First timing target: 400G, one port, full duplex.
-- `N=1` for bring-up; scale to `N=4` after queue and DMA validation.
+- `N=4` for functional integration; support the RTL parameter range `1..8`.
 - 9 KiB maximum frame, 2 KiB RX cells, and eight packet-committed TxFifos.
 - 160-byte descriptors and descriptor-first CPU decisions.
 - Coherent burst-capable L2 DMA port; uncached local window only for bring-up.
-- Direct packet-RAM-to-host DMA with no L2 traversal.
+- Keep the L2 traversal for firmware-selected traffic; add a direct
+  packet-RAM-to-host DMA path for line-rate bulk capture.
 - Single PCIe physical function before SR-IOV.
 - RAW parsing fallback; unsupported packets are forwarded or dropped by policy, never corrupted.

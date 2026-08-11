@@ -8,9 +8,11 @@
   - Private L1 caches.
   - One shared L2 cache.
   - 256-bit L2 memory/DMA datapath.
-- Processing clock is derived from the selected network lane rate:
+- The L2 boundary clock is derived from the selected network lane rate:
   - 195.3125 MHz for 160-bit network lanes.
   - 390.625 MHz for 320-bit network lanes.
+- `cpu_clk` is currently four times `l2_clk`. Cores, MMIO devices, PacketDMA
+  control and the exported primary DDR AXI interface use `cpu_clk`.
 - Each cluster has independent boot, reset, fault and performance state.
 - Interrupts identify queue, DMA completion, timer, system request and fault sources.
 
@@ -21,43 +23,40 @@ devices --->|                         <-> DMA slave port  |
             +--------------------------------------------+
 ```
 
-## FIFO devices
+## Current MMIO devices
 
-- RxFifo, TxFifo, CMD-FIFO and SYSTEM-REQ-FIFO are memory-mapped special devices.
-- Any core in any cluster may access an allowed FIFO.
-- Access control maps FIFO IDs to cluster/core or tenant.
-- RX operations:
-  - Read availability without consuming.
-  - Atomically claim one descriptor.
-  - Read five 256-bit descriptor beats.
-  - Complete with forward, drop, retain or error status.
-- TX operations:
-  - Reserve a slot.
-  - Write descriptor beats.
-  - Commit atomically after all fields and payload writes are visible.
-- Blocking operations use wait/interrupt; polling operations never lock the interconnect.
-- FIFO devices expose overflow, underflow and malformed-operation counters.
-- SYSTEM-REQ-FIFO delivers bounded host/system work to a selected cluster.
-- A core answers a system request with a normal completion and, when data must move, a `HOST` DMA command.
+- Every cluster owns one `DescriptorFetcher<4>` and one `PacketDMA<8>`.
+- Both devices are in Tribe's uncached IOMEM region:
+  - Fetcher: `0x40000000 + 0x0000`.
+  - PacketDMA: `0x40000000 + 0x1000`.
+- A fetcher pre-reads descriptors assigned to that cluster from the eight
+  Network descriptor streams.
+- Software can enable prefetch, poll availability, read the full five-word
+  descriptor or selected fields, then pop/skip it.
+- A descriptor is visible only to its assigned cluster. The current dispatcher
+  uses round robin; hashing can replace that policy later.
+- PacketDMA accepts up to eight queued commands and reports ready, busy,
+  completion and a typed protocol-error reason.
+- Blocking operations and interrupt delivery are future work; current firmware polls.
 
 ## Processing DMA
 
-### Model
+### Current model
 
-- One logical DMA master owns command ordering, validation and completion.
-- It contains `N` independently schedulable 256-bit cache adapters.
-- It presents `N` logical read/write ports to RX-RAM and eight packet-stream
-  write paths to the TxFifos.
-- It may also route a flagged command to the system-level DMA service.
-- A command names source and destination spaces; it does not expose physical RAM-bank wiring.
+- Processing instantiates one independent PacketDMA per cluster.
+- Each PacketDMA connects to one coherent 256-bit Tribe L2 DMA port, one RxRAM
+  read port, one Network TX stream, one System RxQueue and one System TxQueue.
+- Commands execute in FIFO order within a cluster; clusters operate independently.
+- Four operations are implemented:
+  - `DMA_SYSTEM_CPU`: System TxQueue to coherent L2.
+  - `DMA_CPU_SYSTEM`: coherent L2 to System RxQueue.
+  - `DMA_CPU_NETWORK`: coherent L2 to Network TxFifo.
+  - `DMA_NETWORK_CPU`: Network RxRAM to coherent L2.
 
 ```text
- cores -> CMD-FIFO -> validate -> scheduler
-                              +-> lane 0 <-> L2[0] <-> packet RAM
-                              +-> lane 1 <-> L2[1] <-> packet RAM
-                              ...
-                              +-> lane N <-> L2[N] <-> packet RAM
-                              +-> HOST flag -> SYSTEM-DMA-REQ-FIFO
+ cluster 0 cores -> PacketDMA[0] <-> L2[0] <-> RxRAM/Network/System queue 0
+ cluster 1 cores -> PacketDMA[1] <-> L2[1] <-> RxRAM/Network/System queue 1
+ ...
 ```
 
 ### L2 attachment
@@ -73,10 +72,14 @@ devices --->|                         <-> DMA slave port  |
   - Per-source completion and error reporting.
 - First fallback: a reserved uncached local-memory window per cluster.
 - Software must not alias cached and uncached mappings of the same buffer.
+- Each cluster's general DDR AXI master is exported from `Processing`; external
+  RAM or a DDR controller is attached outside the module.
+- Tribe already crosses between its L2 side and primary CPU/memory side. The
+  exported DDR model is therefore clocked by `cpu_clk`, not `l2_clk`.
 
 ### Command
 
-- Fixed, versioned and naturally aligned CMD-FIFO record.
+- Fixed and naturally aligned MMIO command record.
 - Fields:
   - Opcode and flags.
   - Source/destination space: RX-RAM, a selected TxFifo, L2 cluster,
@@ -91,13 +94,24 @@ devices --->|                         <-> DMA slave port  |
 
 ### Scheduling
 
-- Preserve order only where commands request a fence or share an ordered queue.
-- Use per-cluster and per-memory-bank request queues.
-- Use weighted deficit round robin across clusters.
-- Age requests to prevent starvation.
-- Split long copies into bounded bursts so descriptor/header traffic stays responsive.
-- Track read and write credits independently.
-- Return completion only after the destination is visible in its coherency domain.
+- Current PacketDMA preserves command FIFO order per cluster and transfers one
+  command at a time.
+- Future scalable scheduling should:
+  - Use per-cluster and per-memory-bank request queues.
+  - Use weighted deficit round robin across clusters.
+  - Age requests to prevent starvation.
+  - Split long copies into bounded bursts so descriptor/header traffic stays responsive.
+  - Track read and write credits independently.
+  - Return completion only after the destination is visible in its coherency domain.
+
+## CPU integration
+
+- `rtl/processing/CPU.h` wraps Tribe, its four cores, L1 caches, shared L2 and
+  the minimum MMIO/external-memory connections.
+- `boot_hartid_in` is propagated into Tribe CSR `mhartid` (`0xF14`).
+- The capture firmware lets only `(mhartid & 3) == 0` run, preventing four
+  local harts from consuming the same fetcher/DMA command stream.
+- The shared harness instantiates `N=4`; the RTL supports `1 <= N <= 8`.
 
 ## Recommended RAM/L2/host attachment
 

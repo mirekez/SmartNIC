@@ -5,28 +5,20 @@
 - 400G and 800G full-duplex Ethernet SmartNIC SoC.
 - RTL source: synthesizable cpphdl C++ dialect.
 - Outputs: native C++ simulation and cpphdl-generated SystemVerilog.
-- System tests: generated SystemVerilog under Verilator.
+- Verification: native C++ simulation, generated-SystemVerilog lint/Verilator
+  tests, and native end-to-end firmware/traffic tests.
 - PCS, SerDes and the PCIe PHY/controller hard block are outside the SoC RTL.
 - First target: FPGA. ASIC and narrower/faster datapaths remain possible.
 
 ## Top level
 
 ```text
- Ethernet/PCS side                 SmartNIC SoC                       Host
- 8 x 160/320b              +-------------------------+          +-----------+
- <========================>| network                 |          | driver    |
-                           | MAC, parse, packet RAM   |          | queues    |
-                           +------------+------------+          +-----+-----+
-                                        | descriptors / DMA           |
-                           +------------+------------+                PCIe
-                           | processing              |                 |
-                           | N x Tribe(4 cores + L2) |                 |
-                           +------------+------------+                 |
-                                        | commands / status           |
-                           +------------+------------+                 |
-                           | system                  |<================+
-                           | host DMA, BAR, control  |
-                           +-------------------------+
+ Ethernet/PCS       SmartNIC        Processing          System          Host
+ 8 x 160/320b   +-------------+   +---------------+   +------------+  +------+
+ <============>| Network     |-->| N x Tribe     |-->| 8 RX/TX    |=>| RAM  |
+               | balance/RAM |<--| fetcher + DMA |<--| queues/DMA |  |driver|
+               +-------------+   +---------------+   +------------+  +------+
+                    net_clk       cpu_clk/l2_clk          sys_clk
 ```
 
 ## Levels
@@ -45,24 +37,28 @@
    - Each cluster contains four RISC-V cores and one shared L2 cache.
    - L2 data width is 256 bits; its clock is rate-matched to the configured
      network lane (195.3125 MHz for 400G, 390.625 MHz for 800G).
-   - Exposes RxFifo, TxFifo and CMD-FIFO devices to every core.
+   - Exposes descriptor-prefetch and packet-DMA MMIO devices to every core.
    - Moves selected packet data between packet RAM, L2 caches and system level.
 
 3. System level
-   - Terminates a vendor-neutral PCIe transaction interface.
-   - Implements BAR control, interrupts and host-visible queues.
-   - Runs direct host DMA independently of CPU packet DMA.
-   - Loads CPU programs, controls boot/reset and monitors health.
+   - Implements eight processing-to-host and eight host-to-processing queues.
+   - Selects Avalon or AXI4 control/DMA ports with `HOST_AXI4`.
+   - Implements 1024-entry RX/TX rings and one host `MasterDMA`.
+   - A future attachment wrapper supplies PCIe protocol, interrupts and boot
+     maintenance.
    - Exports descriptors, events and statistics to the host.
 
 ## Datapath
 
 ```text
-RX: MAC -> balance -> parse + RX-RAM
-                         +-> descriptor CDC -> CPU decision
- RX-RAM -> read-command engine -> data CDC -> process
+RX capture:
+ post-PCS -> balance -> RxRAM + descriptor CDC -> DescriptorFetcher
+ RxRAM -> PacketDMA(DMA_NETWORK_CPU) -> coherent L2
+ L2 -> PacketDMA(DMA_CPU_SYSTEM) -> CDC -> System RxQueue -> host DMA
 
-TX: CPU 256b stream -> CDC -> TxFifo[0..7] -> output merge -> MAC
+TX paths:
+ System TxQueue -> CDC -> PacketDMA(DMA_SYSTEM_CPU) -> coherent L2
+ coherent L2 -> PacketDMA(DMA_CPU_NETWORK) -> CDC -> Network TxFifo
 ```
 
 - Control and payload are separate after parsing.
@@ -94,24 +90,22 @@ TX: CPU 256b stream -> CDC -> TxFifo[0..7] -> output merge -> MAC
 
 ## Descriptor FIFOs
 
-- RxFifo
-  - Producer: network level.
-  - Consumers: CPU clusters and, when configured, system DMA.
-  - Operations: `PEEK`, atomic `CLAIM`, `COMPLETE`, `DROP`.
-- TxFifo
-  - Producers: CPU clusters and system level.
-  - Consumer: network level.
-  - Operations: `RESERVE`, `WRITE`, ordered `COMMIT`, `CANCEL`.
-- Completion FIFOs return status and release ownership.
-- Each FIFO has programmable depth, watermarks, interrupt threshold and timer.
-- FIFO IDs provide traffic-class and tenant isolation.
-- FIFO state uses monotonic producer/consumer counters; wrapped indices are not ownership tokens.
+- Network descriptors cross into a per-cluster `DescriptorFetcher`.
+- Each fetcher pre-reads up to four descriptors from the shared eight-stream
+  source and presents one descriptor only to its assigned cluster.
+- Each cluster has an eight-entry `PacketDMA` command queue.
+- System contains exactly eight `RxQueue` and eight `TxQueue` instances.
+- Rich claim/completion, programmable watermark and tenant semantics remain
+  future work.
 
 ## Clock and reset domains
 
 - `net_clk`: 312.5 MHz; MAC datapath and network-side packet streams.
-- `l2_clk`: `312.5 MHz * NET_LANE_WIDTH / 256`; processing DMA and Tribe L2 interfaces.
-- `sys_clk`: selected by the PCIe hard block; system DMA and PCIe transaction logic.
+- `l2_clk`: `312.5 MHz * NET_LANE_WIDTH / 256`; Tribe L2 boundary and
+  Network/System CDC side.
+- `cpu_clk`: currently `4 * l2_clk`; Tribe cores, primary memory interface,
+  fetchers and packet DMA.
+- `sys_clk`: 250 MHz in the shared harness; system queues, controller and host DMA.
 - `mgmt_clk`: low-rate reset, MDIO and configuration.
 - All domain crossings use asynchronous FIFOs, synchronizers or reset handshakes.
 - Resets assert asynchronously and release synchronously within each domain.
@@ -125,7 +119,8 @@ TX: CPU 256b stream -> CDC -> TxFifo[0..7] -> output merge -> MAC
   100 Gb/s in 800G builds.
 - Exact-rate CDC has no sustained bandwidth margin; buffering covers phase and bounded stalls only.
 - Network ingress and egress receive deadline-reserved packet-RAM bandwidth.
-- Host line-rate transfer bypasses L2 caches and processing DMA.
+- The current functional capture path traverses L2; a direct packet-RAM/host
+  path is required before claiming sustained host line rate.
 - CPU DMA is for headers, selected payloads and exceptional packets.
 - No correctness requirement may depend on average packet size.
 - Minimum-frame, back-to-back, simultaneous RX/TX and worst-case bank-conflict tests are mandatory.
@@ -138,7 +133,7 @@ TX: CPU 256b stream -> CDC -> TxFifo[0..7] -> output merge -> MAC
   - CMake 3.26.4 and Make 4.4.1.
   - Verilator 5.034.
 - Do not depend on the developer's system compiler or Verilator.
-- Required top-level build flow after the RTL/CMake scaffold is added:
+- Top-level build flow:
 
 ```text
 conda activate ./cpphdl/.conda
@@ -151,16 +146,29 @@ ctest --test-dir build
   - A native C++ unit test.
   - A generated-SystemVerilog lint/build target.
   - A Verilator equivalence or system test.
-- End-to-end tests cover RX, CPU decision, host DMA, TX and reset recovery.
+- `test/capture.cpp` covers RX, descriptor polling, two CPU DMA operations,
+  System queueing and host-memory DMA with real Tribe firmware.
+- The generated SmartNIC, Processing and System hierarchies are linted by
+  Verilator; unit tests cover both native and Verilator flows.
 
-## Initial implementation order
+## Verified capture system
 
-1. Define stream, descriptor, queue and packet-handle types.
-2. Implement native C++ models for packet RAM, FIFOs and scoreboards.
-3. Implement 400G balancing, CDC and lossless RX/TX loopback.
-4. Add RAW descriptors and FIFO devices.
-5. Integrate one four-core Tribe cluster and its coherent L2 DMA port.
-6. Add parser/dissector and TX field insertion.
-7. Add scalable `N` clusters and processing DMA scheduling.
-8. Add the vendor-neutral system interface and host DMA model.
-9. Bind an FPGA PCIe hard block and close 800G timing/bandwidth.
+- Four Tribe clusters, four cores per cluster.
+- Only local hart 0 runs the capture loop; `mhartid` is wired from Tribe's
+  boot hart ID.
+- 32 deterministic mixed-size frames, 12-byte IPG, no source-side stalls.
+- 400G: 117 aggregate input beats; all packets captured byte-for-byte.
+- 800G: 59 aggregate input beats; all packets captured byte-for-byte.
+- Balanced streams may complete in different global order. Validation is an
+  order-independent unique packet permutation; ordering is preserved per queue.
+- The harness preloads external DDR directly. System-controlled firmware load
+  is not implemented yet.
+
+## Current gaps and next work
+
+1. Replace bounded monotonic RxRAM allocation with a reclaimable packet pool.
+2. Complete MAC filtering/FCS, parser/dissector and TX field insertion.
+3. Add direct RxRAM-to-host and host-to-network paths for line-rate host DMA.
+4. Add DMA burst/outstanding support, interrupts, error completions and fences.
+5. Add System firmware loading, boot control and recovery.
+6. Bind a PCIe hard block and prove 400G/800G full-duplex bandwidth.

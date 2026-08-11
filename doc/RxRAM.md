@@ -3,7 +3,7 @@
 ## Purpose
 
 `RxRAM` captures the eight independent framed streams produced by
-`InputBalancer` and exposes fewer than eight independently arbitrated packet
+`InputBalancer` and exposes up to eight independently arbitrated packet
 read ports. It stores packet bytes without gaps and returns a packet handle and
 exact byte length when EOP is accepted.
 
@@ -16,7 +16,7 @@ exact byte length when EOP is accepted.
 - Permit every stream to accept EOP and a following SOP in the same clock,
   including the case where the preceding partial word must also be committed.
 - Preserve every packet byte and report an exact length plus a stable handle.
-- Provide `N` independent logical read ports for any configured `1 <= N < 8`,
+- Provide `N` independent logical read ports for any configured `1 <= N <= 8`,
   with fair arbitration for physical-bank collisions and backpressure on both
   request and response paths.
 - Give receive writes priority over reads so read contention cannot reduce
@@ -26,7 +26,7 @@ exact byte length when EOP is accepted.
 ## Storage organization
 
 - There are eight home-bank groups, one for each receive stream.
-- Every group contains two `cpphdl/tribe_cpu/common/RAM.h` sub-banks.
+- Every group contains two `rtl/common/RAM.h` `SmartNicRAM` sub-banks.
 - A logical word is one input-stream beat: 20 bytes for 400G builds and 40
   bytes for 800G builds.
 - Consecutive logical words alternate between the two sub-banks.
@@ -60,7 +60,7 @@ The completion remains stable until `packet_ready_in[stream]` is asserted.
 
 ## Read interface
 
-The module has template parameter `READ_PORTS`, constrained to `1..7`. A read
+The module has template parameter `READ_PORTS`, constrained to `1..8`. A read
 request supplies a packet handle and zero-based logical word index. Requests to
 different physical sub-banks proceed together. Requests that collide with one
 another are round-robin arbitrated; wire writes have priority. `read_ready_out`
@@ -88,3 +88,7 @@ Instantiate `RxRAM<160, N, DEPTH>` for 400G or `RxRAM<320, N, DEPTH>` for
 800G. Connect the eight balancer outputs directly to the write interface,
 consume completion records into RX descriptors, then read
 `ceil(packet_length / LANE_BYTES)` words through any of the `N` read ports.
+
+`SmartNIC` currently instantiates eight read ports. The four-cluster Processing
+configuration connects ports 0 through 3; the remaining ports are available
+for later clusters or direct consumers.

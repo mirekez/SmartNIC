@@ -16,29 +16,25 @@
 
 ### RX/TX stream
 
-Each direction carries these signals:
+The current SmartNIC top carries one aggregate handshake per direction:
 
 ```text
-data [8][NET_LANE_W]
-keep [8][NET_LANE_W/8]       one bit per valid byte
-valid[8]
-sop_valid[8]
-sop_offset[8]                first byte of the new frame
-eop_valid[8]
-eop_offset[8]                last byte of the ending frame
-error[8]
-ready[8]                     internal/adaptor flow control
+valid                         aggregate beat is present
+data [8 * NET_LANE_W]         eight packed lane words
+keep [8 * NET_LANE_W/8]       one bit per valid byte
+sop  [8 * NET_LANE_W/8]       one bit at each frame's first byte
+eop  [8 * NET_LANE_W/8]       one bit at each frame's last byte
+ready                         aggregate beat was accepted
 ```
 
-- Flattening `data[0]` through `data[7]` gives time-ordered bytes for the cycle.
+- RX additionally carries `raw`, used to select RAW descriptor formatting.
+- Flattening lane 0 through lane 7 gives time-ordered bytes for the cycle.
 - `data[0]` contains the earliest lane slice in a cycle.
 - Bytes within a lane increase in time with increasing byte index.
 - `keep` may contain a gap between an EOP and a later SOP.
-- EOP and SOP may both be asserted in one lane and one clock.
-- When both are asserted for different frames, `eop_offset < sop_offset`.
+- EOP and SOP may both be asserted anywhere in one aggregate clock.
+- Multiple short frames and boundaries may occur in one aggregate beat.
 - A frame never changes logical stream after input balancing.
-- RX error is sticky for the affected frame, is associated with its EOP and is copied to its descriptor.
-- TX errors abort the affected frame and increment an error counter.
 - The adapter must absorb protocol-specific idles; the SoC sees bytes and frame boundaries.
 
 ```text
@@ -91,7 +87,48 @@ link_up_in
 
 ## System interface (PCIe)
 
-### Boundary
+### Current portable RTL boundary
+
+- `System<8, 256>` contains eight processing-facing queue pairs.
+- Each processing stream is 256-bit `data/keep/sop/eop/valid/ready`.
+- `RxQueue[i]`: Processing to host.
+- `TxQueue[i]`: host to Processing.
+- A 16-entry asynchronous FIFO in each direction crosses `l2_clk`/`sys_clk`
+  before the corresponding System queue.
+- `HOST_AXI4=0` selects Avalon-MM ports; `HOST_AXI4=1` selects AXI4 ports.
+- Control/slave port: 32-bit address, 256-bit data.
+- Host-memory/master port: 64-bit address, 256-bit data.
+
+```text
+Processing        clock crossing       System             host model/wrapper
+Rx stream ------> L2ToSystem FIFO ---> RxQueue --+-----> MasterDMA
+Tx stream <------ SystemToL2 FIFO <--- TxQueue <-+<----- MasterDMA
+                                                  ^
+host control -------------------------------- Controller
+```
+
+### Controller register and ring contract
+
+- Control/status registers: `0x0000`/`0x0004`.
+- RX producer/consumer: `0x0010`/`0x0014`.
+- TX producer/consumer: `0x0018`/`0x001c`.
+- Completion counter: `0x0020`.
+- Per-queue status window: `0x0100`, stride `0x20`.
+- RX descriptor ring: 1024 entries at controller byte address `0x10000`.
+- TX descriptor ring: 1024 entries at controller byte address `0x20000`.
+- Descriptor size: 16 bytes.
+  - 64-bit host address.
+  - 16-bit byte length.
+  - 8-bit queue ID.
+  - 8-bit flags.
+  - 32-bit reserved field.
+- The RX ring supplies host destinations for card-to-host queue data.
+- The TX ring supplies host sources for host-to-card queue data.
+- TX scatter/gather chains entries until `SYSTEM_TX_DESCRIPTOR_EOP`.
+- The shared harness provides an Avalon driver master, an Avalon DMA slave and
+  4 MiB of byte-addressable host memory.
+
+### Future PCIe wrapper
 
 - The SoC uses a vendor-neutral transaction interface.
 - The FPGA wrapper adapts it to the selected PCIe hard block.
@@ -106,7 +143,7 @@ link_up_in
 +----------------+          +------------------------------+
 ```
 
-### Transaction channels
+### Planned transaction channels
 
 - Host-to-card requests:
   - Posted memory writes.
@@ -122,14 +159,14 @@ link_up_in
 - Link/configuration:
   - Link up, negotiated width/rate, function reset and fatal/non-fatal errors.
 
-### Data width
+### Planned PCIe data width
 
 - Parameterized at 256, 512 or 1024 bits.
 - Width is independent of packet-RAM and L2 width.
 - `valid/ready`, byte enables, SOP/EOP and empty-byte count accompany every stream.
 - Width adapters preserve PCIe tag ordering and do not serialize independent queues.
 
-### BAR contract
+### Planned BAR contract
 
 - BAR0: version, capabilities, reset, health and interrupts.
 - BAR2: queue doorbells and producer/consumer indices.
@@ -137,7 +174,7 @@ link_up_in
 - 64-bit registers use an explicit atomic snapshot or low/high commit rule.
 - Capability registers report descriptor version, queue count, RAM size, `N`, clocks and feature bits.
 
-### DMA contract
+### Planned DMA contract
 
 - Scatter/gather queues use host physical or IOMMU-translated addresses.
 - Separate engines serve host-to-card and card-to-host traffic.
