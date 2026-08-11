@@ -99,7 +99,11 @@ private:
 public:
     void _assign() {}
 
+#if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
+    void _work_clk(bool reset)
+#else
     void _work_net_clk(bool reset)
+#endif
     {
 #if ASYNC_FIFO_WRITE_ON_NET
         work_write(reset);
@@ -107,7 +111,11 @@ public:
         work_read(reset);
 #endif
     }
+#if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
+    void _strobe_clk()
+#else
     void _strobe_net_clk()
+#endif
     {
 #if ASYNC_FIFO_WRITE_ON_NET
         data_mem.apply();
@@ -122,7 +130,11 @@ public:
         write_gray_read2_reg.strobe();
 #endif
     }
+#if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
+    void _work_l2_clock(bool reset)
+#else
     void _work_l2_clk(bool reset)
+#endif
     {
 #if ASYNC_FIFO_WRITE_ON_NET
         work_read(reset);
@@ -130,7 +142,11 @@ public:
         work_write(reset);
 #endif
     }
+#if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
+    void _strobe_l2_clock()
+#else
     void _strobe_l2_clk()
+#endif
     {
 #if ASYNC_FIFO_WRITE_ON_NET
         read_bin_reg.strobe();
@@ -145,4 +161,5 @@ public:
         read_gray_write2_reg.strobe();
 #endif
     }
+
 };

@@ -51,8 +51,8 @@ public:
 
     static_assert(LANE_WIDTH == 160 || LANE_WIDTH == 320,
         "RxRAM supports 160-bit and 320-bit balanced streams");
-    static_assert(READ_PORTS > 0 && READ_PORTS < STREAMS,
-        "RxRAM requires between one and seven read ports");
+    static_assert(READ_PORTS > 0 && READ_PORTS <= STREAMS,
+        "RxRAM requires between one and eight read ports");
     static_assert((BANK_DEPTH & (BANK_DEPTH - 1)) == 0,
         "RxRAM bank depth must be a power of two");
     static_assert(LOGICAL_ROW_BITS <= 16,
