@@ -23,6 +23,10 @@ private:
     reg<logic<MEM_WIDTH_BYTES * 8>> data_out_reg;
     memory<u8, MEM_WIDTH_BYTES, MEM_DEPTH> buffer;
     logic<MEM_WIDTH_BYTES * 8> data_out_comb;
+    // Keep this temporary at module scope.  CppHDL preserves parameterized
+    // member widths in generated SV; a local logic<> was specialized to one
+    // concrete instantiation when several Memory widths shared the module.
+    logic<MEM_WIDTH_BYTES * 8> write_mask_comb;
 
     logic<MEM_WIDTH_BYTES * 8>& data_out_comb_func()
     {
@@ -44,19 +48,19 @@ public:
     void _work(bool reset)
     {
         size_t byte;
-        logic<MEM_WIDTH_BYTES * 8> mask;
         if (reset) {
             data_out_reg.clr();
             return;
         }
         if (write_in()) {
-            mask = 0;
+            write_mask_comb = 0;
             for (byte = 0; byte < MEM_WIDTH_BYTES; ++byte) {
-                mask.bits(byte * 8 + 7, byte * 8) =
+                write_mask_comb.bits(byte * 8 + 7, byte * 8) =
                     (bool)write_mask_in()[byte] ? 0xff : 0;
             }
-            buffer[write_addr_in()] = (buffer[write_addr_in()] & ~mask)
-                | (write_data_in() & mask);
+            buffer[write_addr_in()] =
+                (buffer[write_addr_in()] & ~write_mask_comb)
+                | (write_data_in() & write_mask_comb);
         }
         if (!SHOWAHEAD && read_in()) {
             data_out_reg._next = buffer[read_addr_in()];

@@ -3,6 +3,15 @@
 #define ENABLE_800G 0
 #define CPUS_USED   4
 #define CPU_MEMORY (1024*1024*1024)
+#ifndef HOST_AXI4
+#define HOST_AXI4 0
+#endif
+
+// System/host datapath.  Both the AXI4 and Avalon variants use 256-bit data;
+// HOST_AXI4 selects the external pin protocol without changing queue formats.
+#define HOST_DATA_WIDTH 256
+#define HOST_ADDR_WIDTH 64
+#define SYSTEM_CLK_HZ 250000000ULL
 
 // Datapath clocks.  The L2 clock is rate-matched to one balanced Ethernet
 // stream so a 256-bit CPU/DMA lane has exactly the same raw byte rate.
