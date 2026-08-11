@@ -1,6 +1,5 @@
-// PacketDMA native C++ and generated-SystemVerilog/Verilator test.  A small
-// RxRAM source model supplies randomized packet bytes while a coherent-L2 AXI
-// responder records masked 256-bit writes and applies randomized backpressure.
+// PacketDMA native C++ and generated-SystemVerilog/Verilator test.  It models
+// the coherent 256-bit L2 port and checks all four packet transfer directions.
 
 #include "../PacketDMA.h"
 
@@ -54,15 +53,31 @@ class PacketDmaTest
 #endif
     Axi4Driver<32, 4, 256> mmio = {};
     Axi4Responder<4, 256> l2 = {};
+
     bool rx_read_ready = false;
     bool rx_valid = false;
     logic<256> rx_data = 0;
     logic<32> rx_keep = 0;
     bool rx_sop = false;
     bool rx_eop = false;
+
+    bool system_rx_valid = false;
+    logic<256> system_rx_data = 0;
+    logic<32> system_rx_keep = 0;
+    bool system_rx_sop = false;
+    bool system_rx_eop = false;
+    bool system_tx_ready = true;
+    bool network_tx_ready = true;
+
     uint32_t pending_aw = 0;
     bool have_aw = false;
-    std::vector<uint8_t> memory = std::vector<uint8_t>(4096, 0);
+    std::vector<uint8_t> memory = std::vector<uint8_t>(8192, 0);
+    std::vector<uint8_t> system_output;
+    std::vector<uint8_t> network_output;
+    bool system_output_sop = false;
+    bool system_output_eop = false;
+    bool network_output_sop = false;
+    bool network_output_eop = false;
     std::mt19937 random{0x51a7d00d};
     bool error = false;
 
@@ -89,6 +104,13 @@ class PacketDmaTest
         dut.rx_keep_in = _ASSIGN(rx_keep);
         dut.rx_sop_in = _ASSIGN(rx_sop);
         dut.rx_eop_in = _ASSIGN(rx_eop);
+        dut.system_rx_valid_in = _ASSIGN(system_rx_valid);
+        dut.system_rx_data_in = _ASSIGN(system_rx_data);
+        dut.system_rx_keep_in = _ASSIGN(system_rx_keep);
+        dut.system_rx_sop_in = _ASSIGN(system_rx_sop);
+        dut.system_rx_eop_in = _ASSIGN(system_rx_eop);
+        dut.system_tx_ready_in = _ASSIGN(system_tx_ready);
+        dut.network_tx_ready_in = _ASSIGN(network_tx_ready);
         dut.__inst_name = "packet_dma";
         dut._assign();
 #endif
@@ -105,6 +127,13 @@ class PacketDmaTest
         dut.rx_keep_in = (uint32_t)(uint64_t)rx_keep;
         dut.rx_sop_in = rx_sop;
         dut.rx_eop_in = rx_eop;
+        dut.system_rx_valid_in = system_rx_valid;
+        copy_to_verilator(dut.system_rx_data_in, system_rx_data);
+        dut.system_rx_keep_in = (uint32_t)(uint64_t)system_rx_keep;
+        dut.system_rx_sop_in = system_rx_sop;
+        dut.system_rx_eop_in = system_rx_eop;
+        dut.system_tx_ready_in = system_tx_ready;
+        dut.network_tx_ready_in = network_tx_ready;
 
         dut.mmio___05Fawvalid_in = mmio.aw.valid;
         dut.mmio___05Fawaddr_in = (uint32_t)mmio.aw.addr;
@@ -183,65 +212,204 @@ class PacketDmaTest
         return dut.l2_dma.bready_out();
 #endif
     }
+    bool l2_arvalid()
+    {
+#ifdef VERILATOR
+        return dut.l2_dma___05Farvalid_out;
+#else
+        return dut.l2_dma.arvalid_out();
+#endif
+    }
+    uint32_t l2_araddr()
+    {
+#ifdef VERILATOR
+        return dut.l2_dma___05Faraddr_out;
+#else
+        return (uint32_t)dut.l2_dma.araddr_out();
+#endif
+    }
+    bool l2_rready()
+    {
+#ifdef VERILATOR
+        return dut.l2_dma___05Frready_out;
+#else
+        return dut.l2_dma.rready_out();
+#endif
+    }
+
+    bool system_tx_valid_out()
+    {
+#ifdef VERILATOR
+        return dut.system_tx_valid_out;
+#else
+        return dut.system_tx_valid_out();
+#endif
+    }
+    logic<256> system_tx_data_out()
+    {
+#ifdef VERILATOR
+        return copy_from_verilator<logic<256>>(dut.system_tx_data_out);
+#else
+        return dut.system_tx_data_out();
+#endif
+    }
+    logic<32> system_tx_keep_out()
+    {
+#ifdef VERILATOR
+        return logic<32>(dut.system_tx_keep_out);
+#else
+        return dut.system_tx_keep_out();
+#endif
+    }
+    bool system_tx_sop_out()
+    {
+#ifdef VERILATOR
+        return dut.system_tx_sop_out;
+#else
+        return dut.system_tx_sop_out();
+#endif
+    }
+    bool system_tx_eop_out()
+    {
+#ifdef VERILATOR
+        return dut.system_tx_eop_out;
+#else
+        return dut.system_tx_eop_out();
+#endif
+    }
+    bool network_tx_valid_out()
+    {
+#ifdef VERILATOR
+        return dut.network_tx_valid_out;
+#else
+        return dut.network_tx_valid_out();
+#endif
+    }
+    logic<256> network_tx_data_out()
+    {
+#ifdef VERILATOR
+        return copy_from_verilator<logic<256>>(dut.network_tx_data_out);
+#else
+        return dut.network_tx_data_out();
+#endif
+    }
+    logic<32> network_tx_keep_out()
+    {
+#ifdef VERILATOR
+        return logic<32>(dut.network_tx_keep_out);
+#else
+        return dut.network_tx_keep_out();
+#endif
+    }
+    bool network_tx_sop_out()
+    {
+#ifdef VERILATOR
+        return dut.network_tx_sop_out;
+#else
+        return dut.network_tx_sop_out();
+#endif
+    }
+    bool network_tx_eop_out()
+    {
+#ifdef VERILATOR
+        return dut.network_tx_eop_out;
+#else
+        return dut.network_tx_eop_out();
+#endif
+    }
+
+    static void append_beat(std::vector<uint8_t>& bytes, logic<256> data,
+        logic<32> keep)
+    {
+        for (uint32_t byte = 0; byte < 32; ++byte) {
+            if (keep[byte]) {
+                bytes.push_back((uint8_t)data.bits(byte * 8 + 7, byte * 8));
+            }
+        }
+    }
 
     void update_l2_after_edge(bool aw_handshake, uint32_t aw_address,
         bool w_handshake, logic<256> write_data, logic<32> write_strobe,
-        bool b_handshake)
+        bool b_handshake, bool ar_handshake, uint32_t ar_address,
+        bool r_handshake)
     {
         if (b_handshake) l2.b.valid = false;
+        if (r_handshake) l2.r.valid = false;
         if (aw_handshake) {
             pending_aw = aw_address;
             have_aw = true;
         }
         if (w_handshake) {
-            if (!have_aw) {
-                fail("AXI write data arrived without an address");
-            }
+            if (!have_aw) fail("AXI write data arrived without an address");
             for (uint32_t byte = 0; byte < 32; ++byte) {
                 if (write_strobe[byte]) {
-                    if (pending_aw + byte >= memory.size()) fail("DMA wrote outside test memory");
-                    else memory[pending_aw + byte] =
-                        (uint8_t)write_data.bits(byte * 8 + 7, byte * 8);
+                    if (pending_aw + byte >= memory.size()) {
+                        fail("DMA wrote outside test memory");
+                    }
+                    else {
+                        memory[pending_aw + byte] =
+                            (uint8_t)write_data.bits(byte * 8 + 7, byte * 8);
+                    }
                 }
             }
             have_aw = false;
             l2.b.valid = true;
             l2.b.id = 0;
         }
+        if (ar_handshake) {
+            l2.r.data = 0;
+            for (uint32_t byte = 0; byte < 32; ++byte) {
+                if (ar_address + byte < memory.size()) {
+                    l2.r.data.bits(byte * 8 + 7, byte * 8) =
+                        memory[ar_address + byte];
+                }
+            }
+            l2.r.valid = true;
+            l2.r.last = true;
+            l2.r.id = 0;
+        }
         l2.aw.ready = random() % 4 != 0;
         l2.w.ready = random() % 4 != 0;
+        l2.ar.ready = random() % 4 != 0;
     }
 
     void cycle(bool reset = false)
     {
-        bool aw_handshake;
-        bool w_handshake;
-        bool b_handshake;
-        uint32_t aw_address;
-        logic<256> write_data;
-        logic<32> write_strobe;
-#ifdef VERILATOR
         drive_verilator(reset, false);
-        aw_handshake = l2_awvalid() && l2.aw.ready;
-        w_handshake = l2_wvalid() && l2.w.ready;
-        b_handshake = l2.b.valid && l2_bready();
-        aw_address = l2_awaddr();
-        write_data = l2_wdata();
-        write_strobe = l2_wstrb();
+        bool aw_handshake = l2_awvalid() && l2.aw.ready;
+        bool w_handshake = l2_wvalid() && l2.w.ready;
+        bool b_handshake = l2.b.valid && l2_bready();
+        bool ar_handshake = l2_arvalid() && l2.ar.ready;
+        bool r_handshake = l2.r.valid && l2_rready();
+        uint32_t aw_address = l2_awaddr();
+        uint32_t ar_address = l2_araddr();
+        logic<256> write_data = l2_wdata();
+        logic<32> write_strobe = l2_wstrb();
+
+        bool system_handshake = system_tx_valid_out() && system_tx_ready;
+        bool network_handshake = network_tx_valid_out() && network_tx_ready;
+        if (system_handshake) {
+            if (system_tx_sop_out()) system_output_sop = true;
+            if (system_tx_eop_out()) system_output_eop = true;
+            append_beat(system_output, system_tx_data_out(), system_tx_keep_out());
+        }
+        if (network_handshake) {
+            if (network_tx_sop_out()) network_output_sop = true;
+            if (network_tx_eop_out()) network_output_eop = true;
+            append_beat(network_output, network_tx_data_out(), network_tx_keep_out());
+        }
+
+#ifdef VERILATOR
         drive_verilator(reset, true);
         update_l2_after_edge(aw_handshake, aw_address, w_handshake,
-            write_data, write_strobe, b_handshake);
+            write_data, write_strobe, b_handshake, ar_handshake, ar_address,
+            r_handshake);
         drive_verilator(reset, false);
 #else
-        aw_handshake = l2_awvalid() && l2.aw.ready;
-        w_handshake = l2_wvalid() && l2.w.ready;
-        b_handshake = l2.b.valid && l2_bready();
-        aw_address = l2_awaddr();
-        write_data = l2_wdata();
-        write_strobe = l2_wstrb();
         dut._work(reset);
         update_l2_after_edge(aw_handshake, aw_address, w_handshake,
-            write_data, write_strobe, b_handshake);
+            write_data, write_strobe, b_handshake, ar_handshake, ar_address,
+            r_handshake);
         dut._strobe();
 #endif
         ++_system_clock;
@@ -379,6 +547,15 @@ class PacketDmaTest
         return dut.rx_ready_out();
 #endif
     }
+    bool system_rx_ready()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.system_rx_ready_out;
+#else
+        return dut.system_rx_ready_out();
+#endif
+    }
     bool busy()
     {
 #ifdef VERILATOR
@@ -397,73 +574,160 @@ class PacketDmaTest
 #endif
     }
 
+    std::vector<uint8_t> make_packet(size_t size)
+    {
+        std::vector<uint8_t> packet(size);
+        for (auto& byte : packet) byte = (uint8_t)random();
+        return packet;
+    }
+
+    void issue(uint32_t operation, uint32_t length, uint32_t source,
+        uint32_t destination, uint32_t handle = 0)
+    {
+        write32(Dma::REG_RX_HANDLE, handle);
+        write32(Dma::REG_LENGTH, length);
+        write32(Dma::REG_SOURCE, source);
+        write32(Dma::REG_DESTINATION, destination);
+        write32(Dma::REG_FLAGS, operation | Dma::FLAG_CACHE_ALLOCATE);
+        write32(Dma::REG_COMMAND, Dma::COMMAND_PUSH);
+    }
+
+    void send_input(const std::vector<uint8_t>& packet, bool network)
+    {
+        size_t position = 0;
+        bool loaded = false;
+        for (uint32_t timeout = 0; timeout < 2000 && busy(); ++timeout) {
+            bool ready = network ? rx_ready() : system_rx_ready();
+            if (!loaded && position < packet.size()) {
+                uint32_t bytes = std::min<size_t>(32, packet.size() - position);
+                logic<256>& data = network ? rx_data : system_rx_data;
+                logic<32>& keep = network ? rx_keep : system_rx_keep;
+                data = 0;
+                keep = 0;
+                for (uint32_t byte = 0; byte < bytes; ++byte) {
+                    data.bits(byte * 8 + 7, byte * 8) = packet[position + byte];
+                    keep[byte] = true;
+                }
+                if (network) {
+                    rx_valid = true;
+                    rx_sop = position == 0;
+                    rx_eop = position + bytes == packet.size();
+                }
+                else {
+                    system_rx_valid = true;
+                    system_rx_sop = position == 0;
+                    system_rx_eop = position + bytes == packet.size();
+                }
+                loaded = true;
+            }
+            ready = network ? rx_ready() : system_rx_ready();
+            if (loaded && ready) {
+                position += std::min<size_t>(32, packet.size() - position);
+                loaded = false;
+            }
+            cycle();
+        }
+        rx_valid = false;
+        system_rx_valid = false;
+        if (busy()) fail("input-to-CPU operation timed out");
+        if (position != packet.size()) fail("DMA did not consume the complete input packet");
+    }
+
+    void wait_for_output()
+    {
+        for (uint32_t timeout = 0; timeout < 2000 && busy(); ++timeout) {
+            system_tx_ready = random() % 5 != 0;
+            network_tx_ready = random() % 5 != 0;
+            cycle();
+        }
+        system_tx_ready = true;
+        network_tx_ready = true;
+        if (busy()) fail("CPU-to-output operation timed out");
+    }
+
+    void check_memory(uint32_t address, const std::vector<uint8_t>& packet,
+        const char* message)
+    {
+        if (!std::equal(packet.begin(), packet.end(), memory.begin() + address)) {
+            fail(message);
+        }
+    }
+
 public:
     bool run()
     {
         bind_native();
         l2.aw.ready = true;
         l2.w.ready = true;
+        l2.ar.ready = true;
         for (int i = 0; i < 3; ++i) cycle(true);
 
+        // Network RxRAM -> coherent CPU memory.
         const uint32_t handle = 0x3456;
-        const uint32_t destination = 0x400;
-        std::vector<uint8_t> packet(77);
-        for (uint32_t i = 0; i < packet.size(); ++i) packet[i] = (uint8_t)random();
-
-        write32(Dma::REG_RX_HANDLE, handle);
-        write32(Dma::REG_LENGTH, packet.size());
-        write32(Dma::REG_DESTINATION, destination);
-        write32(Dma::REG_FLAGS, Dma::FLAG_CACHE_ALLOCATE);
-        write32(Dma::REG_COMMAND, Dma::COMMAND_PUSH);
-
+        const uint32_t network_destination = 0x400;
+        auto network_input = make_packet(77);
+        issue(DMA_NETWORK_CPU, network_input.size(), 0, network_destination, handle);
         bool command_seen = false;
-        size_t position = 0;
-        for (uint32_t timeout = 0; timeout < 1000 && busy(); ++timeout) {
-            if (read_command_valid()) {
-                if (read_handle() != handle || read_length() != packet.size()) {
-                    fail("RxRAM read command mismatch");
-                }
-                command_seen = true;
-                rx_read_ready = true;
-            }
-            if (rx_ready() && position < packet.size()) {
-                uint32_t bytes = std::min<size_t>(32, packet.size() - position);
-                rx_valid = true;
-                rx_data = 0;
-                rx_keep = 0;
-                for (uint32_t byte = 0; byte < bytes; ++byte) {
-                    rx_data.bits(byte * 8 + 7, byte * 8) = packet[position + byte];
-                    rx_keep[byte] = true;
-                }
-                rx_sop = position == 0;
-                rx_eop = position + bytes == packet.size();
-                position += bytes;
-            }
-            else {
-                rx_valid = false;
-                rx_sop = false;
-                rx_eop = false;
-            }
+        for (uint32_t timeout = 0; timeout < 100 && !read_command_valid(); ++timeout) {
             cycle();
         }
-        rx_valid = false;
-        if (!command_seen) fail("DMA never issued its RxRAM command");
-        if (busy()) {
-            std::print("DMA timeout diagnostics: consumed={} aw={} w={} bready={}\n",
-                position, l2_awvalid(), l2_wvalid(), l2_bready());
-            fail("DMA did not complete");
-        }
-        if (position != packet.size()) fail("DMA did not consume the complete packet");
-        for (uint32_t i = 0; i < packet.size(); ++i) {
-            if (memory[destination + i] != packet[i]) {
-                fail("coherent L2 write payload mismatch");
-                break;
+        if (read_command_valid()) {
+            command_seen = true;
+            if (read_handle() != handle || read_length() != network_input.size()) {
+                fail("RxRAM read command mismatch");
             }
+            rx_read_ready = true;
+            cycle();
+            rx_read_ready = false;
         }
-        if (read32(Dma::REG_COMPLETED) != 1) fail("completion count mismatch");
-        if (protocol_error()) fail("valid packet transfer set protocol error");
+        send_input(network_input, true);
+        if (!command_seen) fail("DMA never issued its RxRAM command");
+        check_memory(network_destination, network_input,
+            "network-to-CPU payload mismatch");
 
-        std::print("{} PacketDMA test {}\n",
+        // System TxQueue -> coherent CPU memory.
+        const uint32_t system_destination = 0x800;
+        auto system_input = make_packet(95);
+        issue(DMA_SYSTEM_CPU, system_input.size(), 0, system_destination);
+        send_input(system_input, false);
+        check_memory(system_destination, system_input,
+            "system-to-CPU payload mismatch");
+
+        // Coherent CPU memory -> System RxQueue.
+        const uint32_t system_source = 0xc00;
+        auto to_system = make_packet(61);
+        std::copy(to_system.begin(), to_system.end(), memory.begin() + system_source);
+        system_output.clear();
+        system_output_sop = false;
+        system_output_eop = false;
+        issue(DMA_CPU_SYSTEM, to_system.size(), system_source, 0);
+        wait_for_output();
+        if (system_output != to_system) fail("CPU-to-system payload mismatch");
+        if (!system_output_sop || !system_output_eop) {
+            fail("CPU-to-system framing mismatch");
+        }
+
+        // Coherent CPU memory -> Network TxFIFO.
+        const uint32_t network_source = 0x1000;
+        auto to_network = make_packet(128);
+        std::copy(to_network.begin(), to_network.end(), memory.begin() + network_source);
+        network_output.clear();
+        network_output_sop = false;
+        network_output_eop = false;
+        issue(DMA_CPU_NETWORK, to_network.size(), network_source, 0);
+        wait_for_output();
+        if (network_output != to_network) fail("CPU-to-network payload mismatch");
+        if (!network_output_sop || !network_output_eop) {
+            fail("CPU-to-network framing mismatch");
+        }
+
+        if (read32(Dma::REG_COMPLETED) != 4) fail("completion count mismatch");
+        if (read32(Dma::REG_LAST_OPERATION) != DMA_CPU_NETWORK) {
+            fail("last operation register mismatch");
+        }
+        if (protocol_error()) fail("valid transfers set protocol error");
+
+        std::print("{} PacketDMA four-direction test {}\n",
 #ifdef VERILATOR
             "Verilator",
 #else

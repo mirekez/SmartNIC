@@ -101,6 +101,8 @@ public:
 
 #if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
     void _work_clk(bool reset)
+#elif defined(ASYNC_FIFO_SYSTEM_CLOCK_NAMES)
+    void _work_l2_clock(bool reset)
 #else
     void _work_net_clk(bool reset)
 #endif
@@ -113,6 +115,8 @@ public:
     }
 #if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
     void _strobe_clk()
+#elif defined(ASYNC_FIFO_SYSTEM_CLOCK_NAMES)
+    void _strobe_l2_clock()
 #else
     void _strobe_net_clk()
 #endif
@@ -132,6 +136,8 @@ public:
     }
 #if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
     void _work_l2_clock(bool reset)
+#elif defined(ASYNC_FIFO_SYSTEM_CLOCK_NAMES)
+    void _work_system_clock(bool reset)
 #else
     void _work_l2_clk(bool reset)
 #endif
@@ -144,6 +150,8 @@ public:
     }
 #if defined(ASYNC_FIFO_CPU_CLOCK_NAMES)
     void _strobe_l2_clock()
+#elif defined(ASYNC_FIFO_SYSTEM_CLOCK_NAMES)
+    void _strobe_system_clock()
 #else
     void _strobe_l2_clk()
 #endif

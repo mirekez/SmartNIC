@@ -57,9 +57,35 @@ public:
     _PORT(logic<CPU_COUNT>) rx_eop_in;
     _PORT(logic<CPU_COUNT>) rx_ready_out;
 
-    // Per-cluster external DDR ports.  CPU_MEMORY defines each address region;
-    // the storage implementation belongs to the system/board level.
-    Axi4MasterIf<CPU::EXTERNAL_ADDR_WIDTH, 4, 256> memory[CPU_COUNT];
+    // PacketDMA streams at the L2-clock boundary.  The System level adds the
+    // final L2-to-host-clock CDC before its eight RxQueue/TxQueue instances.
+    _PORT(logic<CPU_COUNT>) to_system_valid_out;
+    _PORT(logic<CPU_COUNT * 256>) to_system_data_out;
+    _PORT(logic<CPU_COUNT * 32>) to_system_keep_out;
+    _PORT(logic<CPU_COUNT>) to_system_sop_out;
+    _PORT(logic<CPU_COUNT>) to_system_eop_out;
+    _PORT(logic<CPU_COUNT>) to_system_ready_in;
+    _PORT(logic<CPU_COUNT>) from_system_valid_in;
+    _PORT(logic<CPU_COUNT * 256>) from_system_data_in;
+    _PORT(logic<CPU_COUNT * 32>) from_system_keep_in;
+    _PORT(logic<CPU_COUNT>) from_system_sop_in;
+    _PORT(logic<CPU_COUNT>) from_system_eop_in;
+    _PORT(logic<CPU_COUNT>) from_system_ready_out;
+
+    // CPU-to-network packet streams feed the matching SmartNIC L2 TxFIFO CDC.
+    _PORT(logic<CPU_COUNT>) to_network_valid_out;
+    _PORT(logic<CPU_COUNT * 256>) to_network_data_out;
+    _PORT(logic<CPU_COUNT * 32>) to_network_keep_out;
+    _PORT(logic<CPU_COUNT>) to_network_sop_out;
+    _PORT(logic<CPU_COUNT>) to_network_eop_out;
+    _PORT(logic<CPU_COUNT>) to_network_ready_in;
+
+    // One external DDR AXI4 master per Tribe cluster.  CPU_MEMORY defines the
+    // addressable region, while the DDR4 controller and storage remain outside
+    // Processing.  Keeping the ports independent avoids an implicit bandwidth
+    // bottleneck; a system-level DDR interconnect may arbitrate them later.
+    Axi4MasterIf<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
+        CPU::DATA_WIDTH> ddr[CPU_COUNT];
 
     _PORT(bool) software_irq_in[CPU_COUNT * CPU::CORES];
     _PORT(bool) timer_irq_in[CPU_COUNT * CPU::CORES];
@@ -70,6 +96,9 @@ private:
     AsyncFifoL2ToNet<DESCRIPTOR_CDC_BITS, 16> descriptor_cdc[CPU_COUNT];
     AsyncFifoNetToL2<READ_COMMAND_BITS, 16> read_command_cdc[CPU_COUNT];
     AsyncFifoL2ToNet<RX_STREAM_BITS, 16> rx_stream_cdc[CPU_COUNT];
+    AsyncFifoNetToL2<RX_STREAM_BITS, 16> to_system_cdc[CPU_COUNT];
+    AsyncFifoL2ToNet<RX_STREAM_BITS, 16> from_system_cdc[CPU_COUNT];
+    AsyncFifoNetToL2<RX_STREAM_BITS, 16> to_network_cdc[CPU_COUNT];
     Axi4RegionMux<2, 32, 4, 256> iomem_mux[CPU_COUNT];
     reg<u<TARGET_BITS>> descriptor_target_reg;
 
@@ -79,6 +108,18 @@ private:
     logic<CPU_COUNT * FRAME_LENGTH_BITS> rx_read_length_comb;
     logic<CPU_COUNT> rx_ready_comb;
     logic<RX_STREAM_BITS> rx_stream_pack_comb[CPU_COUNT];
+    logic<RX_STREAM_BITS> from_system_pack_comb[CPU_COUNT];
+    logic<CPU_COUNT> to_system_valid_comb;
+    logic<CPU_COUNT * 256> to_system_data_comb;
+    logic<CPU_COUNT * 32> to_system_keep_comb;
+    logic<CPU_COUNT> to_system_sop_comb;
+    logic<CPU_COUNT> to_system_eop_comb;
+    logic<CPU_COUNT> from_system_ready_comb;
+    logic<CPU_COUNT> to_network_valid_comb;
+    logic<CPU_COUNT * 256> to_network_data_comb;
+    logic<CPU_COUNT * 32> to_network_keep_comb;
+    logic<CPU_COUNT> to_network_sop_comb;
+    logic<CPU_COUNT> to_network_eop_comb;
 
     logic<DESCRIPTOR_CDC_BITS>& descriptor_pack_comb_func()
     {
@@ -160,6 +201,86 @@ private:
         return rx_stream_pack_comb;
     }
 
+    logic<RX_STREAM_BITS> (&from_system_pack_comb_func())[CPU_COUNT]
+    {
+        uint32_t index;
+        uint32_t bit;
+        for (index = 0; index < CPU_COUNT; ++index) {
+            from_system_pack_comb[index] = 0;
+            for (bit = 0; bit < 256; ++bit) {
+                from_system_pack_comb[index][bit] =
+                    from_system_data_in()[index * 256 + bit];
+            }
+            for (bit = 0; bit < 32; ++bit) {
+                from_system_pack_comb[index][256 + bit] =
+                    from_system_keep_in()[index * 32 + bit];
+            }
+            from_system_pack_comb[index][288] = from_system_sop_in()[index];
+            from_system_pack_comb[index][289] = from_system_eop_in()[index];
+        }
+        return from_system_pack_comb;
+    }
+
+#define PROCESSING_STREAM_OUTPUT_FUNCTIONS(prefix, fifo_name) \
+    logic<CPU_COUNT>& prefix##_valid_comb_func() \
+    { \
+        uint32_t index; \
+        prefix##_valid_comb = 0; \
+        for (index = 0; index < CPU_COUNT; ++index) \
+            prefix##_valid_comb[index] = fifo_name[index].read_valid_out(); \
+        return prefix##_valid_comb; \
+    } \
+    logic<CPU_COUNT * 256>& prefix##_data_comb_func() \
+    { \
+        uint32_t index; uint32_t bit; \
+        prefix##_data_comb = 0; \
+        for (index = 0; index < CPU_COUNT; ++index) \
+            for (bit = 0; bit < 256; ++bit) \
+                prefix##_data_comb[index * 256 + bit] = \
+                    fifo_name[index].read_data_out()[bit]; \
+        return prefix##_data_comb; \
+    } \
+    logic<CPU_COUNT * 32>& prefix##_keep_comb_func() \
+    { \
+        uint32_t index; uint32_t bit; \
+        prefix##_keep_comb = 0; \
+        for (index = 0; index < CPU_COUNT; ++index) \
+            for (bit = 0; bit < 32; ++bit) \
+                prefix##_keep_comb[index * 32 + bit] = \
+                    fifo_name[index].read_data_out()[256 + bit]; \
+        return prefix##_keep_comb; \
+    } \
+    logic<CPU_COUNT>& prefix##_sop_comb_func() \
+    { \
+        uint32_t index; \
+        prefix##_sop_comb = 0; \
+        for (index = 0; index < CPU_COUNT; ++index) \
+            prefix##_sop_comb[index] = fifo_name[index].read_data_out()[288]; \
+        return prefix##_sop_comb; \
+    } \
+    logic<CPU_COUNT>& prefix##_eop_comb_func() \
+    { \
+        uint32_t index; \
+        prefix##_eop_comb = 0; \
+        for (index = 0; index < CPU_COUNT; ++index) \
+            prefix##_eop_comb[index] = fifo_name[index].read_data_out()[289]; \
+        return prefix##_eop_comb; \
+    }
+    PROCESSING_STREAM_OUTPUT_FUNCTIONS(to_system, to_system_cdc)
+    PROCESSING_STREAM_OUTPUT_FUNCTIONS(to_network, to_network_cdc)
+#undef PROCESSING_STREAM_OUTPUT_FUNCTIONS
+
+    logic<CPU_COUNT>& from_system_ready_comb_func()
+    {
+        uint32_t index;
+        from_system_ready_comb = 0;
+        for (index = 0; index < CPU_COUNT; ++index) {
+            from_system_ready_comb[index] =
+                from_system_cdc[index].write_ready_out();
+        }
+        return from_system_ready_comb;
+    }
+
 public:
     void _assign()
     {
@@ -172,6 +293,17 @@ public:
         rx_read_handle_out = _ASSIGN_COMB(rx_read_handle_comb_func());
         rx_read_length_out = _ASSIGN_COMB(rx_read_length_comb_func());
         rx_ready_out = _ASSIGN_COMB(rx_ready_comb_func());
+        to_system_valid_out = _ASSIGN_COMB(to_system_valid_comb_func());
+        to_system_data_out = _ASSIGN_COMB(to_system_data_comb_func());
+        to_system_keep_out = _ASSIGN_COMB(to_system_keep_comb_func());
+        to_system_sop_out = _ASSIGN_COMB(to_system_sop_comb_func());
+        to_system_eop_out = _ASSIGN_COMB(to_system_eop_comb_func());
+        from_system_ready_out = _ASSIGN_COMB(from_system_ready_comb_func());
+        to_network_valid_out = _ASSIGN_COMB(to_network_valid_comb_func());
+        to_network_data_out = _ASSIGN_COMB(to_network_data_comb_func());
+        to_network_keep_out = _ASSIGN_COMB(to_network_keep_comb_func());
+        to_network_sop_out = _ASSIGN_COMB(to_network_sop_comb_func());
+        to_network_eop_out = _ASSIGN_COMB(to_network_eop_comb_func());
 
         for (index = 0; index < CPU_COUNT; ++index) {
             descriptor_cdc[index].write_valid_in = _ASSIGN_INDEXED((index),
@@ -244,9 +376,56 @@ public:
             packet_dma[index].rx_eop_in = _ASSIGN_INDEXED((index),
                 rx_stream_cdc[index].read_data_out()[289]);
 
-            AXI4_MASTER_FROM_MASTER(memory[index], cpu[index].memory);
-            AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory,
-                memory[index]);
+            // CPU-domain PacketDMA streams cross back to the rate-matched L2
+            // boundary before entering either System or Network CDC logic.
+            to_system_cdc[index].write_valid_in =
+                packet_dma[index].system_tx_valid_out;
+            to_system_cdc[index].write_data_in = _ASSIGN_INDEXED((index), cat(
+                (u<1>)packet_dma[index].system_tx_eop_out(),
+                (u<1>)packet_dma[index].system_tx_sop_out(),
+                packet_dma[index].system_tx_keep_out(),
+                packet_dma[index].system_tx_data_out()));
+            packet_dma[index].system_tx_ready_in =
+                to_system_cdc[index].write_ready_out;
+            to_system_cdc[index].read_ready_in = _ASSIGN_INDEXED((index),
+                to_system_ready_in()[index]);
+            to_system_cdc[index]._assign();
+
+            from_system_cdc[index].write_valid_in = _ASSIGN_INDEXED((index),
+                from_system_valid_in()[index]);
+            from_system_cdc[index].write_data_in = _ASSIGN_REG_INDEXED((index),
+                from_system_pack_comb_func()[index]);
+            from_system_cdc[index].read_ready_in =
+                packet_dma[index].system_rx_ready_out;
+            from_system_cdc[index]._assign();
+            packet_dma[index].system_rx_valid_in =
+                from_system_cdc[index].read_valid_out;
+            packet_dma[index].system_rx_data_in = _ASSIGN_INDEXED((index),
+                (logic<256>)from_system_cdc[index].read_data_out().bits(255, 0));
+            packet_dma[index].system_rx_keep_in = _ASSIGN_INDEXED((index),
+                (logic<32>)from_system_cdc[index].read_data_out().bits(287, 256));
+            packet_dma[index].system_rx_sop_in = _ASSIGN_INDEXED((index),
+                from_system_cdc[index].read_data_out()[288]);
+            packet_dma[index].system_rx_eop_in = _ASSIGN_INDEXED((index),
+                from_system_cdc[index].read_data_out()[289]);
+
+            to_network_cdc[index].write_valid_in =
+                packet_dma[index].network_tx_valid_out;
+            to_network_cdc[index].write_data_in = _ASSIGN_INDEXED((index), cat(
+                (u<1>)packet_dma[index].network_tx_eop_out(),
+                (u<1>)packet_dma[index].network_tx_sop_out(),
+                packet_dma[index].network_tx_keep_out(),
+                packet_dma[index].network_tx_data_out()));
+            packet_dma[index].network_tx_ready_in =
+                to_network_cdc[index].write_ready_out;
+            to_network_cdc[index].read_ready_in = _ASSIGN_INDEXED((index),
+                to_network_ready_in()[index]);
+            to_network_cdc[index]._assign();
+
+            // Preserve every CPU-memory AXI request and response signal at the
+            // Processing boundary for attachment to external DDR controllers.
+            AXI4_MASTER_FROM_MASTER(ddr[index], cpu[index].memory);
+            AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory, ddr[index]);
             cpu[index].reset_pc_in = _ASSIGN((u32)0);
             cpu[index].boot_hartid_in = _ASSIGN_INDEXED((index),
                 (u32)(index * CPU::CORES));
@@ -289,6 +468,9 @@ public:
             descriptor_cdc[index]._work_clk(reset);
             read_command_cdc[index]._work_clk(reset);
             rx_stream_cdc[index]._work_clk(reset);
+            to_system_cdc[index]._work_clk(reset);
+            from_system_cdc[index]._work_clk(reset);
+            to_network_cdc[index]._work_clk(reset);
         }
     }
 
@@ -306,6 +488,9 @@ public:
             descriptor_cdc[index]._work_l2_clock(reset);
             read_command_cdc[index]._work_l2_clock(reset);
             rx_stream_cdc[index]._work_l2_clock(reset);
+            to_system_cdc[index]._work_l2_clock(reset);
+            from_system_cdc[index]._work_l2_clock(reset);
+            to_network_cdc[index]._work_l2_clock(reset);
         }
         if (descriptor_valid_in() && descriptor_ready_out()
             && descriptor_eop_in()) {
@@ -327,6 +512,9 @@ public:
             descriptor_cdc[index]._strobe_clk();
             read_command_cdc[index]._strobe_clk();
             rx_stream_cdc[index]._strobe_clk();
+            to_system_cdc[index]._strobe_clk();
+            from_system_cdc[index]._strobe_clk();
+            to_network_cdc[index]._strobe_clk();
         }
     }
 
@@ -338,6 +526,9 @@ public:
             descriptor_cdc[index]._strobe_l2_clock();
             read_command_cdc[index]._strobe_l2_clock();
             rx_stream_cdc[index]._strobe_l2_clock();
+            to_system_cdc[index]._strobe_l2_clock();
+            from_system_cdc[index]._strobe_l2_clock();
+            to_network_cdc[index]._strobe_l2_clock();
         }
         descriptor_target_reg.strobe();
     }
