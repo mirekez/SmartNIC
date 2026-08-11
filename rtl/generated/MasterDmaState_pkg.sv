@@ -1,0 +1,15 @@
+package MasterDmaState_pkg;
+
+typedef enum {
+    MASTER_DMA_IDLE,
+    MASTER_DMA_WAIT_QUEUE,
+    MASTER_DMA_WRITE_ADDRESS,
+    MASTER_DMA_WRITE_DATA,
+    MASTER_DMA_WRITE_RESPONSE,
+    MASTER_DMA_READ_ADDRESS,
+    MASTER_DMA_READ_DATA,
+    MASTER_DMA_SEND_QUEUE
+} MasterDmaState;
+
+
+endpackage

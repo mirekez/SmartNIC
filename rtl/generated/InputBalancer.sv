@@ -1,0 +1,2280 @@
+`default_nettype none
+
+import Predef_pkg::*;
+
+
+module InputBalancer #(
+    parameter LANE_WIDTH = 'hA0
+ )
+ (
+    input wire net_clk
+,   input wire l2_clk
+,   input wire reset
+,   input wire valid_in
+,   input wire[INPUT_BITS-1:0] data_in
+,   input wire[INPUT_BYTES-1:0] keep_in
+,   input wire[INPUT_BYTES-1:0] sop_in
+,   input wire[INPUT_BYTES-1:0] eop_in
+,   output wire ready_out
+,   output wire[INPUT_BITS-1:0] data_out
+,   output wire[INPUT_BYTES-1:0] keep_out
+,   output wire[INPUT_BYTES-1:0] sop_out
+,   output wire[INPUT_BYTES-1:0] eop_out
+,   output wire[8-1:0] valid_out
+,   input wire[8-1:0] ready_in
+,   output wire protocol_error_out
+);
+    parameter  LANES = 64'h8;
+    parameter  FIFO_WORDS = 64'h400;
+    parameter  MAX_FRAME_BYTES = 64'h2400;
+    parameter  FLUSH_CYCLES = 64'h8;
+    parameter  LANE_BYTES = LANE_WIDTH/'h8;
+    parameter  INPUT_BITS = LANES*LANE_WIDTH;
+    parameter  INPUT_BYTES = LANES*LANE_BYTES;
+    parameter  FIFO_BANKS = 64'h8;
+    parameter  FIFO_BANK_DEPTH = 64'h80;
+    parameter  MAX_LANE_WIDTH = 64'h140;
+    parameter  MAX_LANE_BYTES = 64'h28;
+    parameter  POINTER_BITS = 64'hA;
+    parameter  COUNT_BITS = 64'hB;
+    parameter  PACK_COUNT_BITS = $clog2(LANE_BYTES + 'h1);
+    parameter  AGE_BITS = 64'h4;
+    parameter  RESERVED_WORDS = ((((MAX_FRAME_BYTES + LANE_BYTES) - 'h1))/LANE_BYTES) + LANES;
+    parameter  ELIGIBLE_WORDS = FIFO_WORDS - RESERVED_WORDS;
+
+
+    // regs and combs
+    reg[1-1:0][320-1:0] data_0_0[128];
+    reg[1-1:0][40-1:0] keep_0_0[128];
+    reg[1-1:0][40-1:0] sop_0_0[128];
+    reg[1-1:0][40-1:0] eop_0_0[128];
+    reg[1-1:0][320-1:0] data_0_1[128];
+    reg[1-1:0][40-1:0] keep_0_1[128];
+    reg[1-1:0][40-1:0] sop_0_1[128];
+    reg[1-1:0][40-1:0] eop_0_1[128];
+    reg[1-1:0][320-1:0] data_0_2[128];
+    reg[1-1:0][40-1:0] keep_0_2[128];
+    reg[1-1:0][40-1:0] sop_0_2[128];
+    reg[1-1:0][40-1:0] eop_0_2[128];
+    reg[1-1:0][320-1:0] data_0_3[128];
+    reg[1-1:0][40-1:0] keep_0_3[128];
+    reg[1-1:0][40-1:0] sop_0_3[128];
+    reg[1-1:0][40-1:0] eop_0_3[128];
+    reg[1-1:0][320-1:0] data_0_4[128];
+    reg[1-1:0][40-1:0] keep_0_4[128];
+    reg[1-1:0][40-1:0] sop_0_4[128];
+    reg[1-1:0][40-1:0] eop_0_4[128];
+    reg[1-1:0][320-1:0] data_0_5[128];
+    reg[1-1:0][40-1:0] keep_0_5[128];
+    reg[1-1:0][40-1:0] sop_0_5[128];
+    reg[1-1:0][40-1:0] eop_0_5[128];
+    reg[1-1:0][320-1:0] data_0_6[128];
+    reg[1-1:0][40-1:0] keep_0_6[128];
+    reg[1-1:0][40-1:0] sop_0_6[128];
+    reg[1-1:0][40-1:0] eop_0_6[128];
+    reg[1-1:0][320-1:0] data_0_7[128];
+    reg[1-1:0][40-1:0] keep_0_7[128];
+    reg[1-1:0][40-1:0] sop_0_7[128];
+    reg[1-1:0][40-1:0] eop_0_7[128];
+    reg[1-1:0][320-1:0] data_1_0[128];
+    reg[1-1:0][40-1:0] keep_1_0[128];
+    reg[1-1:0][40-1:0] sop_1_0[128];
+    reg[1-1:0][40-1:0] eop_1_0[128];
+    reg[1-1:0][320-1:0] data_1_1[128];
+    reg[1-1:0][40-1:0] keep_1_1[128];
+    reg[1-1:0][40-1:0] sop_1_1[128];
+    reg[1-1:0][40-1:0] eop_1_1[128];
+    reg[1-1:0][320-1:0] data_1_2[128];
+    reg[1-1:0][40-1:0] keep_1_2[128];
+    reg[1-1:0][40-1:0] sop_1_2[128];
+    reg[1-1:0][40-1:0] eop_1_2[128];
+    reg[1-1:0][320-1:0] data_1_3[128];
+    reg[1-1:0][40-1:0] keep_1_3[128];
+    reg[1-1:0][40-1:0] sop_1_3[128];
+    reg[1-1:0][40-1:0] eop_1_3[128];
+    reg[1-1:0][320-1:0] data_1_4[128];
+    reg[1-1:0][40-1:0] keep_1_4[128];
+    reg[1-1:0][40-1:0] sop_1_4[128];
+    reg[1-1:0][40-1:0] eop_1_4[128];
+    reg[1-1:0][320-1:0] data_1_5[128];
+    reg[1-1:0][40-1:0] keep_1_5[128];
+    reg[1-1:0][40-1:0] sop_1_5[128];
+    reg[1-1:0][40-1:0] eop_1_5[128];
+    reg[1-1:0][320-1:0] data_1_6[128];
+    reg[1-1:0][40-1:0] keep_1_6[128];
+    reg[1-1:0][40-1:0] sop_1_6[128];
+    reg[1-1:0][40-1:0] eop_1_6[128];
+    reg[1-1:0][320-1:0] data_1_7[128];
+    reg[1-1:0][40-1:0] keep_1_7[128];
+    reg[1-1:0][40-1:0] sop_1_7[128];
+    reg[1-1:0][40-1:0] eop_1_7[128];
+    reg[1-1:0][320-1:0] data_2_0[128];
+    reg[1-1:0][40-1:0] keep_2_0[128];
+    reg[1-1:0][40-1:0] sop_2_0[128];
+    reg[1-1:0][40-1:0] eop_2_0[128];
+    reg[1-1:0][320-1:0] data_2_1[128];
+    reg[1-1:0][40-1:0] keep_2_1[128];
+    reg[1-1:0][40-1:0] sop_2_1[128];
+    reg[1-1:0][40-1:0] eop_2_1[128];
+    reg[1-1:0][320-1:0] data_2_2[128];
+    reg[1-1:0][40-1:0] keep_2_2[128];
+    reg[1-1:0][40-1:0] sop_2_2[128];
+    reg[1-1:0][40-1:0] eop_2_2[128];
+    reg[1-1:0][320-1:0] data_2_3[128];
+    reg[1-1:0][40-1:0] keep_2_3[128];
+    reg[1-1:0][40-1:0] sop_2_3[128];
+    reg[1-1:0][40-1:0] eop_2_3[128];
+    reg[1-1:0][320-1:0] data_2_4[128];
+    reg[1-1:0][40-1:0] keep_2_4[128];
+    reg[1-1:0][40-1:0] sop_2_4[128];
+    reg[1-1:0][40-1:0] eop_2_4[128];
+    reg[1-1:0][320-1:0] data_2_5[128];
+    reg[1-1:0][40-1:0] keep_2_5[128];
+    reg[1-1:0][40-1:0] sop_2_5[128];
+    reg[1-1:0][40-1:0] eop_2_5[128];
+    reg[1-1:0][320-1:0] data_2_6[128];
+    reg[1-1:0][40-1:0] keep_2_6[128];
+    reg[1-1:0][40-1:0] sop_2_6[128];
+    reg[1-1:0][40-1:0] eop_2_6[128];
+    reg[1-1:0][320-1:0] data_2_7[128];
+    reg[1-1:0][40-1:0] keep_2_7[128];
+    reg[1-1:0][40-1:0] sop_2_7[128];
+    reg[1-1:0][40-1:0] eop_2_7[128];
+    reg[1-1:0][320-1:0] data_3_0[128];
+    reg[1-1:0][40-1:0] keep_3_0[128];
+    reg[1-1:0][40-1:0] sop_3_0[128];
+    reg[1-1:0][40-1:0] eop_3_0[128];
+    reg[1-1:0][320-1:0] data_3_1[128];
+    reg[1-1:0][40-1:0] keep_3_1[128];
+    reg[1-1:0][40-1:0] sop_3_1[128];
+    reg[1-1:0][40-1:0] eop_3_1[128];
+    reg[1-1:0][320-1:0] data_3_2[128];
+    reg[1-1:0][40-1:0] keep_3_2[128];
+    reg[1-1:0][40-1:0] sop_3_2[128];
+    reg[1-1:0][40-1:0] eop_3_2[128];
+    reg[1-1:0][320-1:0] data_3_3[128];
+    reg[1-1:0][40-1:0] keep_3_3[128];
+    reg[1-1:0][40-1:0] sop_3_3[128];
+    reg[1-1:0][40-1:0] eop_3_3[128];
+    reg[1-1:0][320-1:0] data_3_4[128];
+    reg[1-1:0][40-1:0] keep_3_4[128];
+    reg[1-1:0][40-1:0] sop_3_4[128];
+    reg[1-1:0][40-1:0] eop_3_4[128];
+    reg[1-1:0][320-1:0] data_3_5[128];
+    reg[1-1:0][40-1:0] keep_3_5[128];
+    reg[1-1:0][40-1:0] sop_3_5[128];
+    reg[1-1:0][40-1:0] eop_3_5[128];
+    reg[1-1:0][320-1:0] data_3_6[128];
+    reg[1-1:0][40-1:0] keep_3_6[128];
+    reg[1-1:0][40-1:0] sop_3_6[128];
+    reg[1-1:0][40-1:0] eop_3_6[128];
+    reg[1-1:0][320-1:0] data_3_7[128];
+    reg[1-1:0][40-1:0] keep_3_7[128];
+    reg[1-1:0][40-1:0] sop_3_7[128];
+    reg[1-1:0][40-1:0] eop_3_7[128];
+    reg[1-1:0][320-1:0] data_4_0[128];
+    reg[1-1:0][40-1:0] keep_4_0[128];
+    reg[1-1:0][40-1:0] sop_4_0[128];
+    reg[1-1:0][40-1:0] eop_4_0[128];
+    reg[1-1:0][320-1:0] data_4_1[128];
+    reg[1-1:0][40-1:0] keep_4_1[128];
+    reg[1-1:0][40-1:0] sop_4_1[128];
+    reg[1-1:0][40-1:0] eop_4_1[128];
+    reg[1-1:0][320-1:0] data_4_2[128];
+    reg[1-1:0][40-1:0] keep_4_2[128];
+    reg[1-1:0][40-1:0] sop_4_2[128];
+    reg[1-1:0][40-1:0] eop_4_2[128];
+    reg[1-1:0][320-1:0] data_4_3[128];
+    reg[1-1:0][40-1:0] keep_4_3[128];
+    reg[1-1:0][40-1:0] sop_4_3[128];
+    reg[1-1:0][40-1:0] eop_4_3[128];
+    reg[1-1:0][320-1:0] data_4_4[128];
+    reg[1-1:0][40-1:0] keep_4_4[128];
+    reg[1-1:0][40-1:0] sop_4_4[128];
+    reg[1-1:0][40-1:0] eop_4_4[128];
+    reg[1-1:0][320-1:0] data_4_5[128];
+    reg[1-1:0][40-1:0] keep_4_5[128];
+    reg[1-1:0][40-1:0] sop_4_5[128];
+    reg[1-1:0][40-1:0] eop_4_5[128];
+    reg[1-1:0][320-1:0] data_4_6[128];
+    reg[1-1:0][40-1:0] keep_4_6[128];
+    reg[1-1:0][40-1:0] sop_4_6[128];
+    reg[1-1:0][40-1:0] eop_4_6[128];
+    reg[1-1:0][320-1:0] data_4_7[128];
+    reg[1-1:0][40-1:0] keep_4_7[128];
+    reg[1-1:0][40-1:0] sop_4_7[128];
+    reg[1-1:0][40-1:0] eop_4_7[128];
+    reg[1-1:0][320-1:0] data_5_0[128];
+    reg[1-1:0][40-1:0] keep_5_0[128];
+    reg[1-1:0][40-1:0] sop_5_0[128];
+    reg[1-1:0][40-1:0] eop_5_0[128];
+    reg[1-1:0][320-1:0] data_5_1[128];
+    reg[1-1:0][40-1:0] keep_5_1[128];
+    reg[1-1:0][40-1:0] sop_5_1[128];
+    reg[1-1:0][40-1:0] eop_5_1[128];
+    reg[1-1:0][320-1:0] data_5_2[128];
+    reg[1-1:0][40-1:0] keep_5_2[128];
+    reg[1-1:0][40-1:0] sop_5_2[128];
+    reg[1-1:0][40-1:0] eop_5_2[128];
+    reg[1-1:0][320-1:0] data_5_3[128];
+    reg[1-1:0][40-1:0] keep_5_3[128];
+    reg[1-1:0][40-1:0] sop_5_3[128];
+    reg[1-1:0][40-1:0] eop_5_3[128];
+    reg[1-1:0][320-1:0] data_5_4[128];
+    reg[1-1:0][40-1:0] keep_5_4[128];
+    reg[1-1:0][40-1:0] sop_5_4[128];
+    reg[1-1:0][40-1:0] eop_5_4[128];
+    reg[1-1:0][320-1:0] data_5_5[128];
+    reg[1-1:0][40-1:0] keep_5_5[128];
+    reg[1-1:0][40-1:0] sop_5_5[128];
+    reg[1-1:0][40-1:0] eop_5_5[128];
+    reg[1-1:0][320-1:0] data_5_6[128];
+    reg[1-1:0][40-1:0] keep_5_6[128];
+    reg[1-1:0][40-1:0] sop_5_6[128];
+    reg[1-1:0][40-1:0] eop_5_6[128];
+    reg[1-1:0][320-1:0] data_5_7[128];
+    reg[1-1:0][40-1:0] keep_5_7[128];
+    reg[1-1:0][40-1:0] sop_5_7[128];
+    reg[1-1:0][40-1:0] eop_5_7[128];
+    reg[1-1:0][320-1:0] data_6_0[128];
+    reg[1-1:0][40-1:0] keep_6_0[128];
+    reg[1-1:0][40-1:0] sop_6_0[128];
+    reg[1-1:0][40-1:0] eop_6_0[128];
+    reg[1-1:0][320-1:0] data_6_1[128];
+    reg[1-1:0][40-1:0] keep_6_1[128];
+    reg[1-1:0][40-1:0] sop_6_1[128];
+    reg[1-1:0][40-1:0] eop_6_1[128];
+    reg[1-1:0][320-1:0] data_6_2[128];
+    reg[1-1:0][40-1:0] keep_6_2[128];
+    reg[1-1:0][40-1:0] sop_6_2[128];
+    reg[1-1:0][40-1:0] eop_6_2[128];
+    reg[1-1:0][320-1:0] data_6_3[128];
+    reg[1-1:0][40-1:0] keep_6_3[128];
+    reg[1-1:0][40-1:0] sop_6_3[128];
+    reg[1-1:0][40-1:0] eop_6_3[128];
+    reg[1-1:0][320-1:0] data_6_4[128];
+    reg[1-1:0][40-1:0] keep_6_4[128];
+    reg[1-1:0][40-1:0] sop_6_4[128];
+    reg[1-1:0][40-1:0] eop_6_4[128];
+    reg[1-1:0][320-1:0] data_6_5[128];
+    reg[1-1:0][40-1:0] keep_6_5[128];
+    reg[1-1:0][40-1:0] sop_6_5[128];
+    reg[1-1:0][40-1:0] eop_6_5[128];
+    reg[1-1:0][320-1:0] data_6_6[128];
+    reg[1-1:0][40-1:0] keep_6_6[128];
+    reg[1-1:0][40-1:0] sop_6_6[128];
+    reg[1-1:0][40-1:0] eop_6_6[128];
+    reg[1-1:0][320-1:0] data_6_7[128];
+    reg[1-1:0][40-1:0] keep_6_7[128];
+    reg[1-1:0][40-1:0] sop_6_7[128];
+    reg[1-1:0][40-1:0] eop_6_7[128];
+    reg[1-1:0][320-1:0] data_7_0[128];
+    reg[1-1:0][40-1:0] keep_7_0[128];
+    reg[1-1:0][40-1:0] sop_7_0[128];
+    reg[1-1:0][40-1:0] eop_7_0[128];
+    reg[1-1:0][320-1:0] data_7_1[128];
+    reg[1-1:0][40-1:0] keep_7_1[128];
+    reg[1-1:0][40-1:0] sop_7_1[128];
+    reg[1-1:0][40-1:0] eop_7_1[128];
+    reg[1-1:0][320-1:0] data_7_2[128];
+    reg[1-1:0][40-1:0] keep_7_2[128];
+    reg[1-1:0][40-1:0] sop_7_2[128];
+    reg[1-1:0][40-1:0] eop_7_2[128];
+    reg[1-1:0][320-1:0] data_7_3[128];
+    reg[1-1:0][40-1:0] keep_7_3[128];
+    reg[1-1:0][40-1:0] sop_7_3[128];
+    reg[1-1:0][40-1:0] eop_7_3[128];
+    reg[1-1:0][320-1:0] data_7_4[128];
+    reg[1-1:0][40-1:0] keep_7_4[128];
+    reg[1-1:0][40-1:0] sop_7_4[128];
+    reg[1-1:0][40-1:0] eop_7_4[128];
+    reg[1-1:0][320-1:0] data_7_5[128];
+    reg[1-1:0][40-1:0] keep_7_5[128];
+    reg[1-1:0][40-1:0] sop_7_5[128];
+    reg[1-1:0][40-1:0] eop_7_5[128];
+    reg[1-1:0][320-1:0] data_7_6[128];
+    reg[1-1:0][40-1:0] keep_7_6[128];
+    reg[1-1:0][40-1:0] sop_7_6[128];
+    reg[1-1:0][40-1:0] eop_7_6[128];
+    reg[1-1:0][320-1:0] data_7_7[128];
+    reg[1-1:0][40-1:0] keep_7_7[128];
+    reg[1-1:0][40-1:0] sop_7_7[128];
+    reg[1-1:0][40-1:0] eop_7_7[128];
+    reg[10-1:0] head_reg[8];
+    reg[10-1:0] tail_reg[8];
+    reg[11-1:0] count_reg[8];
+    reg[LANE_WIDTH-1:0] pack_data_reg[8];
+    reg[LANE_BYTES-1:0] pack_keep_reg[8];
+    reg[LANE_BYTES-1:0] pack_sop_reg[8];
+    reg[LANE_BYTES-1:0] pack_eop_reg[8];
+    reg[PACK_COUNT_BITS-1:0] pack_count_reg[8];
+    reg pack_boundary_reg[8];
+    reg[4-1:0] pack_age_reg[8];
+    reg[3-1:0] rr_reg;
+    reg[3-1:0] frame_dest_reg;
+    reg in_frame_reg;
+    reg protocol_error_reg;
+    logic input_ready_comb;
+;
+    logic[INPUT_BITS-1:0] output_data_comb;
+;
+    logic[INPUT_BYTES-1:0] output_keep_comb;
+;
+    logic[INPUT_BYTES-1:0] output_sop_comb;
+;
+    logic[INPUT_BYTES-1:0] output_eop_comb;
+;
+    logic[8-1:0] output_valid_comb;
+;
+
+    // members
+
+    // tmp variables
+    logic[10-1:0] head_reg_tmp[8];
+    logic[10-1:0] tail_reg_tmp[8];
+    logic[11-1:0] count_reg_tmp[8];
+    logic[LANE_WIDTH-1:0] pack_data_reg_tmp[8];
+    logic[LANE_BYTES-1:0] pack_keep_reg_tmp[8];
+    logic[LANE_BYTES-1:0] pack_sop_reg_tmp[8];
+    logic[LANE_BYTES-1:0] pack_eop_reg_tmp[8];
+    logic[PACK_COUNT_BITS-1:0] pack_count_reg_tmp[8];
+    logic pack_boundary_reg_tmp[8];
+    logic[4-1:0] pack_age_reg_tmp[8];
+    logic[3-1:0] rr_reg_tmp;
+    logic[3-1:0] frame_dest_reg_tmp;
+    logic in_frame_reg_tmp;
+    logic protocol_error_reg_tmp;
+
+
+    function logic[31:0] occupancy_after_pop (input logic[63:0] _output);
+        logic[31:0] count;
+        count = unsigned'(32'(count_reg[_output]));
+        if ((count != 'h0) && ready_in[_output]) begin
+            --count;
+        end
+        if (unsigned'(32'(pack_count_reg[_output])) != 'h0) begin
+            count=count+1;
+        end
+        return count;
+    endfunction
+
+    function logic output_eligible (input logic[63:0] _output);
+        return occupancy_after_pop(_output)<=ELIGIBLE_WORDS;
+    endfunction
+
+    always_comb begin : input_ready_comb_func  // input_ready_comb_func
+        logic[63:0] _output;
+        logic[63:0] _byte;
+        logic[31:0] eligible;
+        logic[31:0] starts;
+        logic[31:0] active_count;
+        input_ready_comb=1;
+        active_count='h0;
+        if (!valid_in) begin
+            disable input_ready_comb_func;
+        end
+        eligible='h0;
+        for (_output='h0;_output < LANES;_output=_output+1) begin
+            if (output_eligible(_output)) begin
+                eligible=eligible+1;
+            end
+        end
+        starts='h0;
+        for (_byte='h0;_byte < INPUT_BYTES;_byte=_byte+1) begin
+            if (keep_in[_byte] && sop_in[_byte]) begin
+                starts=starts+1;
+            end
+        end
+        if (starts > eligible) begin
+            input_ready_comb=0;
+        end
+        if (in_frame_reg) begin
+            active_count=unsigned'(32'(count_reg[unsigned'(32'(frame_dest_reg))]));
+            if ((active_count != 'h0) && ready_in[unsigned'(32'(frame_dest_reg))]) begin
+                --active_count;
+            end
+            if (active_count > (FIFO_WORDS - LANES)) begin
+                input_ready_comb=0;
+            end
+        end
+    end
+
+    always_comb begin : output_data_comb_func  // output_data_comb_func
+        logic[63:0] _output;
+        logic[63:0] lane_bit;
+        logic[31:0] logical;
+        logic[31:0] bank;
+        logic[31:0] row;
+        logic[320-1:0] entry;
+        output_data_comb = 'h0;
+        logical='h0;
+        bank='h0;
+        row='h0;
+        entry = 'h0;
+        for (_output='h0;_output < LANES;_output=_output+1) begin
+            if (unsigned'(32'(count_reg[_output])) != 'h0) begin
+                logical=unsigned'(32'(head_reg[_output]));
+                bank=logical & ((FIFO_BANKS - 'h1));
+                row=logical >>> 'h3;
+                if ((_output == 'h0) && (bank == 'h0)) begin
+                    entry = data_0_0[row];
+                end
+                if ((_output == 'h0) && (bank == 'h1)) begin
+                    entry = data_0_1[row];
+                end
+                if ((_output == 'h0) && (bank == 'h2)) begin
+                    entry = data_0_2[row];
+                end
+                if ((_output == 'h0) && (bank == 'h3)) begin
+                    entry = data_0_3[row];
+                end
+                if ((_output == 'h0) && (bank == 'h4)) begin
+                    entry = data_0_4[row];
+                end
+                if ((_output == 'h0) && (bank == 'h5)) begin
+                    entry = data_0_5[row];
+                end
+                if ((_output == 'h0) && (bank == 'h6)) begin
+                    entry = data_0_6[row];
+                end
+                if ((_output == 'h0) && (bank == 'h7)) begin
+                    entry = data_0_7[row];
+                end
+                if ((_output == 'h1) && (bank == 'h0)) begin
+                    entry = data_1_0[row];
+                end
+                if ((_output == 'h1) && (bank == 'h1)) begin
+                    entry = data_1_1[row];
+                end
+                if ((_output == 'h1) && (bank == 'h2)) begin
+                    entry = data_1_2[row];
+                end
+                if ((_output == 'h1) && (bank == 'h3)) begin
+                    entry = data_1_3[row];
+                end
+                if ((_output == 'h1) && (bank == 'h4)) begin
+                    entry = data_1_4[row];
+                end
+                if ((_output == 'h1) && (bank == 'h5)) begin
+                    entry = data_1_5[row];
+                end
+                if ((_output == 'h1) && (bank == 'h6)) begin
+                    entry = data_1_6[row];
+                end
+                if ((_output == 'h1) && (bank == 'h7)) begin
+                    entry = data_1_7[row];
+                end
+                if ((_output == 'h2) && (bank == 'h0)) begin
+                    entry = data_2_0[row];
+                end
+                if ((_output == 'h2) && (bank == 'h1)) begin
+                    entry = data_2_1[row];
+                end
+                if ((_output == 'h2) && (bank == 'h2)) begin
+                    entry = data_2_2[row];
+                end
+                if ((_output == 'h2) && (bank == 'h3)) begin
+                    entry = data_2_3[row];
+                end
+                if ((_output == 'h2) && (bank == 'h4)) begin
+                    entry = data_2_4[row];
+                end
+                if ((_output == 'h2) && (bank == 'h5)) begin
+                    entry = data_2_5[row];
+                end
+                if ((_output == 'h2) && (bank == 'h6)) begin
+                    entry = data_2_6[row];
+                end
+                if ((_output == 'h2) && (bank == 'h7)) begin
+                    entry = data_2_7[row];
+                end
+                if ((_output == 'h3) && (bank == 'h0)) begin
+                    entry = data_3_0[row];
+                end
+                if ((_output == 'h3) && (bank == 'h1)) begin
+                    entry = data_3_1[row];
+                end
+                if ((_output == 'h3) && (bank == 'h2)) begin
+                    entry = data_3_2[row];
+                end
+                if ((_output == 'h3) && (bank == 'h3)) begin
+                    entry = data_3_3[row];
+                end
+                if ((_output == 'h3) && (bank == 'h4)) begin
+                    entry = data_3_4[row];
+                end
+                if ((_output == 'h3) && (bank == 'h5)) begin
+                    entry = data_3_5[row];
+                end
+                if ((_output == 'h3) && (bank == 'h6)) begin
+                    entry = data_3_6[row];
+                end
+                if ((_output == 'h3) && (bank == 'h7)) begin
+                    entry = data_3_7[row];
+                end
+                if ((_output == 'h4) && (bank == 'h0)) begin
+                    entry = data_4_0[row];
+                end
+                if ((_output == 'h4) && (bank == 'h1)) begin
+                    entry = data_4_1[row];
+                end
+                if ((_output == 'h4) && (bank == 'h2)) begin
+                    entry = data_4_2[row];
+                end
+                if ((_output == 'h4) && (bank == 'h3)) begin
+                    entry = data_4_3[row];
+                end
+                if ((_output == 'h4) && (bank == 'h4)) begin
+                    entry = data_4_4[row];
+                end
+                if ((_output == 'h4) && (bank == 'h5)) begin
+                    entry = data_4_5[row];
+                end
+                if ((_output == 'h4) && (bank == 'h6)) begin
+                    entry = data_4_6[row];
+                end
+                if ((_output == 'h4) && (bank == 'h7)) begin
+                    entry = data_4_7[row];
+                end
+                if ((_output == 'h5) && (bank == 'h0)) begin
+                    entry = data_5_0[row];
+                end
+                if ((_output == 'h5) && (bank == 'h1)) begin
+                    entry = data_5_1[row];
+                end
+                if ((_output == 'h5) && (bank == 'h2)) begin
+                    entry = data_5_2[row];
+                end
+                if ((_output == 'h5) && (bank == 'h3)) begin
+                    entry = data_5_3[row];
+                end
+                if ((_output == 'h5) && (bank == 'h4)) begin
+                    entry = data_5_4[row];
+                end
+                if ((_output == 'h5) && (bank == 'h5)) begin
+                    entry = data_5_5[row];
+                end
+                if ((_output == 'h5) && (bank == 'h6)) begin
+                    entry = data_5_6[row];
+                end
+                if ((_output == 'h5) && (bank == 'h7)) begin
+                    entry = data_5_7[row];
+                end
+                if ((_output == 'h6) && (bank == 'h0)) begin
+                    entry = data_6_0[row];
+                end
+                if ((_output == 'h6) && (bank == 'h1)) begin
+                    entry = data_6_1[row];
+                end
+                if ((_output == 'h6) && (bank == 'h2)) begin
+                    entry = data_6_2[row];
+                end
+                if ((_output == 'h6) && (bank == 'h3)) begin
+                    entry = data_6_3[row];
+                end
+                if ((_output == 'h6) && (bank == 'h4)) begin
+                    entry = data_6_4[row];
+                end
+                if ((_output == 'h6) && (bank == 'h5)) begin
+                    entry = data_6_5[row];
+                end
+                if ((_output == 'h6) && (bank == 'h6)) begin
+                    entry = data_6_6[row];
+                end
+                if ((_output == 'h6) && (bank == 'h7)) begin
+                    entry = data_6_7[row];
+                end
+                if ((_output == 'h7) && (bank == 'h0)) begin
+                    entry = data_7_0[row];
+                end
+                if ((_output == 'h7) && (bank == 'h1)) begin
+                    entry = data_7_1[row];
+                end
+                if ((_output == 'h7) && (bank == 'h2)) begin
+                    entry = data_7_2[row];
+                end
+                if ((_output == 'h7) && (bank == 'h3)) begin
+                    entry = data_7_3[row];
+                end
+                if ((_output == 'h7) && (bank == 'h4)) begin
+                    entry = data_7_4[row];
+                end
+                if ((_output == 'h7) && (bank == 'h5)) begin
+                    entry = data_7_5[row];
+                end
+                if ((_output == 'h7) && (bank == 'h6)) begin
+                    entry = data_7_6[row];
+                end
+                if ((_output == 'h7) && (bank == 'h7)) begin
+                    entry = data_7_7[row];
+                end
+                for (lane_bit='h0;lane_bit < LANE_WIDTH;lane_bit=lane_bit+1) begin
+                    output_data_comb[(_output*LANE_WIDTH) + lane_bit] = entry[lane_bit];
+                end
+            end
+        end
+    end
+
+    always_comb begin : output_keep_comb_func  // output_keep_comb_func
+        logic[63:0] _output;
+        logic[63:0] lane_byte;
+        logic[31:0] logical;
+        logic[31:0] bank;
+        logic[31:0] row;
+        logic[40-1:0] entry;
+        output_keep_comb = 'h0;
+        logical='h0;
+        bank='h0;
+        row='h0;
+        entry = 'h0;
+        for (_output='h0;_output < LANES;_output=_output+1) begin
+            if (unsigned'(32'(count_reg[_output])) != 'h0) begin
+                logical=unsigned'(32'(head_reg[_output]));
+                bank=logical & ((FIFO_BANKS - 'h1));
+                row=logical >>> 'h3;
+                if ((_output == 'h0) && (bank == 'h0)) begin
+                    entry = keep_0_0[row];
+                end
+                if ((_output == 'h0) && (bank == 'h1)) begin
+                    entry = keep_0_1[row];
+                end
+                if ((_output == 'h0) && (bank == 'h2)) begin
+                    entry = keep_0_2[row];
+                end
+                if ((_output == 'h0) && (bank == 'h3)) begin
+                    entry = keep_0_3[row];
+                end
+                if ((_output == 'h0) && (bank == 'h4)) begin
+                    entry = keep_0_4[row];
+                end
+                if ((_output == 'h0) && (bank == 'h5)) begin
+                    entry = keep_0_5[row];
+                end
+                if ((_output == 'h0) && (bank == 'h6)) begin
+                    entry = keep_0_6[row];
+                end
+                if ((_output == 'h0) && (bank == 'h7)) begin
+                    entry = keep_0_7[row];
+                end
+                if ((_output == 'h1) && (bank == 'h0)) begin
+                    entry = keep_1_0[row];
+                end
+                if ((_output == 'h1) && (bank == 'h1)) begin
+                    entry = keep_1_1[row];
+                end
+                if ((_output == 'h1) && (bank == 'h2)) begin
+                    entry = keep_1_2[row];
+                end
+                if ((_output == 'h1) && (bank == 'h3)) begin
+                    entry = keep_1_3[row];
+                end
+                if ((_output == 'h1) && (bank == 'h4)) begin
+                    entry = keep_1_4[row];
+                end
+                if ((_output == 'h1) && (bank == 'h5)) begin
+                    entry = keep_1_5[row];
+                end
+                if ((_output == 'h1) && (bank == 'h6)) begin
+                    entry = keep_1_6[row];
+                end
+                if ((_output == 'h1) && (bank == 'h7)) begin
+                    entry = keep_1_7[row];
+                end
+                if ((_output == 'h2) && (bank == 'h0)) begin
+                    entry = keep_2_0[row];
+                end
+                if ((_output == 'h2) && (bank == 'h1)) begin
+                    entry = keep_2_1[row];
+                end
+                if ((_output == 'h2) && (bank == 'h2)) begin
+                    entry = keep_2_2[row];
+                end
+                if ((_output == 'h2) && (bank == 'h3)) begin
+                    entry = keep_2_3[row];
+                end
+                if ((_output == 'h2) && (bank == 'h4)) begin
+                    entry = keep_2_4[row];
+                end
+                if ((_output == 'h2) && (bank == 'h5)) begin
+                    entry = keep_2_5[row];
+                end
+                if ((_output == 'h2) && (bank == 'h6)) begin
+                    entry = keep_2_6[row];
+                end
+                if ((_output == 'h2) && (bank == 'h7)) begin
+                    entry = keep_2_7[row];
+                end
+                if ((_output == 'h3) && (bank == 'h0)) begin
+                    entry = keep_3_0[row];
+                end
+                if ((_output == 'h3) && (bank == 'h1)) begin
+                    entry = keep_3_1[row];
+                end
+                if ((_output == 'h3) && (bank == 'h2)) begin
+                    entry = keep_3_2[row];
+                end
+                if ((_output == 'h3) && (bank == 'h3)) begin
+                    entry = keep_3_3[row];
+                end
+                if ((_output == 'h3) && (bank == 'h4)) begin
+                    entry = keep_3_4[row];
+                end
+                if ((_output == 'h3) && (bank == 'h5)) begin
+                    entry = keep_3_5[row];
+                end
+                if ((_output == 'h3) && (bank == 'h6)) begin
+                    entry = keep_3_6[row];
+                end
+                if ((_output == 'h3) && (bank == 'h7)) begin
+                    entry = keep_3_7[row];
+                end
+                if ((_output == 'h4) && (bank == 'h0)) begin
+                    entry = keep_4_0[row];
+                end
+                if ((_output == 'h4) && (bank == 'h1)) begin
+                    entry = keep_4_1[row];
+                end
+                if ((_output == 'h4) && (bank == 'h2)) begin
+                    entry = keep_4_2[row];
+                end
+                if ((_output == 'h4) && (bank == 'h3)) begin
+                    entry = keep_4_3[row];
+                end
+                if ((_output == 'h4) && (bank == 'h4)) begin
+                    entry = keep_4_4[row];
+                end
+                if ((_output == 'h4) && (bank == 'h5)) begin
+                    entry = keep_4_5[row];
+                end
+                if ((_output == 'h4) && (bank == 'h6)) begin
+                    entry = keep_4_6[row];
+                end
+                if ((_output == 'h4) && (bank == 'h7)) begin
+                    entry = keep_4_7[row];
+                end
+                if ((_output == 'h5) && (bank == 'h0)) begin
+                    entry = keep_5_0[row];
+                end
+                if ((_output == 'h5) && (bank == 'h1)) begin
+                    entry = keep_5_1[row];
+                end
+                if ((_output == 'h5) && (bank == 'h2)) begin
+                    entry = keep_5_2[row];
+                end
+                if ((_output == 'h5) && (bank == 'h3)) begin
+                    entry = keep_5_3[row];
+                end
+                if ((_output == 'h5) && (bank == 'h4)) begin
+                    entry = keep_5_4[row];
+                end
+                if ((_output == 'h5) && (bank == 'h5)) begin
+                    entry = keep_5_5[row];
+                end
+                if ((_output == 'h5) && (bank == 'h6)) begin
+                    entry = keep_5_6[row];
+                end
+                if ((_output == 'h5) && (bank == 'h7)) begin
+                    entry = keep_5_7[row];
+                end
+                if ((_output == 'h6) && (bank == 'h0)) begin
+                    entry = keep_6_0[row];
+                end
+                if ((_output == 'h6) && (bank == 'h1)) begin
+                    entry = keep_6_1[row];
+                end
+                if ((_output == 'h6) && (bank == 'h2)) begin
+                    entry = keep_6_2[row];
+                end
+                if ((_output == 'h6) && (bank == 'h3)) begin
+                    entry = keep_6_3[row];
+                end
+                if ((_output == 'h6) && (bank == 'h4)) begin
+                    entry = keep_6_4[row];
+                end
+                if ((_output == 'h6) && (bank == 'h5)) begin
+                    entry = keep_6_5[row];
+                end
+                if ((_output == 'h6) && (bank == 'h6)) begin
+                    entry = keep_6_6[row];
+                end
+                if ((_output == 'h6) && (bank == 'h7)) begin
+                    entry = keep_6_7[row];
+                end
+                if ((_output == 'h7) && (bank == 'h0)) begin
+                    entry = keep_7_0[row];
+                end
+                if ((_output == 'h7) && (bank == 'h1)) begin
+                    entry = keep_7_1[row];
+                end
+                if ((_output == 'h7) && (bank == 'h2)) begin
+                    entry = keep_7_2[row];
+                end
+                if ((_output == 'h7) && (bank == 'h3)) begin
+                    entry = keep_7_3[row];
+                end
+                if ((_output == 'h7) && (bank == 'h4)) begin
+                    entry = keep_7_4[row];
+                end
+                if ((_output == 'h7) && (bank == 'h5)) begin
+                    entry = keep_7_5[row];
+                end
+                if ((_output == 'h7) && (bank == 'h6)) begin
+                    entry = keep_7_6[row];
+                end
+                if ((_output == 'h7) && (bank == 'h7)) begin
+                    entry = keep_7_7[row];
+                end
+                for (lane_byte='h0;lane_byte < LANE_BYTES;lane_byte=lane_byte+1) begin
+                    output_keep_comb[(_output*LANE_BYTES) + lane_byte] = entry[lane_byte];
+                end
+            end
+        end
+    end
+
+    always_comb begin : output_sop_comb_func  // output_sop_comb_func
+        logic[63:0] _output;
+        logic[63:0] lane_byte;
+        logic[31:0] logical;
+        logic[31:0] bank;
+        logic[31:0] row;
+        logic[40-1:0] entry;
+        output_sop_comb = 'h0;
+        logical='h0;
+        bank='h0;
+        row='h0;
+        entry = 'h0;
+        for (_output='h0;_output < LANES;_output=_output+1) begin
+            if (unsigned'(32'(count_reg[_output])) != 'h0) begin
+                logical=unsigned'(32'(head_reg[_output]));
+                bank=logical & ((FIFO_BANKS - 'h1));
+                row=logical >>> 'h3;
+                if ((_output == 'h0) && (bank == 'h0)) begin
+                    entry = sop_0_0[row];
+                end
+                if ((_output == 'h0) && (bank == 'h1)) begin
+                    entry = sop_0_1[row];
+                end
+                if ((_output == 'h0) && (bank == 'h2)) begin
+                    entry = sop_0_2[row];
+                end
+                if ((_output == 'h0) && (bank == 'h3)) begin
+                    entry = sop_0_3[row];
+                end
+                if ((_output == 'h0) && (bank == 'h4)) begin
+                    entry = sop_0_4[row];
+                end
+                if ((_output == 'h0) && (bank == 'h5)) begin
+                    entry = sop_0_5[row];
+                end
+                if ((_output == 'h0) && (bank == 'h6)) begin
+                    entry = sop_0_6[row];
+                end
+                if ((_output == 'h0) && (bank == 'h7)) begin
+                    entry = sop_0_7[row];
+                end
+                if ((_output == 'h1) && (bank == 'h0)) begin
+                    entry = sop_1_0[row];
+                end
+                if ((_output == 'h1) && (bank == 'h1)) begin
+                    entry = sop_1_1[row];
+                end
+                if ((_output == 'h1) && (bank == 'h2)) begin
+                    entry = sop_1_2[row];
+                end
+                if ((_output == 'h1) && (bank == 'h3)) begin
+                    entry = sop_1_3[row];
+                end
+                if ((_output == 'h1) && (bank == 'h4)) begin
+                    entry = sop_1_4[row];
+                end
+                if ((_output == 'h1) && (bank == 'h5)) begin
+                    entry = sop_1_5[row];
+                end
+                if ((_output == 'h1) && (bank == 'h6)) begin
+                    entry = sop_1_6[row];
+                end
+                if ((_output == 'h1) && (bank == 'h7)) begin
+                    entry = sop_1_7[row];
+                end
+                if ((_output == 'h2) && (bank == 'h0)) begin
+                    entry = sop_2_0[row];
+                end
+                if ((_output == 'h2) && (bank == 'h1)) begin
+                    entry = sop_2_1[row];
+                end
+                if ((_output == 'h2) && (bank == 'h2)) begin
+                    entry = sop_2_2[row];
+                end
+                if ((_output == 'h2) && (bank == 'h3)) begin
+                    entry = sop_2_3[row];
+                end
+                if ((_output == 'h2) && (bank == 'h4)) begin
+                    entry = sop_2_4[row];
+                end
+                if ((_output == 'h2) && (bank == 'h5)) begin
+                    entry = sop_2_5[row];
+                end
+                if ((_output == 'h2) && (bank == 'h6)) begin
+                    entry = sop_2_6[row];
+                end
+                if ((_output == 'h2) && (bank == 'h7)) begin
+                    entry = sop_2_7[row];
+                end
+                if ((_output == 'h3) && (bank == 'h0)) begin
+                    entry = sop_3_0[row];
+                end
+                if ((_output == 'h3) && (bank == 'h1)) begin
+                    entry = sop_3_1[row];
+                end
+                if ((_output == 'h3) && (bank == 'h2)) begin
+                    entry = sop_3_2[row];
+                end
+                if ((_output == 'h3) && (bank == 'h3)) begin
+                    entry = sop_3_3[row];
+                end
+                if ((_output == 'h3) && (bank == 'h4)) begin
+                    entry = sop_3_4[row];
+                end
+                if ((_output == 'h3) && (bank == 'h5)) begin
+                    entry = sop_3_5[row];
+                end
+                if ((_output == 'h3) && (bank == 'h6)) begin
+                    entry = sop_3_6[row];
+                end
+                if ((_output == 'h3) && (bank == 'h7)) begin
+                    entry = sop_3_7[row];
+                end
+                if ((_output == 'h4) && (bank == 'h0)) begin
+                    entry = sop_4_0[row];
+                end
+                if ((_output == 'h4) && (bank == 'h1)) begin
+                    entry = sop_4_1[row];
+                end
+                if ((_output == 'h4) && (bank == 'h2)) begin
+                    entry = sop_4_2[row];
+                end
+                if ((_output == 'h4) && (bank == 'h3)) begin
+                    entry = sop_4_3[row];
+                end
+                if ((_output == 'h4) && (bank == 'h4)) begin
+                    entry = sop_4_4[row];
+                end
+                if ((_output == 'h4) && (bank == 'h5)) begin
+                    entry = sop_4_5[row];
+                end
+                if ((_output == 'h4) && (bank == 'h6)) begin
+                    entry = sop_4_6[row];
+                end
+                if ((_output == 'h4) && (bank == 'h7)) begin
+                    entry = sop_4_7[row];
+                end
+                if ((_output == 'h5) && (bank == 'h0)) begin
+                    entry = sop_5_0[row];
+                end
+                if ((_output == 'h5) && (bank == 'h1)) begin
+                    entry = sop_5_1[row];
+                end
+                if ((_output == 'h5) && (bank == 'h2)) begin
+                    entry = sop_5_2[row];
+                end
+                if ((_output == 'h5) && (bank == 'h3)) begin
+                    entry = sop_5_3[row];
+                end
+                if ((_output == 'h5) && (bank == 'h4)) begin
+                    entry = sop_5_4[row];
+                end
+                if ((_output == 'h5) && (bank == 'h5)) begin
+                    entry = sop_5_5[row];
+                end
+                if ((_output == 'h5) && (bank == 'h6)) begin
+                    entry = sop_5_6[row];
+                end
+                if ((_output == 'h5) && (bank == 'h7)) begin
+                    entry = sop_5_7[row];
+                end
+                if ((_output == 'h6) && (bank == 'h0)) begin
+                    entry = sop_6_0[row];
+                end
+                if ((_output == 'h6) && (bank == 'h1)) begin
+                    entry = sop_6_1[row];
+                end
+                if ((_output == 'h6) && (bank == 'h2)) begin
+                    entry = sop_6_2[row];
+                end
+                if ((_output == 'h6) && (bank == 'h3)) begin
+                    entry = sop_6_3[row];
+                end
+                if ((_output == 'h6) && (bank == 'h4)) begin
+                    entry = sop_6_4[row];
+                end
+                if ((_output == 'h6) && (bank == 'h5)) begin
+                    entry = sop_6_5[row];
+                end
+                if ((_output == 'h6) && (bank == 'h6)) begin
+                    entry = sop_6_6[row];
+                end
+                if ((_output == 'h6) && (bank == 'h7)) begin
+                    entry = sop_6_7[row];
+                end
+                if ((_output == 'h7) && (bank == 'h0)) begin
+                    entry = sop_7_0[row];
+                end
+                if ((_output == 'h7) && (bank == 'h1)) begin
+                    entry = sop_7_1[row];
+                end
+                if ((_output == 'h7) && (bank == 'h2)) begin
+                    entry = sop_7_2[row];
+                end
+                if ((_output == 'h7) && (bank == 'h3)) begin
+                    entry = sop_7_3[row];
+                end
+                if ((_output == 'h7) && (bank == 'h4)) begin
+                    entry = sop_7_4[row];
+                end
+                if ((_output == 'h7) && (bank == 'h5)) begin
+                    entry = sop_7_5[row];
+                end
+                if ((_output == 'h7) && (bank == 'h6)) begin
+                    entry = sop_7_6[row];
+                end
+                if ((_output == 'h7) && (bank == 'h7)) begin
+                    entry = sop_7_7[row];
+                end
+                for (lane_byte='h0;lane_byte < LANE_BYTES;lane_byte=lane_byte+1) begin
+                    output_sop_comb[(_output*LANE_BYTES) + lane_byte] = entry[lane_byte];
+                end
+            end
+        end
+    end
+
+    always_comb begin : output_eop_comb_func  // output_eop_comb_func
+        logic[63:0] _output;
+        logic[63:0] lane_byte;
+        logic[31:0] logical;
+        logic[31:0] bank;
+        logic[31:0] row;
+        logic[40-1:0] entry;
+        output_eop_comb = 'h0;
+        logical='h0;
+        bank='h0;
+        row='h0;
+        entry = 'h0;
+        for (_output='h0;_output < LANES;_output=_output+1) begin
+            if (unsigned'(32'(count_reg[_output])) != 'h0) begin
+                logical=unsigned'(32'(head_reg[_output]));
+                bank=logical & ((FIFO_BANKS - 'h1));
+                row=logical >>> 'h3;
+                if ((_output == 'h0) && (bank == 'h0)) begin
+                    entry = eop_0_0[row];
+                end
+                if ((_output == 'h0) && (bank == 'h1)) begin
+                    entry = eop_0_1[row];
+                end
+                if ((_output == 'h0) && (bank == 'h2)) begin
+                    entry = eop_0_2[row];
+                end
+                if ((_output == 'h0) && (bank == 'h3)) begin
+                    entry = eop_0_3[row];
+                end
+                if ((_output == 'h0) && (bank == 'h4)) begin
+                    entry = eop_0_4[row];
+                end
+                if ((_output == 'h0) && (bank == 'h5)) begin
+                    entry = eop_0_5[row];
+                end
+                if ((_output == 'h0) && (bank == 'h6)) begin
+                    entry = eop_0_6[row];
+                end
+                if ((_output == 'h0) && (bank == 'h7)) begin
+                    entry = eop_0_7[row];
+                end
+                if ((_output == 'h1) && (bank == 'h0)) begin
+                    entry = eop_1_0[row];
+                end
+                if ((_output == 'h1) && (bank == 'h1)) begin
+                    entry = eop_1_1[row];
+                end
+                if ((_output == 'h1) && (bank == 'h2)) begin
+                    entry = eop_1_2[row];
+                end
+                if ((_output == 'h1) && (bank == 'h3)) begin
+                    entry = eop_1_3[row];
+                end
+                if ((_output == 'h1) && (bank == 'h4)) begin
+                    entry = eop_1_4[row];
+                end
+                if ((_output == 'h1) && (bank == 'h5)) begin
+                    entry = eop_1_5[row];
+                end
+                if ((_output == 'h1) && (bank == 'h6)) begin
+                    entry = eop_1_6[row];
+                end
+                if ((_output == 'h1) && (bank == 'h7)) begin
+                    entry = eop_1_7[row];
+                end
+                if ((_output == 'h2) && (bank == 'h0)) begin
+                    entry = eop_2_0[row];
+                end
+                if ((_output == 'h2) && (bank == 'h1)) begin
+                    entry = eop_2_1[row];
+                end
+                if ((_output == 'h2) && (bank == 'h2)) begin
+                    entry = eop_2_2[row];
+                end
+                if ((_output == 'h2) && (bank == 'h3)) begin
+                    entry = eop_2_3[row];
+                end
+                if ((_output == 'h2) && (bank == 'h4)) begin
+                    entry = eop_2_4[row];
+                end
+                if ((_output == 'h2) && (bank == 'h5)) begin
+                    entry = eop_2_5[row];
+                end
+                if ((_output == 'h2) && (bank == 'h6)) begin
+                    entry = eop_2_6[row];
+                end
+                if ((_output == 'h2) && (bank == 'h7)) begin
+                    entry = eop_2_7[row];
+                end
+                if ((_output == 'h3) && (bank == 'h0)) begin
+                    entry = eop_3_0[row];
+                end
+                if ((_output == 'h3) && (bank == 'h1)) begin
+                    entry = eop_3_1[row];
+                end
+                if ((_output == 'h3) && (bank == 'h2)) begin
+                    entry = eop_3_2[row];
+                end
+                if ((_output == 'h3) && (bank == 'h3)) begin
+                    entry = eop_3_3[row];
+                end
+                if ((_output == 'h3) && (bank == 'h4)) begin
+                    entry = eop_3_4[row];
+                end
+                if ((_output == 'h3) && (bank == 'h5)) begin
+                    entry = eop_3_5[row];
+                end
+                if ((_output == 'h3) && (bank == 'h6)) begin
+                    entry = eop_3_6[row];
+                end
+                if ((_output == 'h3) && (bank == 'h7)) begin
+                    entry = eop_3_7[row];
+                end
+                if ((_output == 'h4) && (bank == 'h0)) begin
+                    entry = eop_4_0[row];
+                end
+                if ((_output == 'h4) && (bank == 'h1)) begin
+                    entry = eop_4_1[row];
+                end
+                if ((_output == 'h4) && (bank == 'h2)) begin
+                    entry = eop_4_2[row];
+                end
+                if ((_output == 'h4) && (bank == 'h3)) begin
+                    entry = eop_4_3[row];
+                end
+                if ((_output == 'h4) && (bank == 'h4)) begin
+                    entry = eop_4_4[row];
+                end
+                if ((_output == 'h4) && (bank == 'h5)) begin
+                    entry = eop_4_5[row];
+                end
+                if ((_output == 'h4) && (bank == 'h6)) begin
+                    entry = eop_4_6[row];
+                end
+                if ((_output == 'h4) && (bank == 'h7)) begin
+                    entry = eop_4_7[row];
+                end
+                if ((_output == 'h5) && (bank == 'h0)) begin
+                    entry = eop_5_0[row];
+                end
+                if ((_output == 'h5) && (bank == 'h1)) begin
+                    entry = eop_5_1[row];
+                end
+                if ((_output == 'h5) && (bank == 'h2)) begin
+                    entry = eop_5_2[row];
+                end
+                if ((_output == 'h5) && (bank == 'h3)) begin
+                    entry = eop_5_3[row];
+                end
+                if ((_output == 'h5) && (bank == 'h4)) begin
+                    entry = eop_5_4[row];
+                end
+                if ((_output == 'h5) && (bank == 'h5)) begin
+                    entry = eop_5_5[row];
+                end
+                if ((_output == 'h5) && (bank == 'h6)) begin
+                    entry = eop_5_6[row];
+                end
+                if ((_output == 'h5) && (bank == 'h7)) begin
+                    entry = eop_5_7[row];
+                end
+                if ((_output == 'h6) && (bank == 'h0)) begin
+                    entry = eop_6_0[row];
+                end
+                if ((_output == 'h6) && (bank == 'h1)) begin
+                    entry = eop_6_1[row];
+                end
+                if ((_output == 'h6) && (bank == 'h2)) begin
+                    entry = eop_6_2[row];
+                end
+                if ((_output == 'h6) && (bank == 'h3)) begin
+                    entry = eop_6_3[row];
+                end
+                if ((_output == 'h6) && (bank == 'h4)) begin
+                    entry = eop_6_4[row];
+                end
+                if ((_output == 'h6) && (bank == 'h5)) begin
+                    entry = eop_6_5[row];
+                end
+                if ((_output == 'h6) && (bank == 'h6)) begin
+                    entry = eop_6_6[row];
+                end
+                if ((_output == 'h6) && (bank == 'h7)) begin
+                    entry = eop_6_7[row];
+                end
+                if ((_output == 'h7) && (bank == 'h0)) begin
+                    entry = eop_7_0[row];
+                end
+                if ((_output == 'h7) && (bank == 'h1)) begin
+                    entry = eop_7_1[row];
+                end
+                if ((_output == 'h7) && (bank == 'h2)) begin
+                    entry = eop_7_2[row];
+                end
+                if ((_output == 'h7) && (bank == 'h3)) begin
+                    entry = eop_7_3[row];
+                end
+                if ((_output == 'h7) && (bank == 'h4)) begin
+                    entry = eop_7_4[row];
+                end
+                if ((_output == 'h7) && (bank == 'h5)) begin
+                    entry = eop_7_5[row];
+                end
+                if ((_output == 'h7) && (bank == 'h6)) begin
+                    entry = eop_7_6[row];
+                end
+                if ((_output == 'h7) && (bank == 'h7)) begin
+                    entry = eop_7_7[row];
+                end
+                for (lane_byte='h0;lane_byte < LANE_BYTES;lane_byte=lane_byte+1) begin
+                    output_eop_comb[(_output*LANE_BYTES) + lane_byte] = entry[lane_byte];
+                end
+            end
+        end
+    end
+
+    always_comb begin : output_valid_comb_func  // output_valid_comb_func
+        logic[63:0] _output;
+        output_valid_comb = 'h0;
+        for (_output='h0;_output < LANES;_output=_output+1) begin
+            output_valid_comb[_output] = unsigned'(32'(count_reg[_output])) != 'h0;
+        end
+    end
+
+    generate  // _assign
+        assign ready_out = input_ready_comb;
+        assign data_out = output_data_comb;
+        assign keep_out = output_keep_comb;
+        assign sop_out = output_sop_comb;
+        assign eop_out = output_eop_comb;
+        assign valid_out = output_valid_comb;
+        assign protocol_error_out = protocol_error_reg;
+    endgenerate
+
+    task _work (input logic reset);
+    begin: _work
+        logic[63:0] _output;
+        logic[63:0] _byte;
+        logic[63:0] offset;
+        logic[8-1:0][31:0] head;
+        logic[8-1:0][31:0] tail;
+        logic[8-1:0][31:0] count;
+        logic[8-1:0][31:0] pushes;
+        logic[8-1:0][31:0] pack_count;
+        logic[8-1:0][31:0] pack_age;
+        logic[8-1:0] pack_boundary;
+        logic[8-1:0] appended;
+        logic[8-1:0] reserved;
+        logic in_frame;
+        logic found;
+        logic keep;
+        logic sop;
+        logic eop;
+        logic[31:0] rr;
+        logic[31:0] dest;
+        logic[31:0] candidate;
+        logic[31:0] logical;
+        logic[31:0] bank;
+        logic[31:0] row;
+        logic[7:0] input_byte;
+        if (reset) begin
+            for (_output='h0;_output < LANES;_output=_output+1) begin
+                head_reg_tmp[_output] = 'h0;
+                tail_reg_tmp[_output] = 'h0;
+                count_reg_tmp[_output] = 'h0;
+                pack_data_reg_tmp[_output] = 'h0;
+                pack_keep_reg_tmp[_output] = 'h0;
+                pack_sop_reg_tmp[_output] = 'h0;
+                pack_eop_reg_tmp[_output] = 'h0;
+                pack_count_reg_tmp[_output] = 'h0;
+                pack_boundary_reg_tmp[_output] = unsigned'(1'h0);
+                pack_age_reg_tmp[_output] = 'h0;
+            end
+            rr_reg_tmp = 'h0;
+            frame_dest_reg_tmp = 'h0;
+            in_frame_reg_tmp = unsigned'(1'h0);
+            protocol_error_reg_tmp = unsigned'(1'h0);
+            disable _work;
+        end
+        for (_output='h0;_output < LANES;_output=_output+1) begin
+            head[_output]=unsigned'(32'(head_reg[_output]));
+            tail[_output]=unsigned'(32'(tail_reg[_output]));
+            count[_output]=unsigned'(32'(count_reg[_output]));
+            pushes[_output]='h0;
+            pack_count[_output]=unsigned'(32'(pack_count_reg[_output]));
+            pack_age[_output]=unsigned'(32'(pack_age_reg[_output]));
+            pack_data_reg_tmp[_output] = pack_data_reg[_output];
+            pack_keep_reg_tmp[_output] = pack_keep_reg[_output];
+            pack_sop_reg_tmp[_output] = pack_sop_reg[_output];
+            pack_eop_reg_tmp[_output] = pack_eop_reg[_output];
+            pack_boundary[_output]=pack_boundary_reg[_output];
+            appended[_output]=0;
+            reserved[_output]=0;
+            if ((count[_output] != 'h0) && ready_in[_output]) begin
+                head[_output]=((head[_output] + 'h1)) & ((FIFO_WORDS - 'h1));
+                --count[_output];
+            end
+        end
+        rr=unsigned'(32'(rr_reg));
+        dest=unsigned'(32'(frame_dest_reg));
+        in_frame=in_frame_reg;
+        if (valid_in && input_ready_comb) begin
+            for (_byte='h0;_byte < INPUT_BYTES;_byte=_byte+1) begin
+                keep=keep_in[_byte];
+                sop=sop_in[_byte];
+                eop=eop_in[_byte];
+                if (!keep) begin
+                    if (sop || eop) begin
+                        protocol_error_reg_tmp = unsigned'(1'h1);
+                    end
+                end
+                else begin
+                    if (sop) begin
+                        if (in_frame) begin
+                            protocol_error_reg_tmp = unsigned'(1'h1);
+                        end
+                        found=0;
+                        candidate=rr;
+                        for (offset='h0;offset < LANES;offset=offset+1) begin
+                            candidate=((rr + offset)) & ((LANES - 'h1));
+                            if ((!found && !reserved[candidate]) && output_eligible(candidate)) begin
+                                dest=candidate;
+                                found=1;
+                            end
+                        end
+                        if (!found) begin
+                            protocol_error_reg_tmp = unsigned'(1'h1);
+                        end
+                        else begin
+                            reserved[dest]=1;
+                            rr=((dest + 'h1)) & ((LANES - 'h1));
+                        end
+                        in_frame=1;
+                    end
+                    else begin
+                        if (!in_frame) begin
+                            protocol_error_reg_tmp = unsigned'(1'h1);
+                        end
+                    end
+                    input_byte=unsigned'(8'(data_in[_byte*'h8 +:8]));
+                    for (offset='h0;offset < 'h8;offset=offset+1) begin
+                        pack_data_reg_tmp[dest][(pack_count[dest]*'h8) + offset] = ((input_byte >>> offset)) & 'h1;
+                    end
+                    pack_keep_reg_tmp[dest][pack_count[dest]] = 'h1;
+                    pack_sop_reg_tmp[dest][pack_count[dest]] = sop;
+                    pack_eop_reg_tmp[dest][pack_count[dest]] = eop;
+                    pack_count[dest]=pack_count[dest]+1;
+                    appended[dest]=1;
+                    pack_age[dest]='h0;
+                    pack_boundary[dest]=eop;
+                    if (pack_count[dest] == LANE_BYTES) begin
+                        logical=((tail[dest] + pushes[dest])) & ((FIFO_WORDS - 'h1));
+                        bank=logical & ((FIFO_BANKS - 'h1));
+                        row=logical >>> 'h3;
+                        if ((dest == 'h0) && (bank == 'h0)) begin
+                            data_0_0[row] <= pack_data_reg_tmp[dest];
+                            keep_0_0[row] <= pack_keep_reg_tmp[dest];
+                            sop_0_0[row] <= pack_sop_reg_tmp[dest];
+                            eop_0_0[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h0) && (bank == 'h1)) begin
+                            data_0_1[row] <= pack_data_reg_tmp[dest];
+                            keep_0_1[row] <= pack_keep_reg_tmp[dest];
+                            sop_0_1[row] <= pack_sop_reg_tmp[dest];
+                            eop_0_1[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h0) && (bank == 'h2)) begin
+                            data_0_2[row] <= pack_data_reg_tmp[dest];
+                            keep_0_2[row] <= pack_keep_reg_tmp[dest];
+                            sop_0_2[row] <= pack_sop_reg_tmp[dest];
+                            eop_0_2[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h0) && (bank == 'h3)) begin
+                            data_0_3[row] <= pack_data_reg_tmp[dest];
+                            keep_0_3[row] <= pack_keep_reg_tmp[dest];
+                            sop_0_3[row] <= pack_sop_reg_tmp[dest];
+                            eop_0_3[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h0) && (bank == 'h4)) begin
+                            data_0_4[row] <= pack_data_reg_tmp[dest];
+                            keep_0_4[row] <= pack_keep_reg_tmp[dest];
+                            sop_0_4[row] <= pack_sop_reg_tmp[dest];
+                            eop_0_4[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h0) && (bank == 'h5)) begin
+                            data_0_5[row] <= pack_data_reg_tmp[dest];
+                            keep_0_5[row] <= pack_keep_reg_tmp[dest];
+                            sop_0_5[row] <= pack_sop_reg_tmp[dest];
+                            eop_0_5[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h0) && (bank == 'h6)) begin
+                            data_0_6[row] <= pack_data_reg_tmp[dest];
+                            keep_0_6[row] <= pack_keep_reg_tmp[dest];
+                            sop_0_6[row] <= pack_sop_reg_tmp[dest];
+                            eop_0_6[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h0) && (bank == 'h7)) begin
+                            data_0_7[row] <= pack_data_reg_tmp[dest];
+                            keep_0_7[row] <= pack_keep_reg_tmp[dest];
+                            sop_0_7[row] <= pack_sop_reg_tmp[dest];
+                            eop_0_7[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h1) && (bank == 'h0)) begin
+                            data_1_0[row] <= pack_data_reg_tmp[dest];
+                            keep_1_0[row] <= pack_keep_reg_tmp[dest];
+                            sop_1_0[row] <= pack_sop_reg_tmp[dest];
+                            eop_1_0[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h1) && (bank == 'h1)) begin
+                            data_1_1[row] <= pack_data_reg_tmp[dest];
+                            keep_1_1[row] <= pack_keep_reg_tmp[dest];
+                            sop_1_1[row] <= pack_sop_reg_tmp[dest];
+                            eop_1_1[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h1) && (bank == 'h2)) begin
+                            data_1_2[row] <= pack_data_reg_tmp[dest];
+                            keep_1_2[row] <= pack_keep_reg_tmp[dest];
+                            sop_1_2[row] <= pack_sop_reg_tmp[dest];
+                            eop_1_2[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h1) && (bank == 'h3)) begin
+                            data_1_3[row] <= pack_data_reg_tmp[dest];
+                            keep_1_3[row] <= pack_keep_reg_tmp[dest];
+                            sop_1_3[row] <= pack_sop_reg_tmp[dest];
+                            eop_1_3[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h1) && (bank == 'h4)) begin
+                            data_1_4[row] <= pack_data_reg_tmp[dest];
+                            keep_1_4[row] <= pack_keep_reg_tmp[dest];
+                            sop_1_4[row] <= pack_sop_reg_tmp[dest];
+                            eop_1_4[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h1) && (bank == 'h5)) begin
+                            data_1_5[row] <= pack_data_reg_tmp[dest];
+                            keep_1_5[row] <= pack_keep_reg_tmp[dest];
+                            sop_1_5[row] <= pack_sop_reg_tmp[dest];
+                            eop_1_5[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h1) && (bank == 'h6)) begin
+                            data_1_6[row] <= pack_data_reg_tmp[dest];
+                            keep_1_6[row] <= pack_keep_reg_tmp[dest];
+                            sop_1_6[row] <= pack_sop_reg_tmp[dest];
+                            eop_1_6[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h1) && (bank == 'h7)) begin
+                            data_1_7[row] <= pack_data_reg_tmp[dest];
+                            keep_1_7[row] <= pack_keep_reg_tmp[dest];
+                            sop_1_7[row] <= pack_sop_reg_tmp[dest];
+                            eop_1_7[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h2) && (bank == 'h0)) begin
+                            data_2_0[row] <= pack_data_reg_tmp[dest];
+                            keep_2_0[row] <= pack_keep_reg_tmp[dest];
+                            sop_2_0[row] <= pack_sop_reg_tmp[dest];
+                            eop_2_0[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h2) && (bank == 'h1)) begin
+                            data_2_1[row] <= pack_data_reg_tmp[dest];
+                            keep_2_1[row] <= pack_keep_reg_tmp[dest];
+                            sop_2_1[row] <= pack_sop_reg_tmp[dest];
+                            eop_2_1[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h2) && (bank == 'h2)) begin
+                            data_2_2[row] <= pack_data_reg_tmp[dest];
+                            keep_2_2[row] <= pack_keep_reg_tmp[dest];
+                            sop_2_2[row] <= pack_sop_reg_tmp[dest];
+                            eop_2_2[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h2) && (bank == 'h3)) begin
+                            data_2_3[row] <= pack_data_reg_tmp[dest];
+                            keep_2_3[row] <= pack_keep_reg_tmp[dest];
+                            sop_2_3[row] <= pack_sop_reg_tmp[dest];
+                            eop_2_3[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h2) && (bank == 'h4)) begin
+                            data_2_4[row] <= pack_data_reg_tmp[dest];
+                            keep_2_4[row] <= pack_keep_reg_tmp[dest];
+                            sop_2_4[row] <= pack_sop_reg_tmp[dest];
+                            eop_2_4[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h2) && (bank == 'h5)) begin
+                            data_2_5[row] <= pack_data_reg_tmp[dest];
+                            keep_2_5[row] <= pack_keep_reg_tmp[dest];
+                            sop_2_5[row] <= pack_sop_reg_tmp[dest];
+                            eop_2_5[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h2) && (bank == 'h6)) begin
+                            data_2_6[row] <= pack_data_reg_tmp[dest];
+                            keep_2_6[row] <= pack_keep_reg_tmp[dest];
+                            sop_2_6[row] <= pack_sop_reg_tmp[dest];
+                            eop_2_6[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h2) && (bank == 'h7)) begin
+                            data_2_7[row] <= pack_data_reg_tmp[dest];
+                            keep_2_7[row] <= pack_keep_reg_tmp[dest];
+                            sop_2_7[row] <= pack_sop_reg_tmp[dest];
+                            eop_2_7[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h3) && (bank == 'h0)) begin
+                            data_3_0[row] <= pack_data_reg_tmp[dest];
+                            keep_3_0[row] <= pack_keep_reg_tmp[dest];
+                            sop_3_0[row] <= pack_sop_reg_tmp[dest];
+                            eop_3_0[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h3) && (bank == 'h1)) begin
+                            data_3_1[row] <= pack_data_reg_tmp[dest];
+                            keep_3_1[row] <= pack_keep_reg_tmp[dest];
+                            sop_3_1[row] <= pack_sop_reg_tmp[dest];
+                            eop_3_1[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h3) && (bank == 'h2)) begin
+                            data_3_2[row] <= pack_data_reg_tmp[dest];
+                            keep_3_2[row] <= pack_keep_reg_tmp[dest];
+                            sop_3_2[row] <= pack_sop_reg_tmp[dest];
+                            eop_3_2[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h3) && (bank == 'h3)) begin
+                            data_3_3[row] <= pack_data_reg_tmp[dest];
+                            keep_3_3[row] <= pack_keep_reg_tmp[dest];
+                            sop_3_3[row] <= pack_sop_reg_tmp[dest];
+                            eop_3_3[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h3) && (bank == 'h4)) begin
+                            data_3_4[row] <= pack_data_reg_tmp[dest];
+                            keep_3_4[row] <= pack_keep_reg_tmp[dest];
+                            sop_3_4[row] <= pack_sop_reg_tmp[dest];
+                            eop_3_4[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h3) && (bank == 'h5)) begin
+                            data_3_5[row] <= pack_data_reg_tmp[dest];
+                            keep_3_5[row] <= pack_keep_reg_tmp[dest];
+                            sop_3_5[row] <= pack_sop_reg_tmp[dest];
+                            eop_3_5[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h3) && (bank == 'h6)) begin
+                            data_3_6[row] <= pack_data_reg_tmp[dest];
+                            keep_3_6[row] <= pack_keep_reg_tmp[dest];
+                            sop_3_6[row] <= pack_sop_reg_tmp[dest];
+                            eop_3_6[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h3) && (bank == 'h7)) begin
+                            data_3_7[row] <= pack_data_reg_tmp[dest];
+                            keep_3_7[row] <= pack_keep_reg_tmp[dest];
+                            sop_3_7[row] <= pack_sop_reg_tmp[dest];
+                            eop_3_7[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h4) && (bank == 'h0)) begin
+                            data_4_0[row] <= pack_data_reg_tmp[dest];
+                            keep_4_0[row] <= pack_keep_reg_tmp[dest];
+                            sop_4_0[row] <= pack_sop_reg_tmp[dest];
+                            eop_4_0[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h4) && (bank == 'h1)) begin
+                            data_4_1[row] <= pack_data_reg_tmp[dest];
+                            keep_4_1[row] <= pack_keep_reg_tmp[dest];
+                            sop_4_1[row] <= pack_sop_reg_tmp[dest];
+                            eop_4_1[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h4) && (bank == 'h2)) begin
+                            data_4_2[row] <= pack_data_reg_tmp[dest];
+                            keep_4_2[row] <= pack_keep_reg_tmp[dest];
+                            sop_4_2[row] <= pack_sop_reg_tmp[dest];
+                            eop_4_2[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h4) && (bank == 'h3)) begin
+                            data_4_3[row] <= pack_data_reg_tmp[dest];
+                            keep_4_3[row] <= pack_keep_reg_tmp[dest];
+                            sop_4_3[row] <= pack_sop_reg_tmp[dest];
+                            eop_4_3[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h4) && (bank == 'h4)) begin
+                            data_4_4[row] <= pack_data_reg_tmp[dest];
+                            keep_4_4[row] <= pack_keep_reg_tmp[dest];
+                            sop_4_4[row] <= pack_sop_reg_tmp[dest];
+                            eop_4_4[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h4) && (bank == 'h5)) begin
+                            data_4_5[row] <= pack_data_reg_tmp[dest];
+                            keep_4_5[row] <= pack_keep_reg_tmp[dest];
+                            sop_4_5[row] <= pack_sop_reg_tmp[dest];
+                            eop_4_5[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h4) && (bank == 'h6)) begin
+                            data_4_6[row] <= pack_data_reg_tmp[dest];
+                            keep_4_6[row] <= pack_keep_reg_tmp[dest];
+                            sop_4_6[row] <= pack_sop_reg_tmp[dest];
+                            eop_4_6[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h4) && (bank == 'h7)) begin
+                            data_4_7[row] <= pack_data_reg_tmp[dest];
+                            keep_4_7[row] <= pack_keep_reg_tmp[dest];
+                            sop_4_7[row] <= pack_sop_reg_tmp[dest];
+                            eop_4_7[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h5) && (bank == 'h0)) begin
+                            data_5_0[row] <= pack_data_reg_tmp[dest];
+                            keep_5_0[row] <= pack_keep_reg_tmp[dest];
+                            sop_5_0[row] <= pack_sop_reg_tmp[dest];
+                            eop_5_0[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h5) && (bank == 'h1)) begin
+                            data_5_1[row] <= pack_data_reg_tmp[dest];
+                            keep_5_1[row] <= pack_keep_reg_tmp[dest];
+                            sop_5_1[row] <= pack_sop_reg_tmp[dest];
+                            eop_5_1[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h5) && (bank == 'h2)) begin
+                            data_5_2[row] <= pack_data_reg_tmp[dest];
+                            keep_5_2[row] <= pack_keep_reg_tmp[dest];
+                            sop_5_2[row] <= pack_sop_reg_tmp[dest];
+                            eop_5_2[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h5) && (bank == 'h3)) begin
+                            data_5_3[row] <= pack_data_reg_tmp[dest];
+                            keep_5_3[row] <= pack_keep_reg_tmp[dest];
+                            sop_5_3[row] <= pack_sop_reg_tmp[dest];
+                            eop_5_3[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h5) && (bank == 'h4)) begin
+                            data_5_4[row] <= pack_data_reg_tmp[dest];
+                            keep_5_4[row] <= pack_keep_reg_tmp[dest];
+                            sop_5_4[row] <= pack_sop_reg_tmp[dest];
+                            eop_5_4[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h5) && (bank == 'h5)) begin
+                            data_5_5[row] <= pack_data_reg_tmp[dest];
+                            keep_5_5[row] <= pack_keep_reg_tmp[dest];
+                            sop_5_5[row] <= pack_sop_reg_tmp[dest];
+                            eop_5_5[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h5) && (bank == 'h6)) begin
+                            data_5_6[row] <= pack_data_reg_tmp[dest];
+                            keep_5_6[row] <= pack_keep_reg_tmp[dest];
+                            sop_5_6[row] <= pack_sop_reg_tmp[dest];
+                            eop_5_6[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h5) && (bank == 'h7)) begin
+                            data_5_7[row] <= pack_data_reg_tmp[dest];
+                            keep_5_7[row] <= pack_keep_reg_tmp[dest];
+                            sop_5_7[row] <= pack_sop_reg_tmp[dest];
+                            eop_5_7[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h6) && (bank == 'h0)) begin
+                            data_6_0[row] <= pack_data_reg_tmp[dest];
+                            keep_6_0[row] <= pack_keep_reg_tmp[dest];
+                            sop_6_0[row] <= pack_sop_reg_tmp[dest];
+                            eop_6_0[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h6) && (bank == 'h1)) begin
+                            data_6_1[row] <= pack_data_reg_tmp[dest];
+                            keep_6_1[row] <= pack_keep_reg_tmp[dest];
+                            sop_6_1[row] <= pack_sop_reg_tmp[dest];
+                            eop_6_1[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h6) && (bank == 'h2)) begin
+                            data_6_2[row] <= pack_data_reg_tmp[dest];
+                            keep_6_2[row] <= pack_keep_reg_tmp[dest];
+                            sop_6_2[row] <= pack_sop_reg_tmp[dest];
+                            eop_6_2[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h6) && (bank == 'h3)) begin
+                            data_6_3[row] <= pack_data_reg_tmp[dest];
+                            keep_6_3[row] <= pack_keep_reg_tmp[dest];
+                            sop_6_3[row] <= pack_sop_reg_tmp[dest];
+                            eop_6_3[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h6) && (bank == 'h4)) begin
+                            data_6_4[row] <= pack_data_reg_tmp[dest];
+                            keep_6_4[row] <= pack_keep_reg_tmp[dest];
+                            sop_6_4[row] <= pack_sop_reg_tmp[dest];
+                            eop_6_4[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h6) && (bank == 'h5)) begin
+                            data_6_5[row] <= pack_data_reg_tmp[dest];
+                            keep_6_5[row] <= pack_keep_reg_tmp[dest];
+                            sop_6_5[row] <= pack_sop_reg_tmp[dest];
+                            eop_6_5[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h6) && (bank == 'h6)) begin
+                            data_6_6[row] <= pack_data_reg_tmp[dest];
+                            keep_6_6[row] <= pack_keep_reg_tmp[dest];
+                            sop_6_6[row] <= pack_sop_reg_tmp[dest];
+                            eop_6_6[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h6) && (bank == 'h7)) begin
+                            data_6_7[row] <= pack_data_reg_tmp[dest];
+                            keep_6_7[row] <= pack_keep_reg_tmp[dest];
+                            sop_6_7[row] <= pack_sop_reg_tmp[dest];
+                            eop_6_7[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h7) && (bank == 'h0)) begin
+                            data_7_0[row] <= pack_data_reg_tmp[dest];
+                            keep_7_0[row] <= pack_keep_reg_tmp[dest];
+                            sop_7_0[row] <= pack_sop_reg_tmp[dest];
+                            eop_7_0[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h7) && (bank == 'h1)) begin
+                            data_7_1[row] <= pack_data_reg_tmp[dest];
+                            keep_7_1[row] <= pack_keep_reg_tmp[dest];
+                            sop_7_1[row] <= pack_sop_reg_tmp[dest];
+                            eop_7_1[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h7) && (bank == 'h2)) begin
+                            data_7_2[row] <= pack_data_reg_tmp[dest];
+                            keep_7_2[row] <= pack_keep_reg_tmp[dest];
+                            sop_7_2[row] <= pack_sop_reg_tmp[dest];
+                            eop_7_2[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h7) && (bank == 'h3)) begin
+                            data_7_3[row] <= pack_data_reg_tmp[dest];
+                            keep_7_3[row] <= pack_keep_reg_tmp[dest];
+                            sop_7_3[row] <= pack_sop_reg_tmp[dest];
+                            eop_7_3[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h7) && (bank == 'h4)) begin
+                            data_7_4[row] <= pack_data_reg_tmp[dest];
+                            keep_7_4[row] <= pack_keep_reg_tmp[dest];
+                            sop_7_4[row] <= pack_sop_reg_tmp[dest];
+                            eop_7_4[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h7) && (bank == 'h5)) begin
+                            data_7_5[row] <= pack_data_reg_tmp[dest];
+                            keep_7_5[row] <= pack_keep_reg_tmp[dest];
+                            sop_7_5[row] <= pack_sop_reg_tmp[dest];
+                            eop_7_5[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h7) && (bank == 'h6)) begin
+                            data_7_6[row] <= pack_data_reg_tmp[dest];
+                            keep_7_6[row] <= pack_keep_reg_tmp[dest];
+                            sop_7_6[row] <= pack_sop_reg_tmp[dest];
+                            eop_7_6[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        if ((dest == 'h7) && (bank == 'h7)) begin
+                            data_7_7[row] <= pack_data_reg_tmp[dest];
+                            keep_7_7[row] <= pack_keep_reg_tmp[dest];
+                            sop_7_7[row] <= pack_sop_reg_tmp[dest];
+                            eop_7_7[row] <= pack_eop_reg_tmp[dest];
+                        end
+                        pushes[dest]=pushes[dest]+1;
+                        pack_data_reg_tmp[dest] = 'h0;
+                        pack_keep_reg_tmp[dest] = 'h0;
+                        pack_sop_reg_tmp[dest] = 'h0;
+                        pack_eop_reg_tmp[dest] = 'h0;
+                        pack_count[dest]='h0;
+                        pack_boundary[dest]=0;
+                    end
+                    if (eop) begin
+                        if (!in_frame) begin
+                            protocol_error_reg_tmp = unsigned'(1'h1);
+                        end
+                        in_frame=0;
+                    end
+                end
+            end
+        end
+        for (_output='h0;_output < LANES;_output=_output+1) begin
+            if (((pack_count[_output] != 'h0) && pack_boundary[_output]) && !appended[_output]) begin
+                if (pack_age[_output] + 'h1>=FLUSH_CYCLES) begin
+                    logical=((tail[_output] + pushes[_output])) & ((FIFO_WORDS - 'h1));
+                    bank=logical & ((FIFO_BANKS - 'h1));
+                    row=logical >>> 'h3;
+                    if ((_output == 'h0) && (bank == 'h0)) begin
+                        data_0_0[row] <= pack_data_reg_tmp[_output];
+                        keep_0_0[row] <= pack_keep_reg_tmp[_output];
+                        sop_0_0[row] <= pack_sop_reg_tmp[_output];
+                        eop_0_0[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h0) && (bank == 'h1)) begin
+                        data_0_1[row] <= pack_data_reg_tmp[_output];
+                        keep_0_1[row] <= pack_keep_reg_tmp[_output];
+                        sop_0_1[row] <= pack_sop_reg_tmp[_output];
+                        eop_0_1[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h0) && (bank == 'h2)) begin
+                        data_0_2[row] <= pack_data_reg_tmp[_output];
+                        keep_0_2[row] <= pack_keep_reg_tmp[_output];
+                        sop_0_2[row] <= pack_sop_reg_tmp[_output];
+                        eop_0_2[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h0) && (bank == 'h3)) begin
+                        data_0_3[row] <= pack_data_reg_tmp[_output];
+                        keep_0_3[row] <= pack_keep_reg_tmp[_output];
+                        sop_0_3[row] <= pack_sop_reg_tmp[_output];
+                        eop_0_3[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h0) && (bank == 'h4)) begin
+                        data_0_4[row] <= pack_data_reg_tmp[_output];
+                        keep_0_4[row] <= pack_keep_reg_tmp[_output];
+                        sop_0_4[row] <= pack_sop_reg_tmp[_output];
+                        eop_0_4[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h0) && (bank == 'h5)) begin
+                        data_0_5[row] <= pack_data_reg_tmp[_output];
+                        keep_0_5[row] <= pack_keep_reg_tmp[_output];
+                        sop_0_5[row] <= pack_sop_reg_tmp[_output];
+                        eop_0_5[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h0) && (bank == 'h6)) begin
+                        data_0_6[row] <= pack_data_reg_tmp[_output];
+                        keep_0_6[row] <= pack_keep_reg_tmp[_output];
+                        sop_0_6[row] <= pack_sop_reg_tmp[_output];
+                        eop_0_6[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h0) && (bank == 'h7)) begin
+                        data_0_7[row] <= pack_data_reg_tmp[_output];
+                        keep_0_7[row] <= pack_keep_reg_tmp[_output];
+                        sop_0_7[row] <= pack_sop_reg_tmp[_output];
+                        eop_0_7[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h1) && (bank == 'h0)) begin
+                        data_1_0[row] <= pack_data_reg_tmp[_output];
+                        keep_1_0[row] <= pack_keep_reg_tmp[_output];
+                        sop_1_0[row] <= pack_sop_reg_tmp[_output];
+                        eop_1_0[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h1) && (bank == 'h1)) begin
+                        data_1_1[row] <= pack_data_reg_tmp[_output];
+                        keep_1_1[row] <= pack_keep_reg_tmp[_output];
+                        sop_1_1[row] <= pack_sop_reg_tmp[_output];
+                        eop_1_1[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h1) && (bank == 'h2)) begin
+                        data_1_2[row] <= pack_data_reg_tmp[_output];
+                        keep_1_2[row] <= pack_keep_reg_tmp[_output];
+                        sop_1_2[row] <= pack_sop_reg_tmp[_output];
+                        eop_1_2[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h1) && (bank == 'h3)) begin
+                        data_1_3[row] <= pack_data_reg_tmp[_output];
+                        keep_1_3[row] <= pack_keep_reg_tmp[_output];
+                        sop_1_3[row] <= pack_sop_reg_tmp[_output];
+                        eop_1_3[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h1) && (bank == 'h4)) begin
+                        data_1_4[row] <= pack_data_reg_tmp[_output];
+                        keep_1_4[row] <= pack_keep_reg_tmp[_output];
+                        sop_1_4[row] <= pack_sop_reg_tmp[_output];
+                        eop_1_4[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h1) && (bank == 'h5)) begin
+                        data_1_5[row] <= pack_data_reg_tmp[_output];
+                        keep_1_5[row] <= pack_keep_reg_tmp[_output];
+                        sop_1_5[row] <= pack_sop_reg_tmp[_output];
+                        eop_1_5[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h1) && (bank == 'h6)) begin
+                        data_1_6[row] <= pack_data_reg_tmp[_output];
+                        keep_1_6[row] <= pack_keep_reg_tmp[_output];
+                        sop_1_6[row] <= pack_sop_reg_tmp[_output];
+                        eop_1_6[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h1) && (bank == 'h7)) begin
+                        data_1_7[row] <= pack_data_reg_tmp[_output];
+                        keep_1_7[row] <= pack_keep_reg_tmp[_output];
+                        sop_1_7[row] <= pack_sop_reg_tmp[_output];
+                        eop_1_7[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h2) && (bank == 'h0)) begin
+                        data_2_0[row] <= pack_data_reg_tmp[_output];
+                        keep_2_0[row] <= pack_keep_reg_tmp[_output];
+                        sop_2_0[row] <= pack_sop_reg_tmp[_output];
+                        eop_2_0[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h2) && (bank == 'h1)) begin
+                        data_2_1[row] <= pack_data_reg_tmp[_output];
+                        keep_2_1[row] <= pack_keep_reg_tmp[_output];
+                        sop_2_1[row] <= pack_sop_reg_tmp[_output];
+                        eop_2_1[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h2) && (bank == 'h2)) begin
+                        data_2_2[row] <= pack_data_reg_tmp[_output];
+                        keep_2_2[row] <= pack_keep_reg_tmp[_output];
+                        sop_2_2[row] <= pack_sop_reg_tmp[_output];
+                        eop_2_2[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h2) && (bank == 'h3)) begin
+                        data_2_3[row] <= pack_data_reg_tmp[_output];
+                        keep_2_3[row] <= pack_keep_reg_tmp[_output];
+                        sop_2_3[row] <= pack_sop_reg_tmp[_output];
+                        eop_2_3[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h2) && (bank == 'h4)) begin
+                        data_2_4[row] <= pack_data_reg_tmp[_output];
+                        keep_2_4[row] <= pack_keep_reg_tmp[_output];
+                        sop_2_4[row] <= pack_sop_reg_tmp[_output];
+                        eop_2_4[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h2) && (bank == 'h5)) begin
+                        data_2_5[row] <= pack_data_reg_tmp[_output];
+                        keep_2_5[row] <= pack_keep_reg_tmp[_output];
+                        sop_2_5[row] <= pack_sop_reg_tmp[_output];
+                        eop_2_5[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h2) && (bank == 'h6)) begin
+                        data_2_6[row] <= pack_data_reg_tmp[_output];
+                        keep_2_6[row] <= pack_keep_reg_tmp[_output];
+                        sop_2_6[row] <= pack_sop_reg_tmp[_output];
+                        eop_2_6[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h2) && (bank == 'h7)) begin
+                        data_2_7[row] <= pack_data_reg_tmp[_output];
+                        keep_2_7[row] <= pack_keep_reg_tmp[_output];
+                        sop_2_7[row] <= pack_sop_reg_tmp[_output];
+                        eop_2_7[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h3) && (bank == 'h0)) begin
+                        data_3_0[row] <= pack_data_reg_tmp[_output];
+                        keep_3_0[row] <= pack_keep_reg_tmp[_output];
+                        sop_3_0[row] <= pack_sop_reg_tmp[_output];
+                        eop_3_0[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h3) && (bank == 'h1)) begin
+                        data_3_1[row] <= pack_data_reg_tmp[_output];
+                        keep_3_1[row] <= pack_keep_reg_tmp[_output];
+                        sop_3_1[row] <= pack_sop_reg_tmp[_output];
+                        eop_3_1[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h3) && (bank == 'h2)) begin
+                        data_3_2[row] <= pack_data_reg_tmp[_output];
+                        keep_3_2[row] <= pack_keep_reg_tmp[_output];
+                        sop_3_2[row] <= pack_sop_reg_tmp[_output];
+                        eop_3_2[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h3) && (bank == 'h3)) begin
+                        data_3_3[row] <= pack_data_reg_tmp[_output];
+                        keep_3_3[row] <= pack_keep_reg_tmp[_output];
+                        sop_3_3[row] <= pack_sop_reg_tmp[_output];
+                        eop_3_3[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h3) && (bank == 'h4)) begin
+                        data_3_4[row] <= pack_data_reg_tmp[_output];
+                        keep_3_4[row] <= pack_keep_reg_tmp[_output];
+                        sop_3_4[row] <= pack_sop_reg_tmp[_output];
+                        eop_3_4[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h3) && (bank == 'h5)) begin
+                        data_3_5[row] <= pack_data_reg_tmp[_output];
+                        keep_3_5[row] <= pack_keep_reg_tmp[_output];
+                        sop_3_5[row] <= pack_sop_reg_tmp[_output];
+                        eop_3_5[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h3) && (bank == 'h6)) begin
+                        data_3_6[row] <= pack_data_reg_tmp[_output];
+                        keep_3_6[row] <= pack_keep_reg_tmp[_output];
+                        sop_3_6[row] <= pack_sop_reg_tmp[_output];
+                        eop_3_6[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h3) && (bank == 'h7)) begin
+                        data_3_7[row] <= pack_data_reg_tmp[_output];
+                        keep_3_7[row] <= pack_keep_reg_tmp[_output];
+                        sop_3_7[row] <= pack_sop_reg_tmp[_output];
+                        eop_3_7[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h4) && (bank == 'h0)) begin
+                        data_4_0[row] <= pack_data_reg_tmp[_output];
+                        keep_4_0[row] <= pack_keep_reg_tmp[_output];
+                        sop_4_0[row] <= pack_sop_reg_tmp[_output];
+                        eop_4_0[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h4) && (bank == 'h1)) begin
+                        data_4_1[row] <= pack_data_reg_tmp[_output];
+                        keep_4_1[row] <= pack_keep_reg_tmp[_output];
+                        sop_4_1[row] <= pack_sop_reg_tmp[_output];
+                        eop_4_1[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h4) && (bank == 'h2)) begin
+                        data_4_2[row] <= pack_data_reg_tmp[_output];
+                        keep_4_2[row] <= pack_keep_reg_tmp[_output];
+                        sop_4_2[row] <= pack_sop_reg_tmp[_output];
+                        eop_4_2[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h4) && (bank == 'h3)) begin
+                        data_4_3[row] <= pack_data_reg_tmp[_output];
+                        keep_4_3[row] <= pack_keep_reg_tmp[_output];
+                        sop_4_3[row] <= pack_sop_reg_tmp[_output];
+                        eop_4_3[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h4) && (bank == 'h4)) begin
+                        data_4_4[row] <= pack_data_reg_tmp[_output];
+                        keep_4_4[row] <= pack_keep_reg_tmp[_output];
+                        sop_4_4[row] <= pack_sop_reg_tmp[_output];
+                        eop_4_4[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h4) && (bank == 'h5)) begin
+                        data_4_5[row] <= pack_data_reg_tmp[_output];
+                        keep_4_5[row] <= pack_keep_reg_tmp[_output];
+                        sop_4_5[row] <= pack_sop_reg_tmp[_output];
+                        eop_4_5[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h4) && (bank == 'h6)) begin
+                        data_4_6[row] <= pack_data_reg_tmp[_output];
+                        keep_4_6[row] <= pack_keep_reg_tmp[_output];
+                        sop_4_6[row] <= pack_sop_reg_tmp[_output];
+                        eop_4_6[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h4) && (bank == 'h7)) begin
+                        data_4_7[row] <= pack_data_reg_tmp[_output];
+                        keep_4_7[row] <= pack_keep_reg_tmp[_output];
+                        sop_4_7[row] <= pack_sop_reg_tmp[_output];
+                        eop_4_7[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h5) && (bank == 'h0)) begin
+                        data_5_0[row] <= pack_data_reg_tmp[_output];
+                        keep_5_0[row] <= pack_keep_reg_tmp[_output];
+                        sop_5_0[row] <= pack_sop_reg_tmp[_output];
+                        eop_5_0[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h5) && (bank == 'h1)) begin
+                        data_5_1[row] <= pack_data_reg_tmp[_output];
+                        keep_5_1[row] <= pack_keep_reg_tmp[_output];
+                        sop_5_1[row] <= pack_sop_reg_tmp[_output];
+                        eop_5_1[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h5) && (bank == 'h2)) begin
+                        data_5_2[row] <= pack_data_reg_tmp[_output];
+                        keep_5_2[row] <= pack_keep_reg_tmp[_output];
+                        sop_5_2[row] <= pack_sop_reg_tmp[_output];
+                        eop_5_2[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h5) && (bank == 'h3)) begin
+                        data_5_3[row] <= pack_data_reg_tmp[_output];
+                        keep_5_3[row] <= pack_keep_reg_tmp[_output];
+                        sop_5_3[row] <= pack_sop_reg_tmp[_output];
+                        eop_5_3[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h5) && (bank == 'h4)) begin
+                        data_5_4[row] <= pack_data_reg_tmp[_output];
+                        keep_5_4[row] <= pack_keep_reg_tmp[_output];
+                        sop_5_4[row] <= pack_sop_reg_tmp[_output];
+                        eop_5_4[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h5) && (bank == 'h5)) begin
+                        data_5_5[row] <= pack_data_reg_tmp[_output];
+                        keep_5_5[row] <= pack_keep_reg_tmp[_output];
+                        sop_5_5[row] <= pack_sop_reg_tmp[_output];
+                        eop_5_5[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h5) && (bank == 'h6)) begin
+                        data_5_6[row] <= pack_data_reg_tmp[_output];
+                        keep_5_6[row] <= pack_keep_reg_tmp[_output];
+                        sop_5_6[row] <= pack_sop_reg_tmp[_output];
+                        eop_5_6[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h5) && (bank == 'h7)) begin
+                        data_5_7[row] <= pack_data_reg_tmp[_output];
+                        keep_5_7[row] <= pack_keep_reg_tmp[_output];
+                        sop_5_7[row] <= pack_sop_reg_tmp[_output];
+                        eop_5_7[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h6) && (bank == 'h0)) begin
+                        data_6_0[row] <= pack_data_reg_tmp[_output];
+                        keep_6_0[row] <= pack_keep_reg_tmp[_output];
+                        sop_6_0[row] <= pack_sop_reg_tmp[_output];
+                        eop_6_0[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h6) && (bank == 'h1)) begin
+                        data_6_1[row] <= pack_data_reg_tmp[_output];
+                        keep_6_1[row] <= pack_keep_reg_tmp[_output];
+                        sop_6_1[row] <= pack_sop_reg_tmp[_output];
+                        eop_6_1[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h6) && (bank == 'h2)) begin
+                        data_6_2[row] <= pack_data_reg_tmp[_output];
+                        keep_6_2[row] <= pack_keep_reg_tmp[_output];
+                        sop_6_2[row] <= pack_sop_reg_tmp[_output];
+                        eop_6_2[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h6) && (bank == 'h3)) begin
+                        data_6_3[row] <= pack_data_reg_tmp[_output];
+                        keep_6_3[row] <= pack_keep_reg_tmp[_output];
+                        sop_6_3[row] <= pack_sop_reg_tmp[_output];
+                        eop_6_3[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h6) && (bank == 'h4)) begin
+                        data_6_4[row] <= pack_data_reg_tmp[_output];
+                        keep_6_4[row] <= pack_keep_reg_tmp[_output];
+                        sop_6_4[row] <= pack_sop_reg_tmp[_output];
+                        eop_6_4[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h6) && (bank == 'h5)) begin
+                        data_6_5[row] <= pack_data_reg_tmp[_output];
+                        keep_6_5[row] <= pack_keep_reg_tmp[_output];
+                        sop_6_5[row] <= pack_sop_reg_tmp[_output];
+                        eop_6_5[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h6) && (bank == 'h6)) begin
+                        data_6_6[row] <= pack_data_reg_tmp[_output];
+                        keep_6_6[row] <= pack_keep_reg_tmp[_output];
+                        sop_6_6[row] <= pack_sop_reg_tmp[_output];
+                        eop_6_6[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h6) && (bank == 'h7)) begin
+                        data_6_7[row] <= pack_data_reg_tmp[_output];
+                        keep_6_7[row] <= pack_keep_reg_tmp[_output];
+                        sop_6_7[row] <= pack_sop_reg_tmp[_output];
+                        eop_6_7[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h7) && (bank == 'h0)) begin
+                        data_7_0[row] <= pack_data_reg_tmp[_output];
+                        keep_7_0[row] <= pack_keep_reg_tmp[_output];
+                        sop_7_0[row] <= pack_sop_reg_tmp[_output];
+                        eop_7_0[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h7) && (bank == 'h1)) begin
+                        data_7_1[row] <= pack_data_reg_tmp[_output];
+                        keep_7_1[row] <= pack_keep_reg_tmp[_output];
+                        sop_7_1[row] <= pack_sop_reg_tmp[_output];
+                        eop_7_1[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h7) && (bank == 'h2)) begin
+                        data_7_2[row] <= pack_data_reg_tmp[_output];
+                        keep_7_2[row] <= pack_keep_reg_tmp[_output];
+                        sop_7_2[row] <= pack_sop_reg_tmp[_output];
+                        eop_7_2[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h7) && (bank == 'h3)) begin
+                        data_7_3[row] <= pack_data_reg_tmp[_output];
+                        keep_7_3[row] <= pack_keep_reg_tmp[_output];
+                        sop_7_3[row] <= pack_sop_reg_tmp[_output];
+                        eop_7_3[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h7) && (bank == 'h4)) begin
+                        data_7_4[row] <= pack_data_reg_tmp[_output];
+                        keep_7_4[row] <= pack_keep_reg_tmp[_output];
+                        sop_7_4[row] <= pack_sop_reg_tmp[_output];
+                        eop_7_4[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h7) && (bank == 'h5)) begin
+                        data_7_5[row] <= pack_data_reg_tmp[_output];
+                        keep_7_5[row] <= pack_keep_reg_tmp[_output];
+                        sop_7_5[row] <= pack_sop_reg_tmp[_output];
+                        eop_7_5[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h7) && (bank == 'h6)) begin
+                        data_7_6[row] <= pack_data_reg_tmp[_output];
+                        keep_7_6[row] <= pack_keep_reg_tmp[_output];
+                        sop_7_6[row] <= pack_sop_reg_tmp[_output];
+                        eop_7_6[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    if ((_output == 'h7) && (bank == 'h7)) begin
+                        data_7_7[row] <= pack_data_reg_tmp[_output];
+                        keep_7_7[row] <= pack_keep_reg_tmp[_output];
+                        sop_7_7[row] <= pack_sop_reg_tmp[_output];
+                        eop_7_7[row] <= pack_eop_reg_tmp[_output];
+                    end
+                    pushes[_output]=pushes[_output]+1;
+                    pack_data_reg_tmp[_output] = 'h0;
+                    pack_keep_reg_tmp[_output] = 'h0;
+                    pack_sop_reg_tmp[_output] = 'h0;
+                    pack_eop_reg_tmp[_output] = 'h0;
+                    pack_count[_output]='h0;
+                    pack_boundary[_output]=0;
+                    pack_age[_output]='h0;
+                end
+                else begin
+                    pack_age[_output]=pack_age[_output]+1;
+                end
+            end
+            if ((count[_output] + pushes[_output]) > FIFO_WORDS) begin
+                protocol_error_reg_tmp = unsigned'(1'h1);
+            end
+            else begin
+                count[_output]+=pushes[_output];
+            end
+            tail[_output]=((tail[_output] + pushes[_output])) & ((FIFO_WORDS - 'h1));
+            head_reg_tmp[_output] = unsigned'(POINTER_BITS'(unsigned'(POINTER_BITS'(head[_output]))));
+            tail_reg_tmp[_output] = unsigned'(POINTER_BITS'(unsigned'(POINTER_BITS'(tail[_output]))));
+            count_reg_tmp[_output] = unsigned'(COUNT_BITS'(unsigned'(COUNT_BITS'(count[_output]))));
+            pack_count_reg_tmp[_output] = unsigned'(PACK_COUNT_BITS'(unsigned'(PACK_COUNT_BITS'(pack_count[_output]))));
+            pack_boundary_reg_tmp[_output] = unsigned'(1'(pack_boundary[_output]));
+            pack_age_reg_tmp[_output] = unsigned'(AGE_BITS'(unsigned'(AGE_BITS'(pack_age[_output]))));
+        end
+        rr_reg_tmp = unsigned'(3'(unsigned'(3'(rr))));
+        frame_dest_reg_tmp = unsigned'(3'(unsigned'(3'(dest))));
+        in_frame_reg_tmp = unsigned'(1'(in_frame));
+    end
+    endtask
+
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
+        _work(reset);
+    end
+    endtask
+
+    task _work_l2_clk (input logic unused);
+    begin: _work_l2_clk
+    end
+    endtask
+
+    always_ff @(posedge net_clk) begin
+        head_reg_tmp = head_reg;
+        tail_reg_tmp = tail_reg;
+        count_reg_tmp = count_reg;
+        pack_data_reg_tmp = pack_data_reg;
+        pack_keep_reg_tmp = pack_keep_reg;
+        pack_sop_reg_tmp = pack_sop_reg;
+        pack_eop_reg_tmp = pack_eop_reg;
+        pack_count_reg_tmp = pack_count_reg;
+        pack_boundary_reg_tmp = pack_boundary_reg;
+        pack_age_reg_tmp = pack_age_reg;
+        rr_reg_tmp = rr_reg;
+        frame_dest_reg_tmp = frame_dest_reg;
+        in_frame_reg_tmp = in_frame_reg;
+        protocol_error_reg_tmp = protocol_error_reg;
+
+        _work_net_clk(reset);
+
+        head_reg <= head_reg_tmp;
+        tail_reg <= tail_reg_tmp;
+        count_reg <= count_reg_tmp;
+        pack_data_reg <= pack_data_reg_tmp;
+        pack_keep_reg <= pack_keep_reg_tmp;
+        pack_sop_reg <= pack_sop_reg_tmp;
+        pack_eop_reg <= pack_eop_reg_tmp;
+        pack_count_reg <= pack_count_reg_tmp;
+        pack_boundary_reg <= pack_boundary_reg_tmp;
+        pack_age_reg <= pack_age_reg_tmp;
+        rr_reg <= rr_reg_tmp;
+        frame_dest_reg <= frame_dest_reg_tmp;
+        in_frame_reg <= in_frame_reg_tmp;
+        protocol_error_reg <= protocol_error_reg_tmp;
+    end
+
+    always_ff @(posedge l2_clk) begin
+
+        _work_l2_clk(reset);
+
+    end
+
+
+endmodule
