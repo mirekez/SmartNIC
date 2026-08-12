@@ -4,12 +4,12 @@ import Predef_pkg::*;
 
 
 module System #(
-    parameter QUEUES = 'h8
+    parameter QUEUES = 'h1
 ,   parameter QUEUE_DEPTH = 'h100
  )
  (
-    input wire system_clock
-,   input wire l2_clock
+    input wire l2_clock
+,   input wire system_clock
 ,   input wire reset
 ,   input wire[QUEUES-1:0] l2_rx_valid_in
 ,   input wire[QUEUES*DATA_WIDTH-1:0] l2_rx_data_in
@@ -29,8 +29,8 @@ module System #(
 ,   input wire[4-1:0] host_control__awid_in
 ,   input wire host_control__wvalid_in
 ,   output wire host_control__wready_out
-,   input wire[256-1:0] host_control__wdata_in
-,   input wire[256/'h8-1:0] host_control__wstrb_in
+,   input wire[64-1:0] host_control__wdata_in
+,   input wire[64/'h8-1:0] host_control__wstrb_in
 ,   input wire host_control__wlast_in
 ,   output wire host_control__bvalid_out
 ,   input wire host_control__bready_in
@@ -41,7 +41,7 @@ module System #(
 ,   input wire[4-1:0] host_control__arid_in
 ,   output wire host_control__rvalid_out
 ,   input wire host_control__rready_in
-,   output wire[256-1:0] host_control__rdata_out
+,   output wire[64-1:0] host_control__rdata_out
 ,   output wire host_control__rlast_out
 ,   output wire[4-1:0] host_control__rid_out
 ,   output wire host_dma__awvalid_out
@@ -50,8 +50,8 @@ module System #(
 ,   output wire[4-1:0] host_dma__awid_out
 ,   output wire host_dma__wvalid_out
 ,   input wire host_dma__wready_in
-,   output wire[256-1:0] host_dma__wdata_out
-,   output wire[256/'h8-1:0] host_dma__wstrb_out
+,   output wire[64-1:0] host_dma__wdata_out
+,   output wire[64/'h8-1:0] host_dma__wstrb_out
 ,   output wire host_dma__wlast_out
 ,   input wire host_dma__bvalid_in
 ,   output wire host_dma__bready_out
@@ -62,7 +62,7 @@ module System #(
 ,   output wire[4-1:0] host_dma__arid_out
 ,   input wire host_dma__rvalid_in
 ,   output wire host_dma__rready_out
-,   input wire[256-1:0] host_dma__rdata_in
+,   input wire[64-1:0] host_dma__rdata_in
 ,   input wire host_dma__rlast_in
 ,   input wire[4-1:0] host_dma__rid_in
 ,   output wire[QUEUES-1:0] rx_queue_empty_out
@@ -103,8 +103,8 @@ module System #(
     wire[4-1:0] controller__host_control__awid_in;
     wire controller__host_control__wvalid_in;
     wire controller__host_control__wready_out;
-    wire[256-1:0] controller__host_control__wdata_in;
-    wire[256/'h8-1:0] controller__host_control__wstrb_in;
+    wire[64-1:0] controller__host_control__wdata_in;
+    wire[64/'h8-1:0] controller__host_control__wstrb_in;
     wire controller__host_control__wlast_in;
     wire controller__host_control__bvalid_out;
     wire controller__host_control__bready_in;
@@ -115,7 +115,7 @@ module System #(
     wire[4-1:0] controller__host_control__arid_in;
     wire controller__host_control__rvalid_out;
     wire controller__host_control__rready_in;
-    wire[256-1:0] controller__host_control__rdata_out;
+    wire[64-1:0] controller__host_control__rdata_out;
     wire controller__host_control__rlast_out;
     wire[4-1:0] controller__host_control__rid_out;
     wire[QUEUES-1:0] controller__rx_empty_in;
@@ -141,10 +141,10 @@ module System #(
     Controller #(
         QUEUES
 ,       'h400
-,       'h100
+,       'h40
     ) controller (
-        .system_clock(system_clock)
-,       .l2_clock(l2_clock)
+        .l2_clock(l2_clock)
+,       .system_clock(system_clock)
 ,       .reset(reset)
 ,       .host_control__awvalid_in(controller__host_control__awvalid_in)
 ,       .host_control__awready_out(controller__host_control__awready_out)
@@ -198,13 +198,13 @@ module System #(
     wire master_dma__command_eop_in;
     wire master_dma__queue_input_valid_in;
     wire[256-1:0] master_dma__queue_input_data_in;
-    wire[256/'h8-1:0] master_dma__queue_input_keep_in;
+    wire[32-1:0] master_dma__queue_input_keep_in;
     wire master_dma__queue_input_sop_in;
     wire master_dma__queue_input_eop_in;
     wire master_dma__queue_input_ready_out;
     wire master_dma__queue_output_valid_out;
     wire[256-1:0] master_dma__queue_output_data_out;
-    wire[256/'h8-1:0] master_dma__queue_output_keep_out;
+    wire[32-1:0] master_dma__queue_output_keep_out;
     wire master_dma__queue_output_sop_out;
     wire master_dma__queue_output_eop_out;
     wire master_dma__queue_output_ready_in;
@@ -214,8 +214,8 @@ module System #(
     wire[4-1:0] master_dma__host__awid_out;
     wire master_dma__host__wvalid_out;
     wire master_dma__host__wready_in;
-    wire[256-1:0] master_dma__host__wdata_out;
-    wire[256/'h8-1:0] master_dma__host__wstrb_out;
+    wire[64-1:0] master_dma__host__wdata_out;
+    wire[64/'h8-1:0] master_dma__host__wstrb_out;
     wire master_dma__host__wlast_out;
     wire master_dma__host__bvalid_in;
     wire master_dma__host__bready_out;
@@ -226,7 +226,7 @@ module System #(
     wire[4-1:0] master_dma__host__arid_out;
     wire master_dma__host__rvalid_in;
     wire master_dma__host__rready_out;
-    wire[256-1:0] master_dma__host__rdata_in;
+    wire[64-1:0] master_dma__host__rdata_in;
     wire master_dma__host__rlast_in;
     wire[4-1:0] master_dma__host__rid_in;
     wire master_dma__busy_out;
@@ -238,12 +238,12 @@ module System #(
     wire master_dma__protocol_error_out;
     MasterDMA #(
         64
-,       256
+,       64
 ,       4
 ,       16
     ) master_dma (
-        .system_clock(system_clock)
-,       .l2_clock(l2_clock)
+        .l2_clock(l2_clock)
+,       .system_clock(system_clock)
 ,       .reset(reset)
 ,       .command_valid_in(master_dma__command_valid_in)
 ,       .command_ready_out(master_dma__command_ready_out)
@@ -317,8 +317,8 @@ module System #(
         RxQueue #(
         QUEUE_DEPTH
         ) rx_queue (
-            .system_clock(system_clock)
-        ,           .l2_clock(l2_clock)
+            .l2_clock(l2_clock)
+        ,           .system_clock(system_clock)
         ,           .reset(reset)
         ,           .write_valid_in(rx_queue__write_valid_in[__i])
         ,           .write_data_in(rx_queue__write_data_in[__i])
@@ -364,8 +364,8 @@ module System #(
         TxQueue #(
         QUEUE_DEPTH
         ) tx_queue (
-            .system_clock(system_clock)
-        ,           .l2_clock(l2_clock)
+            .l2_clock(l2_clock)
+        ,           .system_clock(system_clock)
         ,           .reset(reset)
         ,           .write_valid_in(tx_queue__write_valid_in[__i])
         ,           .write_data_in(tx_queue__write_data_in[__i])
@@ -396,12 +396,12 @@ module System #(
     wire[290-1:0] rx_cdc__read_data_out[QUEUES];
     generate
     for (__i=0; __i < QUEUES; __i = __i + 1) begin
-        AsyncFifoNetToL2 #(
+        AsyncFifoL2ToSystem #(
         290
 ,       16
         ) rx_cdc (
-            .system_clock(system_clock)
-        ,           .l2_clock(l2_clock)
+            .l2_clock(l2_clock)
+        ,           .system_clock(system_clock)
         ,           .reset(reset)
         ,           .write_valid_in(rx_cdc__write_valid_in[__i])
         ,           .write_data_in(rx_cdc__write_data_in[__i])
@@ -420,12 +420,12 @@ module System #(
     wire[290-1:0] tx_cdc__read_data_out[QUEUES];
     generate
     for (__i=0; __i < QUEUES; __i = __i + 1) begin
-        AsyncFifoL2ToNet #(
+        AsyncFifoSystemToL2 #(
         290
 ,       16
         ) tx_cdc (
-            .system_clock(system_clock)
-        ,           .l2_clock(l2_clock)
+            .l2_clock(l2_clock)
+        ,           .system_clock(system_clock)
         ,           .reset(reset)
         ,           .write_valid_in(tx_cdc__write_valid_in[__i])
         ,           .write_data_in(tx_cdc__write_data_in[__i])
@@ -698,6 +698,14 @@ module System #(
         assign protocol_error_out = protocol_error_comb;
     endgenerate
 
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
+        logic[31:0] queue;
+        for (queue='h0;queue < QUEUES;queue=queue+1) begin
+        end
+    end
+    endtask
+
     task _work (input logic reset);
     begin: _work
         logic[31:0] queue;
@@ -706,23 +714,15 @@ module System #(
     end
     endtask
 
-    task _work_l2_clock (input logic reset);
-    begin: _work_l2_clock
-        logic[31:0] queue;
-        for (queue='h0;queue < QUEUES;queue=queue+1) begin
-        end
-    end
-    endtask
-
-    always_ff @(posedge system_clock) begin
+    always_ff @(posedge l2_clock) begin
 
         _work(reset);
 
     end
 
-    always_ff @(posedge l2_clock) begin
+    always_ff @(posedge system_clock) begin
 
-        _work_l2_clock(reset);
+        _work_system_clock(reset);
 
     end
 

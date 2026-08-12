@@ -33,7 +33,7 @@ enum SystemControllerFlags : uint8_t
     SYSTEM_TX_DESCRIPTOR_EOP = 1u << 0
 };
 
-template<size_t QUEUES = 8, size_t RING_DEPTH = 1024,
+template<size_t QUEUES = SYSTEM_QUEUES, size_t RING_DEPTH = 1024,
     size_t DATA_WIDTH = HOST_DATA_WIDTH>
 class Controller : public Module
 {
@@ -54,7 +54,7 @@ public:
     static constexpr uint32_t RING_ENTRY_BYTES = 16;
     static constexpr uint32_t CONTROL_ENABLE = 1u << 0;
 
-    static_assert(QUEUES == 8, "System controller exposes eight queue pairs");
+    static_assert(QUEUES == 1, "System controller exposes one queue pair");
     static_assert(RING_DEPTH == 1024,
         "Host ABI fixes RX and TX descriptor rings at 1024 entries");
     static_assert(sizeof(SystemRingDescriptor) == 16,
@@ -641,4 +641,4 @@ public:
     }
 };
 
-template class Controller<8, 1024, HOST_DATA_WIDTH>;
+template class Controller<SYSTEM_QUEUES, 1024, HOST_DATA_WIDTH>;

@@ -6,6 +6,7 @@
 // source continues advancing.
 
 #include <cpphdl.h>
+#include "../Config.h"
 
 using namespace cpphdl;
 
@@ -13,7 +14,7 @@ template<size_t LANE_WIDTH, size_t DEPTH = 1024>
 class TrafficGenerator : public Module
 {
 public:
-    static constexpr size_t LANES = 8;
+    static constexpr size_t LANES = NETWORK_PORTS;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t DATA_BITS = LANES * LANE_WIDTH;
     static constexpr size_t BYTE_LANES = LANES * LANE_BYTES;

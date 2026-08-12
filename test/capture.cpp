@@ -1,7 +1,6 @@
-// Full-system capture test. A finite but uninterrupted minimum-IPG burst is
-// injected at 400G or 800G. Capture firmware running on the Tribe clusters
-// consumes every descriptor and uses PacketDMA twice per packet. The Avalon
-// host driver posts buffers, and the test verifies byte-exact host memory.
+// Full-system capture test. A finite minimum-IPG burst is injected at 2x10G.
+// The single Tribe worker releases every descriptor and sends packet 100,
+// 200, ... to the host. The test verifies those sampled packets byte-exactly.
 
 #include "SmartNICTest.h"
 #include "../rtl/testing/GenEthStream.h"
@@ -26,18 +25,18 @@ namespace
 #define SUSTAINED_CAPTURE 0
 #endif
 
-constexpr size_t TRAFFIC_DEPTH = 1024;
+constexpr size_t TRAFFIC_DEPTH = 8192;
 using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, TRAFFIC_DEPTH>;
 using Generator = GenEthStream<NET_LANE_WIDTH>;
 
 constexpr uint64_t HOST_PACKET_BASE = 0x00100000;
 constexpr uint32_t HOST_PACKET_STRIDE = 2048;
-// Sustained mode replays an exactly aggregate-word-aligned image. Functional
-// mode retains the original compact mixed-size coverage.
-constexpr uint32_t BASE_FRAME_COUNT = SUSTAINED_CAPTURE ? 40 : 32;
-constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE ? 24 : 1;
+constexpr uint32_t CAPTURE_INTERVAL = 100;
+constexpr uint32_t BASE_FRAME_COUNT = 100;
+constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE ? 20 : 2;
 constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_REPEATS;
-constexpr uint64_t MAX_CPU_TICKS = ENABLE_800G ? 30000000 : 15000000;
+constexpr uint32_t CAPTURED_FRAME_COUNT = FRAME_COUNT / CAPTURE_INTERVAL;
+constexpr uint64_t MAX_CPU_TICKS = 40000000;
 constexpr uint64_t PROGRESS_INTERVAL = 25000;
 
 struct Elf32Header
@@ -80,7 +79,7 @@ class CaptureTest
     logic<Dut::NET_BYTES> traffic_load_eop = 0;
     bool traffic_start = false;
     bool traffic_clear = false;
-    u<16> traffic_repeat_count = TRAFFIC_REPEATS;
+    u<16> traffic_repeat_count = 1;
     bool host_read = false;
     bool host_write = false;
     u32 host_address = 0;
@@ -97,7 +96,7 @@ class CaptureTest
     bool backpressure_reported = false;
     bool error = false;
 
-    static constexpr uint64_t CPU_CLOCK_HZ = L2_CLK_HZ * 4;
+    static constexpr uint64_t CPU_CLOCK_HZ = PROCESSING_CLK_HZ;
 
     uint64_t wire_elapsed_cycles() const
     {
@@ -108,8 +107,7 @@ class CaptureTest
 
     void fail(const std::string& message)
     {
-        std::cerr << (ENABLE_800G ? "800G" : "400G")
-                  << " capture: " << message << '\n';
+        std::cerr << "2x10G capture: " << message << '\n';
         error = true;
     }
 
@@ -142,12 +140,10 @@ class CaptureTest
     Edges cycle(bool reset = false)
     {
         Edges edges;
-        dut._work_cpu_clk(reset);
-        dut._strobe_cpu_clk();
-
         net_phase += NET_CLK_HZ;
         if (net_phase >= CPU_CLOCK_HZ) {
             net_phase -= CPU_CLOCK_HZ;
+            edges.net = true;
             if (dut.traffic.valid_out()) {
                 if (!wire_started) {
                     wire_started = true;
@@ -163,28 +159,35 @@ class CaptureTest
                         (uint32_t)dut.traffic_emitted_beats_out()));
                 }
             }
-            dut._work_net_clk(reset);
-            dut._strobe_net_clk();
-            if (wire_started && dut.traffic.done_out()
-                && wire_stop_cycle == 0) {
-                wire_stop_cycle = net_cycles + 1;
-            }
-            ++net_cycles;
-            edges.net = true;
         }
         l2_phase += L2_CLK_HZ;
         if (l2_phase >= CPU_CLOCK_HZ) {
             l2_phase -= CPU_CLOCK_HZ;
-            dut._work_l2_clk(reset);
-            dut._strobe_l2_clk();
             edges.l2 = true;
         }
         system_phase += SYSTEM_CLK_HZ;
         if (system_phase >= CPU_CLOCK_HZ) {
             system_phase -= CPU_CLOCK_HZ;
-            dut._work_system_clk(reset);
-            dut._strobe_system_clk();
             edges.system = true;
+        }
+
+        // All 156.25 MHz domains share one edge. Evaluate every domain before
+        // committing any registers, matching synchronous RTL semantics.
+        dut._work_cpu_clk(reset);
+        if (edges.net) dut._work_net_clk(reset);
+        if (edges.l2) dut._work_l2_clk(reset);
+        if (edges.system) dut._work_system_clk(reset);
+        dut._strobe_cpu_clk();
+        if (edges.net) dut._strobe_net_clk();
+        if (edges.l2) dut._strobe_l2_clk();
+        if (edges.system) dut._strobe_system_clk();
+
+        if (edges.net) {
+            if (wire_started && dut.traffic.done_out()
+                && wire_stop_cycle == 0) {
+                wire_stop_cycle = net_cycles + 1;
+            }
+            ++net_cycles;
         }
         ++ticks;
         ++_system_clock;
@@ -336,13 +339,34 @@ class CaptureTest
         return frames;
     }
 
-    static std::vector<std::vector<uint8_t>> repeated_frames(
+    static std::vector<std::vector<uint8_t>> sampled_frames(
+        const std::vector<std::vector<uint8_t>>& frames)
+    {
+        std::vector<std::vector<uint8_t>> sampled;
+        for (uint32_t frame = CAPTURE_INTERVAL - 1;
+            frame < frames.size(); frame += CAPTURE_INTERVAL) {
+            sampled.push_back(frames[frame]);
+        }
+        return sampled;
+    }
+
+    static std::vector<std::vector<uint8_t>> wire_frames(
         const std::vector<std::vector<uint8_t>>& base)
     {
         std::vector<std::vector<uint8_t>> frames;
         frames.reserve(FRAME_COUNT);
         for (uint32_t repeat = 0; repeat < TRAFFIC_REPEATS; ++repeat) {
-            frames.insert(frames.end(), base.begin(), base.end());
+            for (uint32_t index = 0; index < base.size(); ++index) {
+                auto frame = base[index];
+                const uint32_t sequence = repeat * BASE_FRAME_COUNT + index;
+                frame[5] = (uint8_t)sequence;
+                frame[11] = (uint8_t)(0x80 + sequence);
+                frame[14] = (uint8_t)sequence;
+                frame[15] = (uint8_t)(sequence >> 8);
+                frame[16] = (uint8_t)(sequence >> 16);
+                frame[17] = (uint8_t)(sequence >> 24);
+                frames.push_back(std::move(frame));
+            }
         }
         return frames;
     }
@@ -379,17 +403,18 @@ class CaptureTest
         return true;
     }
 
-    bool verify_packets(const std::vector<std::vector<uint8_t>>& frames)
+    bool verify_packets(const std::vector<std::vector<uint8_t>>& injected,
+        uint32_t captured_count)
     {
-        std::vector<bool> captured(frames.size(), false);
-        for (uint32_t slot = 0; slot < frames.size(); ++slot) {
+        std::vector<bool> captured(injected.size(), false);
+        for (uint32_t slot = 0; slot < captured_count; ++slot) {
             const uint64_t base = HOST_PACKET_BASE + slot * HOST_PACKET_STRIDE;
-            uint32_t match = frames.size();
-            for (uint32_t frame = 0; frame < frames.size(); ++frame) {
+            uint32_t match = injected.size();
+            for (uint32_t frame = 0; frame < injected.size(); ++frame) {
                 if (captured[frame]) continue;
                 bool equal = true;
-                for (uint32_t byte = 0; byte < frames[frame].size(); ++byte) {
-                    if (dut.host_byte(base + byte) != frames[frame][byte]) {
+                for (uint32_t byte = 0; byte < injected[frame].size(); ++byte) {
+                    if (dut.host_byte(base + byte) != injected[frame][byte]) {
                         equal = false;
                         break;
                     }
@@ -399,10 +424,9 @@ class CaptureTest
                     break;
                 }
             }
-            if (match == frames.size()) {
+            if (match == injected.size()) {
                 fail(std::format(
-                    "host slot {} is corrupt, duplicated, or not an injected packet",
-                    slot));
+                    "sampled host slot {} is not a unique injected packet", slot));
                 return false;
             }
             captured[match] = true;
@@ -412,9 +436,8 @@ class CaptureTest
 
     void report_progress(uint32_t host_consumer)
     {
-        std::cerr << (ENABLE_800G ? "800G" : "400G")
-                  << " capture progress: ticks=" << ticks
-                  << " host=" << host_consumer << '/' << FRAME_COUNT;
+        std::cerr << "2x10G capture progress: ticks=" << ticks
+                  << " host=" << host_consumer << '/' << CAPTURED_FRAME_COUNT;
         for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
             std::cerr << " c" << cluster
                       << "{descriptors="
@@ -510,15 +533,16 @@ public:
             cycle(true);
         }
         const auto base_frames = make_frames();
-        const auto frames = repeated_frames(base_frames);
-        for (uint32_t frame = 0; frame < frames.size(); ++frame) {
-            write_ring_descriptor(frame,
-                HOST_PACKET_BASE + frame * HOST_PACKET_STRIDE,
-                HOST_PACKET_STRIDE, frame % CPUS_USED);
+        const auto frames = wire_frames(base_frames);
+        const auto expected = sampled_frames(frames);
+        for (uint32_t slot = 0; slot < expected.size(); ++slot) {
+            write_ring_descriptor(slot,
+                HOST_PACKET_BASE + slot * HOST_PACKET_STRIDE,
+                HOST_PACKET_STRIDE, 0);
         }
-        write32(Controller<>::REG_RX_PRODUCER, frames.size());
+        write32(Controller<>::REG_RX_PRODUCER, expected.size());
         write32(Controller<>::REG_CONTROL, Controller<>::CONTROL_ENABLE);
-        if (!load_traffic(base_frames)) return false;
+        if (!load_traffic(frames)) return false;
 
         traffic_start = true;
         wait_net_edge();
@@ -528,7 +552,7 @@ public:
         uint64_t next_poll = ticks;
         uint64_t next_progress = ticks + PROGRESS_INTERVAL;
         report_progress(consumer);
-        while (ticks < MAX_CPU_TICKS && consumer != frames.size()
+        while (ticks < MAX_CPU_TICKS && consumer != expected.size()
             && !error) {
             cycle();
             if (ticks >= next_poll) {
@@ -547,20 +571,20 @@ public:
         }
         consumer = read32(Controller<>::REG_RX_CONSUMER);
         if (backpressure_reported) report_backpressure_state(consumer);
-        if (consumer != frames.size()) {
+        if (consumer != expected.size()) {
             fail(std::format("capture timed out: {} of {} packets reached host",
-                consumer, frames.size()));
+                consumer, expected.size()));
         }
         if (!dut.traffic_done_out()) fail("traffic source did not drain");
         if ((uint32_t)dut.traffic_backpressure_cycles_out() != 0) {
             fail(std::format("wire-speed violation: {} network cycles backpressured",
                 (uint32_t)dut.traffic_backpressure_cycles_out()));
         }
-        if (!error) verify_packets(frames);
+        if (!error) verify_packets(frames, expected.size());
 
-        std::print("{} capture: packets={} beats={} net_cycles={} CPU ticks={} "
+        std::print("2x10G capture: injected={} sampled={} beats={} net_cycles={} CPU ticks={} "
             "backpressure={} result={}\n",
-            ENABLE_800G ? "800G" : "400G", frames.size(),
+            frames.size(), expected.size(),
             (uint32_t)dut.traffic_emitted_beats_out(),
             wire_elapsed_cycles(), ticks,
             (uint32_t)dut.traffic_backpressure_cycles_out(),

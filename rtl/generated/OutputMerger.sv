@@ -4,22 +4,22 @@ import Predef_pkg::*;
 
 
 module OutputMerger #(
-    parameter LANE_WIDTH = 'hA0
-,   parameter FIFO_WORDS = 'h400
+    parameter LANE_WIDTH = 'h40
+,   parameter FIFO_WORDS = 'h800
 ,   parameter MIN_IPG_BYTES = 'hC
  )
  (
     input wire net_clk
 ,   input wire l2_clk
 ,   input wire reset
-,   input wire[8-1:0] tx_valid_in
+,   input wire[2-1:0] tx_valid_in
 ,   input wire[STREAMS*LANE_WIDTH-1:0] tx_data_in
 ,   input wire[STREAMS*LANE_BYTES-1:0] tx_keep_in
-,   input wire[8-1:0] tx_sop_in
-,   input wire[8-1:0] tx_eop_in
-,   output wire[8-1:0] tx_ready_out
-,   output wire[8-1:0] tx_almost_full_out
-,   output wire[8-1:0] tx_protocol_error_out
+,   input wire[2-1:0] tx_sop_in
+,   input wire[2-1:0] tx_eop_in
+,   output wire[2-1:0] tx_ready_out
+,   output wire[2-1:0] tx_almost_full_out
+,   output wire[2-1:0] tx_protocol_error_out
 ,   output wire valid_out
 ,   output wire[OUTPUT_BITS-1:0] data_out
 ,   output wire[OUTPUT_BYTES-1:0] keep_out
@@ -28,21 +28,17 @@ module OutputMerger #(
 ,   input wire ready_in
 ,   output wire protocol_error_out
 );
-    parameter  STREAMS = 64'h8;
+    parameter  STREAMS = 64'h2;
     parameter  WINDOW_WORDS = 64'h8;
     parameter  LANE_BYTES = LANE_WIDTH/'h8;
     parameter  OUTPUT_BITS = STREAMS*LANE_WIDTH;
     parameter  OUTPUT_BYTES = STREAMS*LANE_BYTES;
-    parameter  MAX_LANE_WIDTH = 64'h140;
-    parameter  MAX_LANE_BYTES = 64'h28;
     parameter  OFFSET_BITS = $clog2(LANE_BYTES);
     parameter  GAP_BITS = $clog2(MIN_IPG_BYTES + 'h1);
     parameter  FIFO_DATA_BITS = (STREAMS*WINDOW_WORDS)*LANE_WIDTH;
     parameter  FIFO_KEEP_BITS = (STREAMS*WINDOW_WORDS)*LANE_BYTES;
-    parameter  FIFO_FLAG_BITS = 64'h40;
-    parameter  MAX_FIFO_DATA_BITS = 64'h5000;
-    parameter  MAX_FIFO_KEEP_BITS = 64'hA00;
-    parameter  READ_COUNT_BITS = 64'h20;
+    parameter  FIFO_FLAG_BITS = 64'h10;
+    parameter  READ_COUNT_BITS = 64'h8;
     parameter  RESULT_DATA = 64'h0;
     parameter  RESULT_KEEP = RESULT_DATA + OUTPUT_BITS;
     parameter  RESULT_SOP = RESULT_KEEP + OUTPUT_BYTES;
@@ -60,6 +56,10 @@ module OutputMerger #(
     parameter  RESULT_NEXT_CARRY_EOP = RESULT_NEXT_CARRY_SOP + 'h1;
     parameter  RESULT_ERROR = RESULT_NEXT_CARRY_EOP + 'h1;
     parameter  RESULT_BITS = RESULT_ERROR + 'h1;
+    parameter  MAX_LANE_WIDTH = 64'h40;
+    parameter  MAX_LANE_BYTES = 64'h8;
+    parameter  MAX_FIFO_DATA_BITS = 64'h400;
+    parameter  MAX_FIFO_KEEP_BITS = 64'h80;
 
 
     // regs and combs
@@ -74,35 +74,23 @@ module OutputMerger #(
     reg carry_sop_reg;
     reg carry_eop_reg;
     reg protocol_error_reg;
-    logic[8-1:0] tx_ready_comb;
-    logic[8-1:0] tx_almost_full_comb;
-    logic[8-1:0] tx_fifo_error_comb;
-    logic[32-1:0] merge_read_counts_comb;
+    logic[2-1:0] tx_ready_comb;
+    logic[2-1:0] tx_almost_full_comb;
+    logic[2-1:0] tx_fifo_error_comb;
+    logic[8-1:0] merge_read_counts_comb;
     logic[LANE_WIDTH-1:0] tx_data_0_comb;
     logic[LANE_BYTES-1:0] tx_keep_0_comb;
     logic[LANE_WIDTH-1:0] tx_data_1_comb;
     logic[LANE_BYTES-1:0] tx_keep_1_comb;
-    logic[LANE_WIDTH-1:0] tx_data_2_comb;
-    logic[LANE_BYTES-1:0] tx_keep_2_comb;
-    logic[LANE_WIDTH-1:0] tx_data_3_comb;
-    logic[LANE_BYTES-1:0] tx_keep_3_comb;
-    logic[LANE_WIDTH-1:0] tx_data_4_comb;
-    logic[LANE_BYTES-1:0] tx_keep_4_comb;
-    logic[LANE_WIDTH-1:0] tx_data_5_comb;
-    logic[LANE_BYTES-1:0] tx_keep_5_comb;
-    logic[LANE_WIDTH-1:0] tx_data_6_comb;
-    logic[LANE_BYTES-1:0] tx_keep_6_comb;
-    logic[LANE_WIDTH-1:0] tx_data_7_comb;
-    logic[LANE_BYTES-1:0] tx_keep_7_comb;
     logic[FIFO_DATA_BITS-1:0] fifo_data_comb;
 ;
     logic[FIFO_KEEP_BITS-1:0] fifo_keep_comb;
 ;
-    logic[64-1:0] fifo_sop_comb;
+    logic[16-1:0] fifo_sop_comb;
 ;
-    logic[64-1:0] fifo_eop_comb;
+    logic[16-1:0] fifo_eop_comb;
 ;
-    logic[64-1:0] fifo_valid_comb;
+    logic[16-1:0] fifo_valid_comb;
 ;
     logic[RESULT_BITS-1:0] merge_result_comb;
 ;
@@ -113,33 +101,27 @@ module OutputMerger #(
     logic output_valid_comb;
     logic[4-1:0] read_count_0_comb;
     logic[4-1:0] read_count_1_comb;
-    logic[4-1:0] read_count_2_comb;
-    logic[4-1:0] read_count_3_comb;
-    logic[4-1:0] read_count_4_comb;
-    logic[4-1:0] read_count_5_comb;
-    logic[4-1:0] read_count_6_comb;
-    logic[4-1:0] read_count_7_comb;
     logic error_comb;
 
     // members
     genvar __i;
-    wire fifos__valid_in[8];
-    wire[LANE_WIDTH-1:0] fifos__data_in[8];
-    wire[LANE_WIDTH/'h8-1:0] fifos__keep_in[8];
-    wire fifos__sop_in[8];
-    wire fifos__eop_in[8];
-    wire fifos__ready_out[8];
-    wire[64'h8*LANE_WIDTH-1:0] fifos__data_out[8];
-    wire[64'h8*(LANE_WIDTH/'h8)-1:0] fifos__keep_out[8];
-    wire[8-1:0] fifos__sop_out[8];
-    wire[8-1:0] fifos__eop_out[8];
-    wire[8-1:0] fifos__valid_out[8];
-    wire[4-1:0] fifos__read_count_in[8];
-    wire fifos__clear_in[8];
-    wire fifos__almost_full_out[8];
-    wire fifos__protocol_error_out[8];
+    wire fifos__valid_in[2];
+    wire[LANE_WIDTH-1:0] fifos__data_in[2];
+    wire[LANE_WIDTH/'h8-1:0] fifos__keep_in[2];
+    wire fifos__sop_in[2];
+    wire fifos__eop_in[2];
+    wire fifos__ready_out[2];
+    wire[64'h8*LANE_WIDTH-1:0] fifos__data_out[2];
+    wire[64'h8*(LANE_WIDTH/'h8)-1:0] fifos__keep_out[2];
+    wire[8-1:0] fifos__sop_out[2];
+    wire[8-1:0] fifos__eop_out[2];
+    wire[8-1:0] fifos__valid_out[2];
+    wire[4-1:0] fifos__read_count_in[2];
+    wire fifos__clear_in[2];
+    wire fifos__almost_full_out[2];
+    wire fifos__protocol_error_out[2];
     generate
-    for (__i=0; __i < 8; __i = __i + 1) begin
+    for (__i=0; __i < 2; __i = __i + 1) begin
         TxFifo #(
         LANE_WIDTH
 ,       FIFO_WORDS
@@ -208,90 +190,6 @@ module OutputMerger #(
         end
     end
 
-    always_comb begin : tx_data_2_comb_func  // tx_data_2_comb_func
-        logic[63:0] _bit;
-        for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-            tx_data_2_comb[_bit] = tx_data_in[('h2*LANE_WIDTH) + _bit];
-        end
-    end
-
-    always_comb begin : tx_keep_2_comb_func  // tx_keep_2_comb_func
-        logic[63:0] _byte;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            tx_keep_2_comb[_byte] = tx_keep_in[('h2*LANE_BYTES) + _byte];
-        end
-    end
-
-    always_comb begin : tx_data_3_comb_func  // tx_data_3_comb_func
-        logic[63:0] _bit;
-        for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-            tx_data_3_comb[_bit] = tx_data_in[('h3*LANE_WIDTH) + _bit];
-        end
-    end
-
-    always_comb begin : tx_keep_3_comb_func  // tx_keep_3_comb_func
-        logic[63:0] _byte;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            tx_keep_3_comb[_byte] = tx_keep_in[('h3*LANE_BYTES) + _byte];
-        end
-    end
-
-    always_comb begin : tx_data_4_comb_func  // tx_data_4_comb_func
-        logic[63:0] _bit;
-        for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-            tx_data_4_comb[_bit] = tx_data_in[('h4*LANE_WIDTH) + _bit];
-        end
-    end
-
-    always_comb begin : tx_keep_4_comb_func  // tx_keep_4_comb_func
-        logic[63:0] _byte;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            tx_keep_4_comb[_byte] = tx_keep_in[('h4*LANE_BYTES) + _byte];
-        end
-    end
-
-    always_comb begin : tx_data_5_comb_func  // tx_data_5_comb_func
-        logic[63:0] _bit;
-        for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-            tx_data_5_comb[_bit] = tx_data_in[('h5*LANE_WIDTH) + _bit];
-        end
-    end
-
-    always_comb begin : tx_keep_5_comb_func  // tx_keep_5_comb_func
-        logic[63:0] _byte;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            tx_keep_5_comb[_byte] = tx_keep_in[('h5*LANE_BYTES) + _byte];
-        end
-    end
-
-    always_comb begin : tx_data_6_comb_func  // tx_data_6_comb_func
-        logic[63:0] _bit;
-        for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-            tx_data_6_comb[_bit] = tx_data_in[('h6*LANE_WIDTH) + _bit];
-        end
-    end
-
-    always_comb begin : tx_keep_6_comb_func  // tx_keep_6_comb_func
-        logic[63:0] _byte;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            tx_keep_6_comb[_byte] = tx_keep_in[('h6*LANE_BYTES) + _byte];
-        end
-    end
-
-    always_comb begin : tx_data_7_comb_func  // tx_data_7_comb_func
-        logic[63:0] _bit;
-        for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-            tx_data_7_comb[_bit] = tx_data_in[('h7*LANE_WIDTH) + _bit];
-        end
-    end
-
-    always_comb begin : tx_keep_7_comb_func  // tx_keep_7_comb_func
-        logic[63:0] _byte;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            tx_keep_7_comb[_byte] = tx_keep_in[('h7*LANE_BYTES) + _byte];
-        end
-    end
-
     always_comb begin : tx_ready_comb_func  // tx_ready_comb_func
         logic[63:0] stream;
         tx_ready_comb = 'h0;
@@ -319,7 +217,7 @@ module OutputMerger #(
     always_comb begin : fifo_data_comb_func  // fifo_data_comb_func
         logic[63:0] stream;
         logic[63:0] _bit;
-        logic[2560-1:0] value;
+        logic[512-1:0] value;
         fifo_data_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             value = fifos__data_out[stream];
@@ -332,7 +230,7 @@ module OutputMerger #(
     always_comb begin : fifo_keep_comb_func  // fifo_keep_comb_func
         logic[63:0] stream;
         logic[63:0] _bit;
-        logic[320-1:0] value;
+        logic[64-1:0] value;
         fifo_keep_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             value = fifos__keep_out[stream];
@@ -402,14 +300,14 @@ module OutputMerger #(
         logic expect_sop;
         logic word_sop;
         logic word_eop;
-        logic[32-1:0] read_counts;
-        logic[320-1:0] word_data;
-        logic[40-1:0] word_keep;
-        logic[20480-1:0] all_data;
-        logic[2560-1:0] all_keep;
-        logic[64-1:0] all_sop;
-        logic[64-1:0] all_eop;
-        logic[64-1:0] all_valid;
+        logic[8-1:0] read_counts;
+        logic[64-1:0] word_data;
+        logic[8-1:0] word_keep;
+        logic[1024-1:0] all_data;
+        logic[128-1:0] all_keep;
+        logic[16-1:0] all_sop;
+        logic[16-1:0] all_eop;
+        logic[16-1:0] all_valid;
         merge_result_comb = 'h0;
         read_counts = 'h0;
         merge_read_counts_comb = 'h0;
@@ -600,50 +498,8 @@ module OutputMerger #(
         end
     end
 
-    always_comb begin : read_count_2_comb_func  // read_count_2_comb_func
-        read_count_2_comb = 'h0;
-        if (output_valid_comb && ready_in) begin
-            read_count_2_comb = ((unsigned'(32'(unsigned'(64'(merge_read_counts_comb)))) >>> (('h2*'h4)))) & 'hF;
-        end
-    end
-
-    always_comb begin : read_count_3_comb_func  // read_count_3_comb_func
-        read_count_3_comb = 'h0;
-        if (output_valid_comb && ready_in) begin
-            read_count_3_comb = ((unsigned'(32'(unsigned'(64'(merge_read_counts_comb)))) >>> (('h3*'h4)))) & 'hF;
-        end
-    end
-
-    always_comb begin : read_count_4_comb_func  // read_count_4_comb_func
-        read_count_4_comb = 'h0;
-        if (output_valid_comb && ready_in) begin
-            read_count_4_comb = ((unsigned'(32'(unsigned'(64'(merge_read_counts_comb)))) >>> (('h4*'h4)))) & 'hF;
-        end
-    end
-
-    always_comb begin : read_count_5_comb_func  // read_count_5_comb_func
-        read_count_5_comb = 'h0;
-        if (output_valid_comb && ready_in) begin
-            read_count_5_comb = ((unsigned'(32'(unsigned'(64'(merge_read_counts_comb)))) >>> (('h5*'h4)))) & 'hF;
-        end
-    end
-
-    always_comb begin : read_count_6_comb_func  // read_count_6_comb_func
-        read_count_6_comb = 'h0;
-        if (output_valid_comb && ready_in) begin
-            read_count_6_comb = ((unsigned'(32'(unsigned'(64'(merge_read_counts_comb)))) >>> (('h6*'h4)))) & 'hF;
-        end
-    end
-
-    always_comb begin : read_count_7_comb_func  // read_count_7_comb_func
-        read_count_7_comb = 'h0;
-        if (output_valid_comb && ready_in) begin
-            read_count_7_comb = ((unsigned'(32'(unsigned'(64'(merge_read_counts_comb)))) >>> (('h7*'h4)))) & 'hF;
-        end
-    end
-
     always_comb begin : error_comb_func  // error_comb_func
-        error_comb=(((((((protocol_error_reg || fifos__protocol_error_out['h0]) || fifos__protocol_error_out['h1]) || fifos__protocol_error_out['h2]) || fifos__protocol_error_out['h3]) || fifos__protocol_error_out['h4]) || fifos__protocol_error_out['h5]) || fifos__protocol_error_out['h6]) || fifos__protocol_error_out['h7];
+        error_comb=(protocol_error_reg || fifos__protocol_error_out['h0]) || fifos__protocol_error_out['h1];
     end
 
     generate  // _assign
@@ -661,48 +517,6 @@ module OutputMerger #(
         assign fifos__eop_in['h1] = tx_eop_in['h1];
         assign fifos__read_count_in['h1] = read_count_1_comb;
         assign fifos__clear_in['h1] = 0;
-        assign fifos__valid_in['h2] = tx_valid_in['h2];
-        assign fifos__data_in['h2] = tx_data_2_comb;
-        assign fifos__keep_in['h2] = tx_keep_2_comb;
-        assign fifos__sop_in['h2] = tx_sop_in['h2];
-        assign fifos__eop_in['h2] = tx_eop_in['h2];
-        assign fifos__read_count_in['h2] = read_count_2_comb;
-        assign fifos__clear_in['h2] = 0;
-        assign fifos__valid_in['h3] = tx_valid_in['h3];
-        assign fifos__data_in['h3] = tx_data_3_comb;
-        assign fifos__keep_in['h3] = tx_keep_3_comb;
-        assign fifos__sop_in['h3] = tx_sop_in['h3];
-        assign fifos__eop_in['h3] = tx_eop_in['h3];
-        assign fifos__read_count_in['h3] = read_count_3_comb;
-        assign fifos__clear_in['h3] = 0;
-        assign fifos__valid_in['h4] = tx_valid_in['h4];
-        assign fifos__data_in['h4] = tx_data_4_comb;
-        assign fifos__keep_in['h4] = tx_keep_4_comb;
-        assign fifos__sop_in['h4] = tx_sop_in['h4];
-        assign fifos__eop_in['h4] = tx_eop_in['h4];
-        assign fifos__read_count_in['h4] = read_count_4_comb;
-        assign fifos__clear_in['h4] = 0;
-        assign fifos__valid_in['h5] = tx_valid_in['h5];
-        assign fifos__data_in['h5] = tx_data_5_comb;
-        assign fifos__keep_in['h5] = tx_keep_5_comb;
-        assign fifos__sop_in['h5] = tx_sop_in['h5];
-        assign fifos__eop_in['h5] = tx_eop_in['h5];
-        assign fifos__read_count_in['h5] = read_count_5_comb;
-        assign fifos__clear_in['h5] = 0;
-        assign fifos__valid_in['h6] = tx_valid_in['h6];
-        assign fifos__data_in['h6] = tx_data_6_comb;
-        assign fifos__keep_in['h6] = tx_keep_6_comb;
-        assign fifos__sop_in['h6] = tx_sop_in['h6];
-        assign fifos__eop_in['h6] = tx_eop_in['h6];
-        assign fifos__read_count_in['h6] = read_count_6_comb;
-        assign fifos__clear_in['h6] = 0;
-        assign fifos__valid_in['h7] = tx_valid_in['h7];
-        assign fifos__data_in['h7] = tx_data_7_comb;
-        assign fifos__keep_in['h7] = tx_keep_7_comb;
-        assign fifos__sop_in['h7] = tx_sop_in['h7];
-        assign fifos__eop_in['h7] = tx_eop_in['h7];
-        assign fifos__read_count_in['h7] = read_count_7_comb;
-        assign fifos__clear_in['h7] = 0;
         assign tx_ready_out = tx_ready_comb;
         assign tx_almost_full_out = tx_almost_full_comb;
         assign tx_protocol_error_out = tx_fifo_error_comb;

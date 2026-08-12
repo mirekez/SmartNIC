@@ -1,10 +1,10 @@
 // Native CppHDL and generated-SystemVerilog/Verilator tests for InputBalancer.
 //
-// Fixed-size cases cover every significant lane boundary around 160/320-bit
+// Fixed-size cases cover every significant 64-bit lane boundary.
 // words.  A mixed minimum/jumbo bulk then drives one aggregate word on every
 // source clock with the minimum 12-byte Ethernet IPG.  The scoreboard rebuilds
-// frames independently on all eight outputs, checks byte-exact contents and
-// verifies that neither 400G nor 800G mode ever backpressures the wire source.
+// frames independently on both outputs, checks byte-exact contents and
+// verifies that 2x10G never backpressures the wire source.
 
 #include "../InputBalancer.h"
 
@@ -67,7 +67,7 @@ static uint32_t frame_id(const std::vector<uint8_t>& frame)
 template<size_t LANE_WIDTH>
 class InputBalancerTest
 {
-    static constexpr size_t LANES = 8;
+    static constexpr size_t LANES = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = LANES * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = LANES * LANE_BYTES;
@@ -441,8 +441,10 @@ public:
         // 9216 bytes: jumbo-frame credit reservation and burst absorption.
         for (size_t size : {64u, 65u, 79u, 80u, 81u, 127u, 128u, 129u, 1518u, 9216u}) {
             std::vector<size_t> sizes(24, size);
+            // A 64-bit 10GbE word is shorter than the 12-byte minimum IPG, so
+            // EOP and the next SOP cannot share one per-port output word.
             ok &= run_case("size-" + std::to_string(size), sizes,
-                size <= 129 && (size % LANE_BYTES) != 0, true, true);
+                false, true, true);
         }
 
         // This adversarial mix repeatedly places jumbo and minimum frames near
@@ -486,13 +488,10 @@ int main(int argc, char** argv)
         const std::vector<std::string> includes = {
             (source.parent_path().parent_path()).string(),
             (project_root / "cpphdl" / "include").string()};
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "InputBalancer_160",
-            "InputBalancer", generated, {"Predef_pkg"}, includes, 160);
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "InputBalancer_320",
-            "InputBalancer", generated, {"Predef_pkg"}, includes, 320);
+        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "InputBalancer_64",
+            "InputBalancer", generated, {"Predef_pkg"}, includes, 64);
         if (ok) {
-            ok &= std::system("InputBalancer_160/obj_dir/VInputBalancer 160") == 0;
-            ok &= std::system("InputBalancer_320/obj_dir/VInputBalancer 320") == 0;
+            ok &= std::system("InputBalancer_64/obj_dir/VInputBalancer 64") == 0;
         }
     }
 #else
@@ -501,18 +500,14 @@ int main(int argc, char** argv)
 
     if (!positional.empty()) {
         size_t width = std::stoull(positional[0]);
-        if (width == 160) {
-            return !(ok && InputBalancerTest<160>().run());
-        }
-        if (width == 320) {
-            return !(ok && InputBalancerTest<320>().run());
+        if (width == 64) {
+            return !(ok && InputBalancerTest<64>().run());
         }
         std::print("unsupported InputBalancer lane width {}\n", width);
         return 1;
     }
 
-    ok = ok && InputBalancerTest<160>().run();
-    ok = ok && InputBalancerTest<320>().run();
+    ok = ok && InputBalancerTest<64>().run();
     return ok ? 0 : 1;
 }
 

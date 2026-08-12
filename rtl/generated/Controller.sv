@@ -8,13 +8,13 @@ import SystemControllerFlags_pkg::*;
 
 
 module Controller #(
-    parameter QUEUES = 'h8
+    parameter QUEUES = 'h1
 ,   parameter RING_DEPTH = 'h400
-,   parameter DATA_WIDTH = 'h100
+,   parameter DATA_WIDTH = 'h40
  )
  (
-    input wire system_clock
-,   input wire l2_clock
+    input wire l2_clock
+,   input wire system_clock
 ,   input wire reset
 ,   input wire host_control__awvalid_in
 ,   output wire host_control__awready_out
@@ -22,8 +22,8 @@ module Controller #(
 ,   input wire[4-1:0] host_control__awid_in
 ,   input wire host_control__wvalid_in
 ,   output wire host_control__wready_out
-,   input wire[256-1:0] host_control__wdata_in
-,   input wire[256/'h8-1:0] host_control__wstrb_in
+,   input wire[64-1:0] host_control__wdata_in
+,   input wire[64/'h8-1:0] host_control__wstrb_in
 ,   input wire host_control__wlast_in
 ,   output wire host_control__bvalid_out
 ,   input wire host_control__bready_in
@@ -34,7 +34,7 @@ module Controller #(
 ,   input wire[4-1:0] host_control__arid_in
 ,   output wire host_control__rvalid_out
 ,   input wire host_control__rready_in
-,   output wire[256-1:0] host_control__rdata_out
+,   output wire[64-1:0] host_control__rdata_out
 ,   output wire host_control__rlast_out
 ,   output wire[4-1:0] host_control__rid_out
 ,   input wire[QUEUES-1:0] rx_empty_in
@@ -121,13 +121,13 @@ module Controller #(
     wire[$clog2(RING_DEPTH)-1:0] rx_ring__read_addr_in;
     wire rx_ring__read_in;
     wire['h10*'h8-1:0] rx_ring__read_data_out;
-    Memory #(
+    SmartNicMemory #(
         'h10
 ,       RING_DEPTH
 ,       1
     ) rx_ring (
-        .system_clock(system_clock)
-,       .l2_clock(l2_clock)
+        .l2_clock(l2_clock)
+,       .system_clock(system_clock)
 ,       .reset(reset)
 ,       .write_addr_in(rx_ring__write_addr_in)
 ,       .write_in(rx_ring__write_in)
@@ -144,13 +144,13 @@ module Controller #(
     wire[$clog2(RING_DEPTH)-1:0] tx_ring__read_addr_in;
     wire tx_ring__read_in;
     wire['h10*'h8-1:0] tx_ring__read_data_out;
-    Memory #(
+    SmartNicMemory #(
         'h10
 ,       RING_DEPTH
 ,       1
     ) tx_ring (
-        .system_clock(system_clock)
-,       .l2_clock(l2_clock)
+        .l2_clock(l2_clock)
+,       .system_clock(system_clock)
 ,       .reset(reset)
 ,       .write_addr_in(tx_ring__write_addr_in)
 ,       .write_in(tx_ring__write_in)
@@ -197,11 +197,11 @@ module Controller #(
         return host_control__wvalid_in && host_control__wready_out;
     endfunction
 
-    function logic[256-1:0] bus_write_data ();
+    function logic[64-1:0] bus_write_data ();
         return host_control__wdata_in;
     endfunction
 
-    function logic[32-1:0] bus_write_mask ();
+    function logic[8-1:0] bus_write_mask ();
         return host_control__wstrb_in;
     endfunction
 
@@ -306,7 +306,7 @@ module Controller #(
     endfunction
 
     function logic[31:0] queue_value (
-        input logic[128-1:0] values
+        input logic[16-1:0] values
 ,       input logic[31:0] queue
     );
         logic[31:0] _bit;
@@ -596,12 +596,12 @@ module Controller #(
     end
     endtask
 
-    task _work_l2_clock (input logic reset);
-    begin: _work_l2_clock
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
     end
     endtask
 
-    always_ff @(posedge system_clock) begin
+    always_ff @(posedge l2_clock) begin
         enabled_reg_tmp = enabled_reg;
         rx_producer_reg_tmp = rx_producer_reg;
         rx_consumer_reg_tmp = rx_consumer_reg;
@@ -657,9 +657,9 @@ module Controller #(
         read_valid_reg <= read_valid_reg_tmp;
     end
 
-    always_ff @(posedge l2_clock) begin
+    always_ff @(posedge system_clock) begin
 
-        _work_l2_clock(reset);
+        _work_system_clock(reset);
 
     end
 

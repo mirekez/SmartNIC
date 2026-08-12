@@ -7,8 +7,8 @@ typedef struct packed {
     logic valid0;
     logic[16-1:0] row1;
     logic[16-1:0] row0;
-    logic[320-1:0] data1;
-    logic[320-1:0] data0;
+    logic[64-1:0] data1;
+    logic[64-1:0] data0;
 } RxRAMWritePair;
 
 

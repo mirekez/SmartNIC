@@ -2,14 +2,8 @@ add_executable(descriptor_fetcher_test tests/decoder_fetcher.cpp)
 add_executable(packet_dma_test tests/packet_dma.cpp)
 add_executable(cpu_test tests/cpu.cpp)
 
-file(STRINGS "${PROJECT_SOURCE_DIR}/Config.h" SMARTNIC_ENABLE_800G_LINE
-    REGEX "^#define[ \t]+ENABLE_800G[ \t]+[01]")
-if(SMARTNIC_ENABLE_800G_LINE MATCHES "1$")
-    set(SMARTNIC_L2_CLOCK_HZ 390625000)
-else()
-    set(SMARTNIC_L2_CLOCK_HZ 195312500)
-endif()
-math(EXPR SMARTNIC_CPU_CLOCK_HZ "${SMARTNIC_L2_CLOCK_HZ} * 4")
+set(SMARTNIC_L2_CLOCK_HZ 156250000)
+set(SMARTNIC_CPU_CLOCK_HZ 156250000)
 
 target_include_directories(descriptor_fetcher_test PRIVATE
     "${PROJECT_SOURCE_DIR}/cpphdl/include"

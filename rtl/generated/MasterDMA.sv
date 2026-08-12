@@ -7,13 +7,13 @@ import MasterDmaDirection_pkg::*;
 
 module MasterDMA #(
     parameter ADDR_WIDTH = 'h40
-,   parameter DATA_WIDTH = 'h100
+,   parameter DATA_WIDTH = 'h40
 ,   parameter ID_WIDTH = 'h4
 ,   parameter LENGTH_BITS = 'h10
  )
  (
-    input wire system_clock
-,   input wire l2_clock
+    input wire l2_clock
+,   input wire system_clock
 ,   input wire reset
 ,   input wire command_valid_in
 ,   output wire command_ready_out
@@ -24,14 +24,14 @@ module MasterDMA #(
 ,   input wire command_sop_in
 ,   input wire command_eop_in
 ,   input wire queue_input_valid_in
-,   input wire[DATA_WIDTH-1:0] queue_input_data_in
-,   input wire[DATA_BYTES-1:0] queue_input_keep_in
+,   input wire[256-1:0] queue_input_data_in
+,   input wire[32-1:0] queue_input_keep_in
 ,   input wire queue_input_sop_in
 ,   input wire queue_input_eop_in
 ,   output wire queue_input_ready_out
 ,   output wire queue_output_valid_out
-,   output wire[DATA_WIDTH-1:0] queue_output_data_out
-,   output wire[DATA_BYTES-1:0] queue_output_keep_out
+,   output wire[256-1:0] queue_output_data_out
+,   output wire[32-1:0] queue_output_keep_out
 ,   output wire queue_output_sop_out
 ,   output wire queue_output_eop_out
 ,   input wire queue_output_ready_in
@@ -41,8 +41,8 @@ module MasterDMA #(
 ,   output wire[4-1:0] host__awid_out
 ,   output wire host__wvalid_out
 ,   input wire host__wready_in
-,   output wire[256-1:0] host__wdata_out
-,   output wire[256/'h8-1:0] host__wstrb_out
+,   output wire[64-1:0] host__wdata_out
+,   output wire[64/'h8-1:0] host__wstrb_out
 ,   output wire host__wlast_out
 ,   input wire host__bvalid_in
 ,   output wire host__bready_out
@@ -53,7 +53,7 @@ module MasterDMA #(
 ,   output wire[4-1:0] host__arid_out
 ,   input wire host__rvalid_in
 ,   output wire host__rready_out
-,   input wire[256-1:0] host__rdata_in
+,   input wire[64-1:0] host__rdata_in
 ,   input wire host__rlast_in
 ,   input wire[4-1:0] host__rid_in
 ,   output wire busy_out
@@ -65,6 +65,10 @@ module MasterDMA #(
 ,   output wire protocol_error_out
 );
     parameter  DATA_BYTES = DATA_WIDTH/'h8;
+    parameter  QUEUE_DATA_WIDTH = 64'h100;
+    parameter  QUEUE_BYTES = 64'h20;
+    parameter  CHUNKS = QUEUE_DATA_WIDTH/DATA_WIDTH;
+    parameter  CHUNK_BITS = $clog2(CHUNKS);
 
 
     // regs and combs
@@ -76,16 +80,19 @@ module MasterDMA #(
     reg command_sop_reg;
     reg command_eop_reg;
     reg first_beat_reg;
-    reg[DATA_WIDTH-1:0] beat_data_reg;
-    reg[DATA_BYTES-1:0] beat_keep_reg;
-    reg beat_sop_reg;
-    reg beat_eop_reg;
+    reg[CHUNK_BITS-1:0] chunk_reg;
+    reg[6-1:0] queue_bytes_reg;
+    reg[256-1:0] queue_data_reg;
+    reg[32-1:0] queue_keep_reg;
+    reg queue_sop_reg;
+    reg queue_eop_reg;
     reg completion_valid_reg;
     reg[3-1:0] completion_queue_reg;
     reg completion_direction_reg;
     reg[32-1:0] completed_reg;
     reg protocol_error_reg;
-    logic[DATA_BYTES-1:0] read_keep_comb;
+    logic[DATA_WIDTH-1:0] host_write_data_comb;
+    logic[DATA_BYTES-1:0] host_write_keep_comb;
 
     // members
 
@@ -98,10 +105,12 @@ module MasterDMA #(
     logic command_sop_reg_tmp;
     logic command_eop_reg_tmp;
     logic first_beat_reg_tmp;
-    logic[DATA_WIDTH-1:0] beat_data_reg_tmp;
-    logic[DATA_BYTES-1:0] beat_keep_reg_tmp;
-    logic beat_sop_reg_tmp;
-    logic beat_eop_reg_tmp;
+    logic[CHUNK_BITS-1:0] chunk_reg_tmp;
+    logic[6-1:0] queue_bytes_reg_tmp;
+    logic[256-1:0] queue_data_reg_tmp;
+    logic[32-1:0] queue_keep_reg_tmp;
+    logic queue_sop_reg_tmp;
+    logic queue_eop_reg_tmp;
     logic completion_valid_reg_tmp;
     logic[3-1:0] completion_queue_reg_tmp;
     logic completion_direction_reg_tmp;
@@ -109,21 +118,53 @@ module MasterDMA #(
     logic protocol_error_reg_tmp;
 
 
-    always_comb begin : read_keep_comb_func  // read_keep_comb_func
-        logic[31:0] _byte;
-        read_keep_comb = 'h0;
-        for (_byte='h0;_byte < DATA_BYTES;_byte=_byte+1) begin
-            read_keep_comb[_byte] = _byte < unsigned'(32'(remaining_reg));
+    always_comb begin : host_write_data_comb_func  // host_write_data_comb_func
+        logic[31:0] _bit;
+        logic[31:0] base;
+        host_write_data_comb = 'h0;
+        base=unsigned'(32'(chunk_reg))*DATA_WIDTH;
+        for (_bit='h0;_bit < DATA_WIDTH;_bit=_bit+1) begin
+            host_write_data_comb[_bit] = queue_data_reg[base + _bit];
         end
     end
 
-    function logic[31:0] kept_bytes (input logic[32-1:0] keep);
+    always_comb begin : host_write_keep_comb_func  // host_write_keep_comb_func
+        logic[31:0] _byte;
+        logic[31:0] base;
+        host_write_keep_comb = 'h0;
+        base=unsigned'(32'(chunk_reg))*DATA_BYTES;
+        for (_byte='h0;_byte < DATA_BYTES;_byte=_byte+1) begin
+            host_write_keep_comb[_byte] = queue_keep_reg[base + _byte];
+        end
+    end
+
+    function logic[31:0] kept_bytes (input logic[8-1:0] keep);
         logic[31:0] _byte;
         logic[31:0] count;
         logic gap;
         count='h0;
         gap=0;
         for (_byte='h0;_byte < DATA_BYTES;_byte=_byte+1) begin
+            if (keep[_byte]) begin
+                if (gap) begin
+                    protocol_error_reg_tmp = unsigned'(1'(1));
+                end
+                count=count+1;
+            end
+            else begin
+                gap=1;
+            end
+        end
+        return count;
+    endfunction
+
+    function logic[31:0] kept_queue_bytes (input logic[32-1:0] keep);
+        logic[31:0] _byte;
+        logic[31:0] count;
+        logic gap;
+        count='h0;
+        gap=0;
+        for (_byte='h0;_byte < QUEUE_BYTES;_byte=_byte+1) begin
             if (keep[_byte]) begin
                 if (gap) begin
                     protocol_error_reg_tmp = unsigned'(1'(1));
@@ -151,16 +192,16 @@ module MasterDMA #(
         assign command_ready_out = unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_IDLE;
         assign queue_input_ready_out = unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_WAIT_QUEUE;
         assign queue_output_valid_out = unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_SEND_QUEUE;
-        assign queue_output_data_out = beat_data_reg;
-        assign queue_output_keep_out = beat_keep_reg;
-        assign queue_output_sop_out = beat_sop_reg;
-        assign queue_output_eop_out = beat_eop_reg;
+        assign queue_output_data_out = queue_data_reg;
+        assign queue_output_keep_out = queue_keep_reg;
+        assign queue_output_sop_out = queue_sop_reg;
+        assign queue_output_eop_out = queue_eop_reg;
         assign host__awvalid_out = unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_WRITE_ADDRESS;
         assign host__awaddr_out = address_reg;
         assign host__awid_out = unsigned'(ID_WIDTH'(unsigned'(ID_WIDTH'('h0))));
         assign host__wvalid_out = unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_WRITE_DATA;
-        assign host__wdata_out = beat_data_reg;
-        assign host__wstrb_out = beat_keep_reg;
+        assign host__wdata_out = host_write_data_comb;
+        assign host__wstrb_out = host_write_keep_comb;
         assign host__wlast_out = 1;
         assign host__bready_out = unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_WRITE_RESPONSE;
         assign host__arvalid_out = unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_READ_ADDRESS;
@@ -179,6 +220,9 @@ module MasterDMA #(
     task _work (input logic reset);
     begin: _work
         logic[31:0] bytes;
+        logic[31:0] _byte;
+        logic[31:0] _bit;
+        logic[31:0] base;
         completion_valid_reg_tmp = unsigned'(1'(0));
         if ((unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_IDLE) && command_valid_in) begin
             direction_reg_tmp = unsigned'(1'(command_direction_in));
@@ -188,6 +232,10 @@ module MasterDMA #(
             command_sop_reg_tmp = unsigned'(1'(command_sop_in));
             command_eop_reg_tmp = unsigned'(1'(command_eop_in));
             first_beat_reg_tmp = unsigned'(1'(1));
+            chunk_reg_tmp = 'h0;
+            queue_bytes_reg_tmp = 'h0;
+            queue_data_reg_tmp = 'h0;
+            queue_keep_reg_tmp = 'h0;
             if (((unsigned'(32'(command_length_in)) == 'h0) || (((unsigned'(64'(command_address_in)) & 'h3)) != 'h0)) || (((unsigned'(32'(command_length_in)) & 'h3)) != 'h0)) begin
                 protocol_error_reg_tmp = unsigned'(1'(1));
             end
@@ -202,11 +250,14 @@ module MasterDMA #(
         end
         else begin
             if ((unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_WAIT_QUEUE) && queue_input_valid_in) begin
-                beat_data_reg_tmp = queue_input_data_in;
-                beat_keep_reg_tmp = queue_input_keep_in;
-                beat_sop_reg_tmp = unsigned'(1'(queue_input_sop_in));
-                beat_eop_reg_tmp = unsigned'(1'(queue_input_eop_in));
-                if (first_beat_reg != queue_input_sop_in) begin
+                bytes=kept_queue_bytes(queue_input_keep_in);
+                queue_data_reg_tmp = queue_input_data_in;
+                queue_keep_reg_tmp = queue_input_keep_in;
+                queue_sop_reg_tmp = unsigned'(1'(queue_input_sop_in));
+                queue_eop_reg_tmp = unsigned'(1'(queue_input_eop_in));
+                queue_bytes_reg_tmp = bytes;
+                chunk_reg_tmp = 'h0;
+                if (((bytes == 'h0) || (bytes > unsigned'(32'(remaining_reg)))) || (first_beat_reg != queue_input_sop_in)) begin
                     protocol_error_reg_tmp = unsigned'(1'(1));
                 end
                 state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_WRITE_ADDRESS));
@@ -221,21 +272,32 @@ module MasterDMA #(
                     end
                     else begin
                         if ((unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_WRITE_RESPONSE) && host__bvalid_in) begin
-                            bytes=kept_bytes(beat_keep_reg);
+                            bytes=kept_bytes(host_write_keep_comb);
                             if ((bytes == 'h0) || (bytes > unsigned'(32'(remaining_reg)))) begin
                                 protocol_error_reg_tmp = unsigned'(1'(1));
                             end
-                            if (beat_eop_reg) begin
-                                if (bytes != unsigned'(32'(remaining_reg))) begin
+                            if (bytes>=unsigned'(32'(remaining_reg))) begin
+                                if (!queue_eop_reg || (bytes != unsigned'(32'(remaining_reg)))) begin
                                     protocol_error_reg_tmp = unsigned'(1'(1));
                                 end
                                 complete_command();
                             end
                             else begin
-                                address_reg_tmp = address_reg + bytes;
-                                remaining_reg_tmp = remaining_reg - bytes;
-                                first_beat_reg_tmp = unsigned'(1'(0));
-                                state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_WAIT_QUEUE));
+                                if ((((unsigned'(32'(chunk_reg)) + 'h1))*DATA_BYTES) < unsigned'(32'(queue_bytes_reg))) begin
+                                    address_reg_tmp = address_reg + bytes;
+                                    remaining_reg_tmp = remaining_reg - bytes;
+                                    chunk_reg_tmp = chunk_reg + 'h1;
+                                    state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_WRITE_ADDRESS));
+                                end
+                                else begin
+                                    if (queue_eop_reg) begin
+                                        protocol_error_reg_tmp = unsigned'(1'(1));
+                                    end
+                                    address_reg_tmp = address_reg + bytes;
+                                    remaining_reg_tmp = remaining_reg - bytes;
+                                    first_beat_reg_tmp = unsigned'(1'(0));
+                                    state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_WAIT_QUEUE));
+                                end
                             end
                         end
                         else begin
@@ -244,21 +306,40 @@ module MasterDMA #(
                             end
                             else begin
                                 if ((unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_READ_DATA) && host__rvalid_in) begin
-                                    beat_data_reg_tmp = host__rdata_in;
-                                    beat_keep_reg_tmp = read_keep_comb;
-                                    beat_sop_reg_tmp = unsigned'(1'(first_beat_reg && command_sop_reg));
-                                    beat_eop_reg_tmp = unsigned'(1'(remaining_reg<=DATA_BYTES && command_eop_reg));
-                                    state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_SEND_QUEUE));
+                                    base=unsigned'(32'(chunk_reg))*DATA_WIDTH;
+                                    bytes=(unsigned'(32'(remaining_reg)) < DATA_BYTES) ? (unsigned'(32'(remaining_reg))) : (DATA_BYTES);
+                                    for (_bit='h0;_bit < DATA_WIDTH;_bit=_bit+1) begin
+                                        queue_data_reg_tmp[base + _bit] = host__rdata_in[_bit];
+                                    end
+                                    base=unsigned'(32'(chunk_reg))*DATA_BYTES;
+                                    for (_byte='h0;_byte < DATA_BYTES;_byte=_byte+1) begin
+                                        queue_keep_reg_tmp[base + _byte] = _byte < bytes;
+                                    end
+                                    if (remaining_reg<=DATA_BYTES || (unsigned'(32'(chunk_reg)) == (CHUNKS - 'h1))) begin
+                                        queue_sop_reg_tmp = unsigned'(1'(first_beat_reg && command_sop_reg));
+                                        queue_eop_reg_tmp = unsigned'(1'(remaining_reg<=DATA_BYTES && command_eop_reg));
+                                        state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_SEND_QUEUE));
+                                    end
+                                    else begin
+                                        address_reg_tmp = address_reg + DATA_BYTES;
+                                        remaining_reg_tmp = remaining_reg - DATA_BYTES;
+                                        chunk_reg_tmp = chunk_reg + 'h1;
+                                        state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_READ_ADDRESS));
+                                    end
                                 end
                                 else begin
                                     if ((unsigned'(32'(state_reg)) == MasterDmaState_pkg::MASTER_DMA_SEND_QUEUE) && queue_output_ready_in) begin
+                                        bytes=(unsigned'(32'(remaining_reg)) < DATA_BYTES) ? (unsigned'(32'(remaining_reg))) : (DATA_BYTES);
                                         if (remaining_reg<=DATA_BYTES) begin
                                             complete_command();
                                         end
                                         else begin
-                                            address_reg_tmp = address_reg + DATA_BYTES;
-                                            remaining_reg_tmp = remaining_reg - DATA_BYTES;
+                                            address_reg_tmp = address_reg + bytes;
+                                            remaining_reg_tmp = remaining_reg - bytes;
                                             first_beat_reg_tmp = unsigned'(1'(0));
+                                            chunk_reg_tmp = 'h0;
+                                            queue_data_reg_tmp = 'h0;
+                                            queue_keep_reg_tmp = 'h0;
                                             state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_READ_ADDRESS));
                                         end
                                     end
@@ -278,10 +359,12 @@ module MasterDMA #(
             command_sop_reg_tmp = '0;
             command_eop_reg_tmp = '0;
             first_beat_reg_tmp = '0;
-            beat_data_reg_tmp = '0;
-            beat_keep_reg_tmp = '0;
-            beat_sop_reg_tmp = '0;
-            beat_eop_reg_tmp = '0;
+            chunk_reg_tmp = '0;
+            queue_bytes_reg_tmp = '0;
+            queue_data_reg_tmp = '0;
+            queue_keep_reg_tmp = '0;
+            queue_sop_reg_tmp = '0;
+            queue_eop_reg_tmp = '0;
             completion_valid_reg_tmp = '0;
             completion_queue_reg_tmp = '0;
             completion_direction_reg_tmp = '0;
@@ -291,12 +374,12 @@ module MasterDMA #(
     end
     endtask
 
-    task _work_l2_clock (input logic reset);
-    begin: _work_l2_clock
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
     end
     endtask
 
-    always_ff @(posedge system_clock) begin
+    always_ff @(posedge l2_clock) begin
         state_reg_tmp = state_reg;
         direction_reg_tmp = direction_reg;
         queue_reg_tmp = queue_reg;
@@ -305,10 +388,12 @@ module MasterDMA #(
         command_sop_reg_tmp = command_sop_reg;
         command_eop_reg_tmp = command_eop_reg;
         first_beat_reg_tmp = first_beat_reg;
-        beat_data_reg_tmp = beat_data_reg;
-        beat_keep_reg_tmp = beat_keep_reg;
-        beat_sop_reg_tmp = beat_sop_reg;
-        beat_eop_reg_tmp = beat_eop_reg;
+        chunk_reg_tmp = chunk_reg;
+        queue_bytes_reg_tmp = queue_bytes_reg;
+        queue_data_reg_tmp = queue_data_reg;
+        queue_keep_reg_tmp = queue_keep_reg;
+        queue_sop_reg_tmp = queue_sop_reg;
+        queue_eop_reg_tmp = queue_eop_reg;
         completion_valid_reg_tmp = completion_valid_reg;
         completion_queue_reg_tmp = completion_queue_reg;
         completion_direction_reg_tmp = completion_direction_reg;
@@ -325,10 +410,12 @@ module MasterDMA #(
         command_sop_reg <= command_sop_reg_tmp;
         command_eop_reg <= command_eop_reg_tmp;
         first_beat_reg <= first_beat_reg_tmp;
-        beat_data_reg <= beat_data_reg_tmp;
-        beat_keep_reg <= beat_keep_reg_tmp;
-        beat_sop_reg <= beat_sop_reg_tmp;
-        beat_eop_reg <= beat_eop_reg_tmp;
+        chunk_reg <= chunk_reg_tmp;
+        queue_bytes_reg <= queue_bytes_reg_tmp;
+        queue_data_reg <= queue_data_reg_tmp;
+        queue_keep_reg <= queue_keep_reg_tmp;
+        queue_sop_reg <= queue_sop_reg_tmp;
+        queue_eop_reg <= queue_eop_reg_tmp;
         completion_valid_reg <= completion_valid_reg_tmp;
         completion_queue_reg <= completion_queue_reg_tmp;
         completion_direction_reg <= completion_direction_reg_tmp;
@@ -336,9 +423,9 @@ module MasterDMA #(
         protocol_error_reg <= protocol_error_reg_tmp;
     end
 
-    always_ff @(posedge l2_clock) begin
+    always_ff @(posedge system_clock) begin
 
-        _work_l2_clock(reset);
+        _work_system_clock(reset);
 
     end
 

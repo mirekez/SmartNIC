@@ -12,9 +12,7 @@ using namespace cpphdl;
 
 extern long _system_clock;
 
-#define RX_RAM_FOR_EACH_PHYSICAL_BANK(M) \
-    M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7) \
-    M(8) M(9) M(10) M(11) M(12) M(13) M(14) M(15)
+#define RX_RAM_FOR_EACH_PHYSICAL_BANK(M) M(0) M(1) M(2) M(3)
 
 struct RxRAMWritePair
 {
@@ -22,20 +20,20 @@ struct RxRAMWritePair
     // template parameters on RxRAM itself, but specializes packed helper
     // return types while generating SystemVerilog.  Fixed maximum fields keep
     // one generated RxRAM usable for both 160- and 320-bit configurations.
-    logic<320> data0;
-    logic<320> data1;
+    logic<64> data0;
+    logic<64> data1;
     u<16> row0;
     u<16> row1;
     u1 valid0;
     u1 valid1;
 } __PACKED;
 
-template<size_t LANE_WIDTH = 160, size_t READ_PORTS = 4,
+template<size_t LANE_WIDTH = 64, size_t READ_PORTS = 1,
     size_t BANK_DEPTH = 4096>
 class RxRAM : public Module
 {
 public:
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t SUBBANKS = 2;
     static constexpr size_t PHYSICAL_BANKS = STREAMS * SUBBANKS;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
@@ -49,10 +47,10 @@ public:
     static constexpr size_t FRAME_LENGTH_BITS = 14;
     static constexpr size_t COMPLETION_FIFO_WORDS = 4;
 
-    static_assert(LANE_WIDTH == 160 || LANE_WIDTH == 320,
-        "RxRAM supports 160-bit and 320-bit balanced streams");
+    static_assert(LANE_WIDTH == 64,
+        "RxRAM supports 64-bit 10GbE MAC words");
     static_assert(READ_PORTS > 0 && READ_PORTS <= STREAMS,
-        "RxRAM requires between one and eight read ports");
+        "RxRAM requires one or two read ports");
     static_assert((BANK_DEPTH & (BANK_DEPTH - 1)) == 0,
         "RxRAM bank depth must be a power of two");
     static_assert(LOGICAL_ROW_BITS <= 16,
@@ -124,7 +122,7 @@ private:
     logic<READ_PORTS * LANE_WIDTH> read_data_comb;
     logic<READ_PORTS> read_valid_comb;
 
-    static uint32_t request_handle(logic<133> handles,
+    static uint32_t request_handle(logic<READ_PORTS * HANDLE_BITS> handles,
         uint32_t port)
     {
         return (uint32_t)handles.bits(port * HANDLE_BITS + HANDLE_BITS - 1,
@@ -132,7 +130,7 @@ private:
     }
 
     static uint32_t request_word(
-        logic<112> words, uint32_t port)
+        logic<READ_PORTS * LOGICAL_ROW_BITS> words, uint32_t port)
     {
         return (uint32_t)words.bits(
             port * LOGICAL_ROW_BITS + LOGICAL_ROW_BITS - 1,
@@ -140,14 +138,16 @@ private:
     }
 
     static uint32_t request_logical_row(
-        logic<133> handles, logic<112> words, uint32_t port)
+        logic<READ_PORTS * HANDLE_BITS> handles,
+        logic<READ_PORTS * LOGICAL_ROW_BITS> words, uint32_t port)
     {
         return (request_handle(handles, port) >> 3)
             + request_word(words, port);
     }
 
     static uint32_t request_physical_bank(
-        logic<133> handles, logic<112> words, uint32_t port)
+        logic<READ_PORTS * HANDLE_BITS> handles,
+        logic<READ_PORTS * LOGICAL_ROW_BITS> words, uint32_t port)
     {
         uint32_t handle;
         uint32_t logical;
@@ -159,7 +159,7 @@ private:
     RxRAMWritePair write_pair_for_stream(uint32_t stream)
     {
         RxRAMWritePair pair;
-        logic<320> pack_data;
+    logic<64> pack_data;
         uint32_t pack_count;
         uint32_t logical_row;
         uint32_t byte;
@@ -479,9 +479,9 @@ private:
         return read_valid_comb;
     }
 
-    logic<320> read_bank_data(uint32_t bank)
+    logic<64> read_bank_data(uint32_t bank)
     {
-        logic<320> value;
+        logic<64> value;
         value = 0;
 #define RX_RAM_READ_BANK(number) \
         if (bank == number) { value = banks[number].q_out(); }
@@ -550,7 +550,7 @@ public:
         bool sop;
         bool eop;
         bool response_free;
-        logic<320> pack_data;
+        logic<64> pack_data;
 
         if (reset) {
             for (stream = 0; stream < STREAMS; ++stream) {
@@ -792,7 +792,6 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class RxRAM<160, 4, 4096>;
-template class RxRAM<320, 4, 4096>;
+template class RxRAM<64, 1, 4096>;
 
 #undef RX_RAM_FOR_EACH_PHYSICAL_BANK

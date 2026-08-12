@@ -4,8 +4,8 @@ import Predef_pkg::*;
 
 
 module TxFifo #(
-    parameter LANE_WIDTH = 'hA0
-,   parameter FIFO_WORDS = 'h400
+    parameter LANE_WIDTH = 'h40
+,   parameter FIFO_WORDS = 'h800
  )
  (
     input wire net_clk
@@ -29,44 +29,44 @@ module TxFifo #(
 );
     parameter  WINDOW_WORDS = 64'h8;
     parameter  LANE_BYTES = LANE_WIDTH/'h8;
-    parameter  MAX_LANE_WIDTH = 64'h140;
-    parameter  MAX_LANE_BYTES = 64'h28;
     parameter  BANK_DEPTH = FIFO_WORDS/WINDOW_WORDS;
     parameter  POINTER_BITS = $clog2(FIFO_WORDS);
     parameter  COUNT_BITS = $clog2(FIFO_WORDS + 'h1);
+    parameter  MAX_LANE_WIDTH = 64'h40;
+    parameter  MAX_LANE_BYTES = 64'h8;
 
 
     // regs and combs
-    reg[1-1:0][320-1:0] data_bank_0[BANK_DEPTH];
-    reg[1-1:0][40-1:0] keep_bank_0[BANK_DEPTH];
+    reg[1-1:0][64-1:0] data_bank_0[BANK_DEPTH];
+    reg[1-1:0][8-1:0] keep_bank_0[BANK_DEPTH];
     reg[1-1:0][1-1:0] sop_bank_0[BANK_DEPTH];
     reg[1-1:0][1-1:0] eop_bank_0[BANK_DEPTH];
-    reg[1-1:0][320-1:0] data_bank_1[BANK_DEPTH];
-    reg[1-1:0][40-1:0] keep_bank_1[BANK_DEPTH];
+    reg[1-1:0][64-1:0] data_bank_1[BANK_DEPTH];
+    reg[1-1:0][8-1:0] keep_bank_1[BANK_DEPTH];
     reg[1-1:0][1-1:0] sop_bank_1[BANK_DEPTH];
     reg[1-1:0][1-1:0] eop_bank_1[BANK_DEPTH];
-    reg[1-1:0][320-1:0] data_bank_2[BANK_DEPTH];
-    reg[1-1:0][40-1:0] keep_bank_2[BANK_DEPTH];
+    reg[1-1:0][64-1:0] data_bank_2[BANK_DEPTH];
+    reg[1-1:0][8-1:0] keep_bank_2[BANK_DEPTH];
     reg[1-1:0][1-1:0] sop_bank_2[BANK_DEPTH];
     reg[1-1:0][1-1:0] eop_bank_2[BANK_DEPTH];
-    reg[1-1:0][320-1:0] data_bank_3[BANK_DEPTH];
-    reg[1-1:0][40-1:0] keep_bank_3[BANK_DEPTH];
+    reg[1-1:0][64-1:0] data_bank_3[BANK_DEPTH];
+    reg[1-1:0][8-1:0] keep_bank_3[BANK_DEPTH];
     reg[1-1:0][1-1:0] sop_bank_3[BANK_DEPTH];
     reg[1-1:0][1-1:0] eop_bank_3[BANK_DEPTH];
-    reg[1-1:0][320-1:0] data_bank_4[BANK_DEPTH];
-    reg[1-1:0][40-1:0] keep_bank_4[BANK_DEPTH];
+    reg[1-1:0][64-1:0] data_bank_4[BANK_DEPTH];
+    reg[1-1:0][8-1:0] keep_bank_4[BANK_DEPTH];
     reg[1-1:0][1-1:0] sop_bank_4[BANK_DEPTH];
     reg[1-1:0][1-1:0] eop_bank_4[BANK_DEPTH];
-    reg[1-1:0][320-1:0] data_bank_5[BANK_DEPTH];
-    reg[1-1:0][40-1:0] keep_bank_5[BANK_DEPTH];
+    reg[1-1:0][64-1:0] data_bank_5[BANK_DEPTH];
+    reg[1-1:0][8-1:0] keep_bank_5[BANK_DEPTH];
     reg[1-1:0][1-1:0] sop_bank_5[BANK_DEPTH];
     reg[1-1:0][1-1:0] eop_bank_5[BANK_DEPTH];
-    reg[1-1:0][320-1:0] data_bank_6[BANK_DEPTH];
-    reg[1-1:0][40-1:0] keep_bank_6[BANK_DEPTH];
+    reg[1-1:0][64-1:0] data_bank_6[BANK_DEPTH];
+    reg[1-1:0][8-1:0] keep_bank_6[BANK_DEPTH];
     reg[1-1:0][1-1:0] sop_bank_6[BANK_DEPTH];
     reg[1-1:0][1-1:0] eop_bank_6[BANK_DEPTH];
-    reg[1-1:0][320-1:0] data_bank_7[BANK_DEPTH];
-    reg[1-1:0][40-1:0] keep_bank_7[BANK_DEPTH];
+    reg[1-1:0][64-1:0] data_bank_7[BANK_DEPTH];
+    reg[1-1:0][8-1:0] keep_bank_7[BANK_DEPTH];
     reg[1-1:0][1-1:0] sop_bank_7[BANK_DEPTH];
     reg[1-1:0][1-1:0] eop_bank_7[BANK_DEPTH];
     reg[POINTER_BITS-1:0] head_reg;
@@ -128,7 +128,7 @@ module TxFifo #(
         logic[31:0] logical;
         logic[31:0] bank;
         logic[31:0] row;
-        logic[320-1:0] entry;
+        logic[64-1:0] entry;
         window_data_comb = 'h0;
         for (slot='h0;slot < WINDOW_WORDS;slot=slot+1) begin
             logical=((unsigned'(32'(head_reg)) + slot)) & ((FIFO_WORDS - 'h1));
@@ -171,7 +171,7 @@ module TxFifo #(
         logic[31:0] logical;
         logic[31:0] bank;
         logic[31:0] row;
-        logic[40-1:0] entry;
+        logic[8-1:0] entry;
         window_keep_comb = 'h0;
         for (slot='h0;slot < WINDOW_WORDS;slot=slot+1) begin
             logical=((unsigned'(32'(head_reg)) + slot)) & ((FIFO_WORDS - 'h1));
@@ -318,8 +318,8 @@ module TxFifo #(
         logic seen_zero;
         logic malformed_keep;
         logic incomplete_keep;
-        logic[320-1:0] data_entry;
-        logic[40-1:0] keep_entry;
+        logic[64-1:0] data_entry;
+        logic[8-1:0] keep_entry;
         if (reset) begin
             head_reg_tmp = '0;
             tail_reg_tmp = '0;

@@ -7,7 +7,8 @@ module TxQueue #(
     parameter DEPTH = 'h100
  )
  (
-    input wire clk
+    input wire l2_clock
+,   input wire system_clock
 ,   input wire reset
 ,   input wire write_valid_in
 ,   input wire[256-1:0] write_data_in
@@ -56,7 +57,8 @@ module TxQueue #(
 ,       256
 ,       16
     ) queue (
-        .clk(clk)
+        .l2_clock(l2_clock)
+,       .system_clock(system_clock)
 ,       .reset(reset)
 ,       .write_valid_in(queue__write_valid_in)
 ,       .write_data_in(queue__write_data_in)
@@ -107,9 +109,20 @@ module TxQueue #(
     end
     endtask
 
-    always @(posedge clk) begin
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
+    end
+    endtask
+
+    always_ff @(posedge l2_clock) begin
 
         _work(reset);
+
+    end
+
+    always_ff @(posedge system_clock) begin
+
+        _work_system_clock(reset);
 
     end
 

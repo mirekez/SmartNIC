@@ -55,22 +55,16 @@ smartnic_generate_system_target(tx_queue_test TxQueue.h
 # Generate the complete System hierarchy in both supported host-bus forms.
 # System's primary domain is the PCIe/host clock; l2_clock is the Processing
 # boundary consumed by the per-queue asynchronous FIFOs.
-file(STRINGS "${PROJECT_SOURCE_DIR}/Config.h" SMARTNIC_SYSTEM_ENABLE_800G_LINE
-    REGEX "^#define[ \t]+ENABLE_800G[ \t]+[01]")
-if(SMARTNIC_SYSTEM_ENABLE_800G_LINE MATCHES "1$")
-    set(SMARTNIC_SYSTEM_L2_CLOCK_HZ 390625000)
-else()
-    set(SMARTNIC_SYSTEM_L2_CLOCK_HZ 195312500)
-endif()
-set(SMARTNIC_SYSTEM_CLOCK_HZ 250000000)
+set(SMARTNIC_SYSTEM_L2_CLOCK_HZ 156250000)
+set(SMARTNIC_SYSTEM_CLOCK_HZ 125000000)
 
 function(smartnic_add_complete_system_target target generated_dir)
     add_custom_target(${target}
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${generated_dir}"
         COMMAND $<TARGET_FILE:cpphdl>
             --generated-dir "${generated_dir}"
-            --primary_clock system_clock ${SMARTNIC_SYSTEM_CLOCK_HZ}
-            --secondary_clock l2_clock ${SMARTNIC_SYSTEM_L2_CLOCK_HZ}
+            --primary_clock l2_clock ${SMARTNIC_SYSTEM_L2_CLOCK_HZ}
+            --secondary_clock system_clock ${SMARTNIC_SYSTEM_CLOCK_HZ}
             "${CMAKE_CURRENT_SOURCE_DIR}/System.h"
             ${ARGN}
             -I "${PROJECT_SOURCE_DIR}/cpphdl/include"

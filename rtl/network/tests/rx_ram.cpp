@@ -1,6 +1,6 @@
 // Native CppHDL and generated-SystemVerilog/Verilator tests for RxRAM.
-// The traffic includes every one of the 256 simultaneous eight-stream
-// EOP+SOP masks, followed by PRBS packets at protocol boundary sizes and jumbo.
+// The traffic includes every simultaneous two-stream EOP+SOP mask, followed
+// by PRBS packets at protocol boundary sizes and jumbo.
 
 #include "../RxRAM.h"
 
@@ -78,7 +78,7 @@ static ExpectedFrame make_prbs_frame(uint32_t id, size_t size)
 template<size_t LANE_WIDTH, size_t READ_PORTS = 4, size_t BANK_DEPTH = 4096>
 class RxRAMTest
 {
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
@@ -108,7 +108,7 @@ class RxRAMTest
     std::array<size_t, STREAMS> position{};
     std::array<std::deque<ExpectedFrame>, STREAMS> completion_expected;
     std::vector<StoredFrame> stored;
-    std::array<bool, 256> boundary_masks_seen{};
+    std::array<bool, 1u << STREAMS> boundary_masks_seen{};
     size_t expected_packets = 0;
     bool error = false;
 
@@ -300,8 +300,8 @@ class RxRAMTest
     void build_traffic()
     {
         uint32_t id = 1;
-        const size_t segment_bytes = 10 * LANE_BYTES;
-        for (uint32_t mask = 0; mask < 256; ++mask) {
+        const size_t segment_bytes = 32 * LANE_BYTES;
+        for (uint32_t mask = 0; mask < (1u << STREAMS); ++mask) {
             size_t base = mask * segment_bytes;
             for (size_t stream = 0; stream < STREAMS; ++stream) {
                 if (wire[stream].size() < base + segment_bytes) {
@@ -333,7 +333,7 @@ class RxRAMTest
         const std::array<size_t, 14> sizes = {
             64, 65, 79, 80, 81, 127, 128, 129,
             255, 256, 511, 1518, 4096, 9216};
-        size_t bulk_base = 256 * segment_bytes;
+        size_t bulk_base = (1u << STREAMS) * segment_bytes;
         size_t maximum_end = bulk_base;
         for (size_t stream = 0; stream < STREAMS; ++stream) {
             size_t cursor = bulk_base + ((stream * 13 + 5) % LANE_BYTES);
@@ -616,13 +616,10 @@ int main(int argc, char** argv)
             (project_root / "cpphdl" / "tribe_cpu" / "common").string(),
             project_root.string()};
         const std::vector<std::string> modules = {"Predef_pkg", "SmartNicRAM"};
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "RxRAM_160",
-            "RxRAM", generated, modules, includes, 160, 4, 4096);
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "RxRAM_320",
-            "RxRAM", generated, modules, includes, 320, 4, 4096);
+        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "RxRAM_64",
+            "RxRAM", generated, modules, includes, 64, 1, 4096);
         if (ok) {
-            ok &= std::system("RxRAM_160/obj_dir/VRxRAM 160") == 0;
-            ok &= std::system("RxRAM_320/obj_dir/VRxRAM 320") == 0;
+            ok &= std::system("RxRAM_64/obj_dir/VRxRAM 64") == 0;
         }
     }
 #else
@@ -630,18 +627,15 @@ int main(int argc, char** argv)
 #endif
     if (!positional.empty()) {
         size_t width = std::stoull(positional[0]);
-        if (width == 160) return !(ok && RxRAMTest<160>().run());
-        if (width == 320) return !(ok && RxRAMTest<320>().run());
+        if (width == 64) return !(ok && RxRAMTest<64, 1>().run());
         std::print("unsupported RxRAM lane width {}\n", width);
         return 1;
     }
-    ok = ok && RxRAMTest<160>().run();
-    ok = ok && RxRAMTest<320>().run();
+    ok = ok && RxRAMTest<64, 1>().run();
 #ifndef VERILATOR
     // Exercise both ends of the configurable N<8 read-port range in native
     // simulation; the four-port configurations above also run as RTL.
-    ok = ok && RxRAMTest<160, 1>().run();
-    ok = ok && RxRAMTest<160, 7>().run();
+    ok = ok && RxRAMTest<64, 1>().run();
 #endif
     return ok ? 0 : 1;
 }

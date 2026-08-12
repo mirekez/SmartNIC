@@ -8,8 +8,8 @@ module AsyncFifoSystemToL2 #(
 ,   parameter DEPTH = 'h10
  )
  (
-    input wire system_clock
-,   input wire l2_clock
+    input wire l2_clock
+,   input wire system_clock
 ,   input wire reset
 ,   input wire write_valid_in
 ,   input wire[WIDTH-1:0] write_data_in
@@ -117,20 +117,6 @@ module AsyncFifoSystemToL2 #(
         read_data_comb=data_mem[unsigned'(32'(read_bin_reg)) & ((DEPTH - 'h1))];
     end
 
-    always_ff @(posedge system_clock) begin
-        write_bin_reg_tmp = write_bin_reg;
-        write_gray_reg_tmp = write_gray_reg;
-        read_gray_write1_reg_tmp = read_gray_write1_reg;
-        read_gray_write2_reg_tmp = read_gray_write2_reg;
-
-        _work_system_clock(reset);
-
-        write_bin_reg <= write_bin_reg_tmp;
-        write_gray_reg <= write_gray_reg_tmp;
-        read_gray_write1_reg <= read_gray_write1_reg_tmp;
-        read_gray_write2_reg <= read_gray_write2_reg_tmp;
-    end
-
     always_ff @(posedge l2_clock) begin
         read_bin_reg_tmp = read_bin_reg;
         read_gray_reg_tmp = read_gray_reg;
@@ -143,6 +129,20 @@ module AsyncFifoSystemToL2 #(
         read_gray_reg <= read_gray_reg_tmp;
         write_gray_read1_reg <= write_gray_read1_reg_tmp;
         write_gray_read2_reg <= write_gray_read2_reg_tmp;
+    end
+
+    always_ff @(posedge system_clock) begin
+        write_bin_reg_tmp = write_bin_reg;
+        write_gray_reg_tmp = write_gray_reg;
+        read_gray_write1_reg_tmp = read_gray_write1_reg;
+        read_gray_write2_reg_tmp = read_gray_write2_reg;
+
+        _work_system_clock(reset);
+
+        write_bin_reg <= write_bin_reg_tmp;
+        write_gray_reg <= write_gray_reg_tmp;
+        read_gray_write1_reg <= read_gray_write1_reg_tmp;
+        read_gray_write2_reg <= read_gray_write2_reg_tmp;
     end
 
     assign write_ready_out = write_ready_comb;

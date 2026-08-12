@@ -13,13 +13,13 @@
 
 using namespace cpphdl;
 
-template<size_t LANE_WIDTH = 160, size_t READ_PORTS = 4,
+template<size_t LANE_WIDTH = 64, size_t READ_PORTS = 1,
     size_t BANK_DEPTH = 4096, size_t RX_FIFO_DEPTH = 64,
-    size_t TX_FIFO_WORDS = 1024>
+    size_t TX_FIFO_WORDS = 2048>
 class Network : public Module
 {
 public:
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
@@ -442,5 +442,4 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class Network<160, 4, 4096, 64, 1024>;
-template class Network<320, 4, 4096, 64, 1024>;
+template class Network<64, 1, 4096, 64, 1024>;
