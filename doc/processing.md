@@ -52,6 +52,11 @@ devices --->|                         <-> DMA slave port  |
   - `DMA_CPU_SYSTEM`: coherent L2 to System RxQueue.
   - `DMA_CPU_NETWORK`: coherent L2 to Network TxFifo.
   - `DMA_NETWORK_CPU`: Network RxRAM to coherent L2.
+- `DMA_NETWORK_CPU` also has two ingress disposition flags used by line-rate
+  capture: discard without L2 traffic, or stream directly to System.
+- DescriptorFetcher has a combined action/doorbell that transfers the current
+  descriptor handle and length directly into PacketDMA's command FIFO. This
+  avoids per-packet CPU MMIO staging of five DMA registers.
 
 ```text
  cluster 0 cores -> PacketDMA[0] <-> L2[0] <-> RxRAM/Network/System queue 0
@@ -111,7 +116,7 @@ devices --->|                         <-> DMA slave port  |
 - `boot_hartid_in` is propagated into Tribe CSR `mhartid` (`0xF14`).
 - The capture firmware lets only `(mhartid & 3) == 0` run, preventing four
   local harts from consuming the same fetcher/DMA command stream.
-- The shared harness instantiates `N=4`; the RTL supports `1 <= N <= 8`.
+- The shared harness instantiates `N=8`; the RTL supports `1 <= N <= 8`.
 
 ## Recommended RAM/L2/host attachment
 

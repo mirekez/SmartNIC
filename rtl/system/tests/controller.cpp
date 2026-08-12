@@ -27,7 +27,8 @@ long _system_clock = -1;
 namespace
 {
 
-using Dut = Controller<8, 1024, 256>;
+using Dut = Controller<8, 1024, HOST_DATA_WIDTH>;
+static constexpr size_t HOST_BYTES = HOST_DATA_WIDTH / 8;
 
 template<typename T, typename V>
 static void copy_to_verilator(T& target, const V& value)
@@ -52,13 +53,13 @@ class ControllerTest
     Dut dut;
 #endif
 #if HOST_AXI4
-    Axi4Driver<32, 4, 256> host = {};
+    Axi4Driver<32, 4, HOST_DATA_WIDTH> host = {};
 #else
     u<32> host_address = 0;
     bool host_read = false;
     bool host_write = false;
-    logic<256> host_writedata = 0;
-    logic<32> host_byteenable = 0;
+    logic<HOST_DATA_WIDTH> host_writedata = 0;
+    logic<HOST_BYTES> host_byteenable = 0;
 #endif
     logic<8> rx_empty = 0xff;
     logic<128> rx_length = 0;
@@ -209,10 +210,11 @@ class ControllerTest
         return dut.host_control.rvalid_out();
 #endif
     }
-    logic<256> rdata()
+    logic<HOST_DATA_WIDTH> rdata()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<logic<256>>(dut.host_control___05Frdata_out);
+        return copy_from_verilator<logic<HOST_DATA_WIDTH>>(
+            dut.host_control___05Frdata_out);
 #else
         return dut.host_control.rdata_out();
 #endif
@@ -227,10 +229,10 @@ class ControllerTest
         return dut.host_control.readdatavalid_out();
 #endif
     }
-    logic<256> readdata()
+    logic<HOST_DATA_WIDTH> readdata()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<logic<256>>(
+        return copy_from_verilator<logic<HOST_DATA_WIDTH>>(
             dut.host_control___05Freaddata_out);
 #else
         return dut.host_control.readdata_out();
@@ -240,7 +242,7 @@ class ControllerTest
 
     void write32(uint32_t address, uint32_t value)
     {
-        uint32_t lane = address & 31u;
+        uint32_t lane = address & (HOST_BYTES - 1);
 #if HOST_AXI4
         host.aw.valid = true;
         host.aw.addr = address;
@@ -275,7 +277,7 @@ class ControllerTest
 
     uint32_t read32(uint32_t address)
     {
-        uint32_t lane = address & 31u;
+        uint32_t lane = address & (HOST_BYTES - 1);
 #if HOST_AXI4
         host.ar.valid = true;
         host.ar.addr = address;

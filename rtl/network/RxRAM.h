@@ -124,7 +124,7 @@ private:
     logic<READ_PORTS * LANE_WIDTH> read_data_comb;
     logic<READ_PORTS> read_valid_comb;
 
-    static uint32_t request_handle(logic<133> handles,
+    static uint32_t request_handle(logic<136> handles,
         uint32_t port)
     {
         return (uint32_t)handles.bits(port * HANDLE_BITS + HANDLE_BITS - 1,
@@ -140,14 +140,14 @@ private:
     }
 
     static uint32_t request_logical_row(
-        logic<133> handles, logic<112> words, uint32_t port)
+        logic<136> handles, logic<112> words, uint32_t port)
     {
         return (request_handle(handles, port) >> 3)
             + request_word(words, port);
     }
 
     static uint32_t request_physical_bank(
-        logic<133> handles, logic<112> words, uint32_t port)
+        logic<136> handles, logic<112> words, uint32_t port)
     {
         uint32_t handle;
         uint32_t logical;
@@ -792,7 +792,9 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class RxRAM<160, 4, 4096>;
-template class RxRAM<320, 4, 4096>;
+#ifdef SYNTHESIS
+template class RxRAM<160, 8, RX_RAM_BANK_DEPTH>;
+template class RxRAM<320, 8, RX_RAM_BANK_DEPTH>;
+#endif
 
 #undef RX_RAM_FOR_EACH_PHYSICAL_BANK

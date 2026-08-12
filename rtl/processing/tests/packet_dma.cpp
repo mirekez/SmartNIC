@@ -98,6 +98,10 @@ class PacketDmaTest
 #ifndef VERILATOR
         dut.mmio = mmio;
         dut.l2_dma = l2;
+        dut.descriptor_command_valid_in = _ASSIGN(false);
+        dut.descriptor_command_handle_in = _ASSIGN((u<16>)0);
+        dut.descriptor_command_length_in = _ASSIGN((u<14>)0);
+        dut.descriptor_command_system_in = _ASSIGN(false);
         dut.rx_read_ready_in = _ASSIGN(rx_read_ready);
         dut.rx_valid_in = _ASSIGN(rx_valid);
         dut.rx_data_in = _ASSIGN(rx_data);
@@ -121,6 +125,10 @@ class PacketDmaTest
 #ifdef VERILATOR
         dut.clk = clock;
         dut.reset = reset;
+        dut.descriptor_command_valid_in = false;
+        dut.descriptor_command_handle_in = 0;
+        dut.descriptor_command_length_in = 0;
+        dut.descriptor_command_system_in = false;
         dut.rx_read_ready_in = rx_read_ready;
         dut.rx_valid_in = rx_valid;
         copy_to_verilator(dut.rx_data_in, rx_data);
@@ -582,13 +590,14 @@ class PacketDmaTest
     }
 
     void issue(uint32_t operation, uint32_t length, uint32_t source,
-        uint32_t destination, uint32_t handle = 0)
+        uint32_t destination, uint32_t handle = 0,
+        uint32_t extra_flags = Dma::FLAG_CACHE_ALLOCATE)
     {
         write32(Dma::REG_RX_HANDLE, handle);
         write32(Dma::REG_LENGTH, length);
         write32(Dma::REG_SOURCE, source);
         write32(Dma::REG_DESTINATION, destination);
-        write32(Dma::REG_FLAGS, operation | Dma::FLAG_CACHE_ALLOCATE);
+        write32(Dma::REG_FLAGS, operation | extra_flags);
         write32(Dma::REG_COMMAND, Dma::COMMAND_PUSH);
     }
 
@@ -685,6 +694,45 @@ public:
         check_memory(network_destination, network_input,
             "network-to-CPU payload mismatch");
 
+        // Unselected ingress packet drains without consuming L2 bandwidth.
+        auto discarded_input = make_packet(73);
+        issue(DMA_NETWORK_CPU, discarded_input.size(), 0, network_destination,
+            handle + 1, Dma::FLAG_NETWORK_DISCARD);
+        for (uint32_t timeout = 0; timeout < 100 && !read_command_valid(); ++timeout) {
+            cycle();
+        }
+        if (!read_command_valid()) fail("discard never issued its RxRAM command");
+        rx_read_ready = true;
+        cycle();
+        rx_read_ready = false;
+        send_input(discarded_input, true);
+        check_memory(network_destination, network_input,
+            "discard fast path modified coherent memory");
+
+        // Selected ingress packet streams directly to the System RxQueue.
+        auto direct_system_input = make_packet(91);
+        system_output.clear();
+        system_output_sop = false;
+        system_output_eop = false;
+        issue(DMA_NETWORK_CPU, direct_system_input.size(), 0,
+            network_destination, handle + 2, Dma::FLAG_NETWORK_SYSTEM);
+        for (uint32_t timeout = 0; timeout < 100 && !read_command_valid(); ++timeout) {
+            cycle();
+        }
+        if (!read_command_valid()) {
+            fail("network-to-system fast path never issued its RxRAM command");
+        }
+        rx_read_ready = true;
+        cycle();
+        rx_read_ready = false;
+        send_input(direct_system_input, true);
+        if (system_output != direct_system_input) {
+            fail("network-to-system fast-path payload mismatch");
+        }
+        if (!system_output_sop || !system_output_eop) {
+            fail("network-to-system fast-path framing mismatch");
+        }
+
         // System TxQueue -> coherent CPU memory.
         const uint32_t system_destination = 0x800;
         auto system_input = make_packet(95);
@@ -721,7 +769,7 @@ public:
             fail("CPU-to-network framing mismatch");
         }
 
-        if (read32(Dma::REG_COMPLETED) != 4) fail("completion count mismatch");
+        if (read32(Dma::REG_COMPLETED) != 6) fail("completion count mismatch");
         if (read32(Dma::REG_LAST_OPERATION) != DMA_CPU_NETWORK) {
             fail("last operation register mismatch");
         }

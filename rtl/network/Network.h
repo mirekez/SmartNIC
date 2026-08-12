@@ -442,5 +442,7 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class Network<160, 4, 4096, 64, 1024>;
-template class Network<320, 4, 4096, 64, 1024>;
+#ifdef SYNTHESIS
+template class Network<160, 8, RX_RAM_BANK_DEPTH, 64, 1024>;
+template class Network<320, 8, RX_RAM_BANK_DEPTH, 64, 1024>;
+#endif

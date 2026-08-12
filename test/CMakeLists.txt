@@ -20,7 +20,7 @@ file(GLOB CAPTURE_STDCXXEXP
     "${PROJECT_SOURCE_DIR}/cpphdl/.conda/lib/gcc/*/*/libstdc++exp.a")
 
 option(SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS
-    "Register currently-red sustained 400G/800G throughput assertions in CTest"
+    "Register the longer sustained 400G/800G throughput assertions in CTest"
     OFF)
 
 function(smartnic_add_capture_target rate sustained)
@@ -55,7 +55,7 @@ function(smartnic_add_capture_target rate sustained)
         "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/spec"
         "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/cache"
         "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/devices")
-    target_compile_options(${target} PRIVATE -std=c++26 -fno-strict-aliasing)
+    target_compile_options(${target} PRIVATE -std=c++26 -fno-strict-aliasing -O2)
     cpphdl_add_host_opt_flags(${target})
     cpphdl_link_stdcxxexp_if_available(${target})
     if(CAPTURE_STDCXXEXP)
