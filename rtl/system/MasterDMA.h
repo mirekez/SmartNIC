@@ -1,9 +1,8 @@
 #pragma once
 
-// Host-memory DMA used by the System controller.  Queue-to-host commands write
-// complete RxQueue packets; host-to-queue commands read one scatter-gather
-// fragment and mark SOP/EOP according to command metadata.  HOST_AXI4 selects
-// the external 256-bit AXI4 or Avalon-MM master pins.
+// Host-memory DMA used by the System controller.  Processing queues retain
+// their 256-bit L2 width, while the host side is deliberately narrow enough
+// for the KlusterLab Kintex-7 PCIe Gen2 x1 datapath.
 
 #include "../../Config.h"
 #include "../common/Axi4Master.h"
@@ -35,8 +34,13 @@ class MasterDMA : public Module
 {
 public:
     static constexpr size_t DATA_BYTES = DATA_WIDTH / 8;
-    static_assert(DATA_WIDTH == 256,
-        "System queues and host DMA currently use 256-bit beats");
+    static constexpr size_t QUEUE_DATA_WIDTH = 256;
+    static constexpr size_t QUEUE_BYTES = QUEUE_DATA_WIDTH / 8;
+    static constexpr size_t CHUNKS = QUEUE_DATA_WIDTH / DATA_WIDTH;
+    static constexpr size_t CHUNK_BITS = clog2(CHUNKS);
+    static_assert(DATA_WIDTH == 64,
+        "Kintex-7 host DMA uses a 64-bit PCIe Gen2 x1 interface");
+    static_assert(QUEUE_DATA_WIDTH % DATA_WIDTH == 0);
 
     _PORT(bool) command_valid_in;
     _PORT(bool) command_ready_out;
@@ -47,18 +51,16 @@ public:
     _PORT(bool) command_sop_in;
     _PORT(bool) command_eop_in;
 
-    // RxQueue selected by the controller for queue-to-host traffic.
     _PORT(bool) queue_input_valid_in;
-    _PORT(logic<DATA_WIDTH>) queue_input_data_in;
-    _PORT(logic<DATA_BYTES>) queue_input_keep_in;
+    _PORT(logic<QUEUE_DATA_WIDTH>) queue_input_data_in;
+    _PORT(logic<QUEUE_BYTES>) queue_input_keep_in;
     _PORT(bool) queue_input_sop_in;
     _PORT(bool) queue_input_eop_in;
     _PORT(bool) queue_input_ready_out;
 
-    // TxQueue selected by the controller for host-to-queue traffic.
     _PORT(bool) queue_output_valid_out;
-    _PORT(logic<DATA_WIDTH>) queue_output_data_out;
-    _PORT(logic<DATA_BYTES>) queue_output_keep_out;
+    _PORT(logic<QUEUE_DATA_WIDTH>) queue_output_data_out;
+    _PORT(logic<QUEUE_BYTES>) queue_output_keep_out;
     _PORT(bool) queue_output_sop_out;
     _PORT(bool) queue_output_eop_out;
     _PORT(bool) queue_output_ready_in;
@@ -86,25 +88,42 @@ private:
     reg<u1> command_sop_reg;
     reg<u1> command_eop_reg;
     reg<u1> first_beat_reg;
-    reg<logic<DATA_WIDTH>> beat_data_reg;
-    reg<logic<DATA_BYTES>> beat_keep_reg;
-    reg<u1> beat_sop_reg;
-    reg<u1> beat_eop_reg;
+    reg<u<CHUNK_BITS>> chunk_reg;
+    reg<u<6>> queue_bytes_reg;
+    reg<logic<QUEUE_DATA_WIDTH>> queue_data_reg;
+    reg<logic<QUEUE_BYTES>> queue_keep_reg;
+    reg<u1> queue_sop_reg;
+    reg<u1> queue_eop_reg;
     reg<u1> completion_valid_reg;
     reg<u<3>> completion_queue_reg;
     reg<u1> completion_direction_reg;
     reg<u<32>> completed_reg;
     reg<u1> protocol_error_reg;
-    logic<DATA_BYTES> read_keep_comb;
+    logic<DATA_WIDTH> host_write_data_comb;
+    logic<DATA_BYTES> host_write_keep_comb;
 
-    logic<DATA_BYTES>& read_keep_comb_func()
+    logic<DATA_WIDTH>& host_write_data_comb_func()
+    {
+        uint32_t bit;
+        uint32_t base;
+        host_write_data_comb = 0;
+        base = (uint32_t)chunk_reg * DATA_WIDTH;
+        for (bit = 0; bit < DATA_WIDTH; ++bit) {
+            host_write_data_comb[bit] = queue_data_reg[base + bit];
+        }
+        return host_write_data_comb;
+    }
+
+    logic<DATA_BYTES>& host_write_keep_comb_func()
     {
         uint32_t byte;
-        read_keep_comb = 0;
+        uint32_t base;
+        host_write_keep_comb = 0;
+        base = (uint32_t)chunk_reg * DATA_BYTES;
         for (byte = 0; byte < DATA_BYTES; ++byte) {
-            read_keep_comb[byte] = byte < (uint32_t)remaining_reg;
+            host_write_keep_comb[byte] = queue_keep_reg[base + byte];
         }
-        return read_keep_comb;
+        return host_write_keep_comb;
     }
 
     uint32_t kept_bytes(logic<DATA_BYTES> keep)
@@ -115,6 +134,23 @@ private:
         count = 0;
         gap = false;
         for (byte = 0; byte < DATA_BYTES; ++byte) {
+            if (keep[byte]) {
+                if (gap) protocol_error_reg._next = true;
+                ++count;
+            }
+            else gap = true;
+        }
+        return count;
+    }
+
+    uint32_t kept_queue_bytes(logic<QUEUE_BYTES> keep)
+    {
+        uint32_t byte;
+        uint32_t count;
+        bool gap;
+        count = 0;
+        gap = false;
+        for (byte = 0; byte < QUEUE_BYTES; ++byte) {
             if (keep[byte]) {
                 if (gap) protocol_error_reg._next = true;
                 ++count;
@@ -141,10 +177,10 @@ public:
             == MASTER_DMA_WAIT_QUEUE);
         queue_output_valid_out = _ASSIGN((uint32_t)state_reg
             == MASTER_DMA_SEND_QUEUE);
-        queue_output_data_out = _ASSIGN_REG(beat_data_reg);
-        queue_output_keep_out = _ASSIGN_REG(beat_keep_reg);
-        queue_output_sop_out = _ASSIGN_REG(beat_sop_reg);
-        queue_output_eop_out = _ASSIGN_REG(beat_eop_reg);
+        queue_output_data_out = _ASSIGN_REG(queue_data_reg);
+        queue_output_keep_out = _ASSIGN_REG(queue_keep_reg);
+        queue_output_sop_out = _ASSIGN_REG(queue_sop_reg);
+        queue_output_eop_out = _ASSIGN_REG(queue_eop_reg);
 
 #if HOST_AXI4
         host.awvalid_out = _ASSIGN((uint32_t)state_reg
@@ -152,8 +188,8 @@ public:
         host.awaddr_out = _ASSIGN_REG(address_reg);
         host.awid_out = _ASSIGN((u<ID_WIDTH>)0);
         host.wvalid_out = _ASSIGN((uint32_t)state_reg == MASTER_DMA_WRITE_DATA);
-        host.wdata_out = _ASSIGN_REG(beat_data_reg);
-        host.wstrb_out = _ASSIGN_REG(beat_keep_reg);
+        host.wdata_out = _ASSIGN_COMB(host_write_data_comb_func());
+        host.wstrb_out = _ASSIGN_COMB(host_write_keep_comb_func());
         host.wlast_out = _ASSIGN(true);
         host.bready_out = _ASSIGN((uint32_t)state_reg
             == MASTER_DMA_WRITE_RESPONSE);
@@ -166,8 +202,8 @@ public:
         host_out.address_in = _ASSIGN_REG(address_reg);
         host_out.read_in = _ASSIGN((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS);
         host_out.write_in = _ASSIGN((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS);
-        host_out.writedata_in = _ASSIGN_REG(beat_data_reg);
-        host_out.byteenable_in = _ASSIGN_REG(beat_keep_reg);
+        host_out.writedata_in = _ASSIGN_COMB(host_write_data_comb_func());
+        host_out.byteenable_in = _ASSIGN_COMB(host_write_keep_comb_func());
 #endif
 
         busy_out = _ASSIGN((uint32_t)state_reg != MASTER_DMA_IDLE);
@@ -182,10 +218,12 @@ public:
     void _work(bool reset)
     {
         uint32_t bytes;
+        uint32_t byte;
+        uint32_t bit;
+        uint32_t base;
         completion_valid_reg._next = false;
 
-        if ((uint32_t)state_reg == MASTER_DMA_IDLE
-            && command_valid_in()) {
+        if ((uint32_t)state_reg == MASTER_DMA_IDLE && command_valid_in()) {
             direction_reg._next = command_direction_in();
             queue_reg._next = command_queue_in();
             address_reg._next = command_address_in();
@@ -193,6 +231,10 @@ public:
             command_sop_reg._next = command_sop_in();
             command_eop_reg._next = command_eop_in();
             first_beat_reg._next = true;
+            chunk_reg._next = 0;
+            queue_bytes_reg._next = 0;
+            queue_data_reg._next = 0;
+            queue_keep_reg._next = 0;
             if ((uint32_t)command_length_in() == 0
                 || ((uint64_t)command_address_in() & 3u) != 0
                 || ((uint32_t)command_length_in() & 3u) != 0) {
@@ -201,101 +243,107 @@ public:
             else if (command_direction_in() == MASTER_DMA_QUEUE_TO_HOST) {
                 state_reg._next = MASTER_DMA_WAIT_QUEUE;
             }
-            else {
-                state_reg._next = MASTER_DMA_READ_ADDRESS;
-            }
+            else state_reg._next = MASTER_DMA_READ_ADDRESS;
         }
         else if ((uint32_t)state_reg == MASTER_DMA_WAIT_QUEUE
             && queue_input_valid_in()) {
-            beat_data_reg._next = queue_input_data_in();
-            beat_keep_reg._next = queue_input_keep_in();
-            beat_sop_reg._next = queue_input_sop_in();
-            beat_eop_reg._next = queue_input_eop_in();
-            if ((bool)first_beat_reg != queue_input_sop_in()) {
+            bytes = kept_queue_bytes(queue_input_keep_in());
+            queue_data_reg._next = queue_input_data_in();
+            queue_keep_reg._next = queue_input_keep_in();
+            queue_sop_reg._next = queue_input_sop_in();
+            queue_eop_reg._next = queue_input_eop_in();
+            queue_bytes_reg._next = bytes;
+            chunk_reg._next = 0;
+            if (bytes == 0 || bytes > (uint32_t)remaining_reg
+                || (bool)first_beat_reg != queue_input_sop_in()) {
                 protocol_error_reg._next = true;
             }
             state_reg._next = MASTER_DMA_WRITE_ADDRESS;
         }
 #if HOST_AXI4
         else if ((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS
-            && host.awready_in()) {
-            state_reg._next = MASTER_DMA_WRITE_DATA;
-        }
+            && host.awready_in()) state_reg._next = MASTER_DMA_WRITE_DATA;
         else if ((uint32_t)state_reg == MASTER_DMA_WRITE_DATA
-            && host.wready_in()) {
-            state_reg._next = MASTER_DMA_WRITE_RESPONSE;
-        }
+            && host.wready_in()) state_reg._next = MASTER_DMA_WRITE_RESPONSE;
         else if ((uint32_t)state_reg == MASTER_DMA_WRITE_RESPONSE
             && host.bvalid_in()) {
-            bytes = kept_bytes(beat_keep_reg);
-            if (bytes == 0 || bytes > (uint32_t)remaining_reg) {
-                protocol_error_reg._next = true;
-            }
-            if (beat_eop_reg) {
-                if (bytes != (uint32_t)remaining_reg) protocol_error_reg._next = true;
-                complete_command();
-            }
-            else {
-                address_reg._next = address_reg + bytes;
-                remaining_reg._next = remaining_reg - bytes;
-                first_beat_reg._next = false;
-                state_reg._next = MASTER_DMA_WAIT_QUEUE;
-            }
-        }
-        else if ((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS
-            && host.arready_in()) {
-            state_reg._next = MASTER_DMA_READ_DATA;
-        }
-        else if ((uint32_t)state_reg == MASTER_DMA_READ_DATA
-            && host.rvalid_in()) {
-            beat_data_reg._next = host.rdata_in();
-            beat_keep_reg._next = read_keep_comb_func();
-            beat_sop_reg._next = first_beat_reg && command_sop_reg;
-            beat_eop_reg._next = (uint32_t)remaining_reg <= DATA_BYTES
-                && command_eop_reg;
-            state_reg._next = MASTER_DMA_SEND_QUEUE;
-        }
 #else
         else if ((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS
             && !host_out.waitrequest_out()) {
-            bytes = kept_bytes(beat_keep_reg);
-            if (bytes == 0 || bytes > (uint32_t)remaining_reg) {
+#endif
+            bytes = kept_bytes(host_write_keep_comb_func());
+            if (bytes == 0 || bytes > (uint32_t)remaining_reg)
                 protocol_error_reg._next = true;
-            }
-            if (beat_eop_reg) {
-                if (bytes != (uint32_t)remaining_reg) protocol_error_reg._next = true;
+            if (bytes >= (uint32_t)remaining_reg) {
+                if (!queue_eop_reg || bytes != (uint32_t)remaining_reg)
+                    protocol_error_reg._next = true;
                 complete_command();
             }
+            else if (((uint32_t)chunk_reg + 1) * DATA_BYTES
+                < (uint32_t)queue_bytes_reg) {
+                address_reg._next = address_reg + bytes;
+                remaining_reg._next = remaining_reg - bytes;
+                chunk_reg._next = chunk_reg + 1;
+                state_reg._next = MASTER_DMA_WRITE_ADDRESS;
+            }
             else {
+                if (queue_eop_reg) protocol_error_reg._next = true;
                 address_reg._next = address_reg + bytes;
                 remaining_reg._next = remaining_reg - bytes;
                 first_beat_reg._next = false;
                 state_reg._next = MASTER_DMA_WAIT_QUEUE;
             }
         }
+#if HOST_AXI4
         else if ((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS
-            && !host_out.waitrequest_out()) {
-            state_reg._next = MASTER_DMA_READ_DATA;
-        }
+            && host.arready_in()) state_reg._next = MASTER_DMA_READ_DATA;
+        else if ((uint32_t)state_reg == MASTER_DMA_READ_DATA
+            && host.rvalid_in()) {
+            base = (uint32_t)chunk_reg * DATA_WIDTH;
+            bytes = (uint32_t)remaining_reg < DATA_BYTES
+                ? (uint32_t)remaining_reg : DATA_BYTES;
+            for (bit = 0; bit < DATA_WIDTH; ++bit)
+                queue_data_reg._next[base + bit] = host.rdata_in()[bit];
+#else
+        else if ((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS
+            && !host_out.waitrequest_out()) state_reg._next = MASTER_DMA_READ_DATA;
         else if ((uint32_t)state_reg == MASTER_DMA_READ_DATA
             && host_out.readdatavalid_out()) {
-            beat_data_reg._next = host_out.readdata_out();
-            beat_keep_reg._next = read_keep_comb_func();
-            beat_sop_reg._next = first_beat_reg && command_sop_reg;
-            beat_eop_reg._next = (uint32_t)remaining_reg <= DATA_BYTES
-                && command_eop_reg;
-            state_reg._next = MASTER_DMA_SEND_QUEUE;
-        }
+            base = (uint32_t)chunk_reg * DATA_WIDTH;
+            bytes = (uint32_t)remaining_reg < DATA_BYTES
+                ? (uint32_t)remaining_reg : DATA_BYTES;
+            for (bit = 0; bit < DATA_WIDTH; ++bit)
+                queue_data_reg._next[base + bit] = host_out.readdata_out()[bit];
 #endif
-        else if ((uint32_t)state_reg == MASTER_DMA_SEND_QUEUE
-            && queue_output_ready_in()) {
-            if ((uint32_t)remaining_reg <= DATA_BYTES) {
-                complete_command();
+            base = (uint32_t)chunk_reg * DATA_BYTES;
+            for (byte = 0; byte < DATA_BYTES; ++byte)
+                queue_keep_reg._next[base + byte] = byte < bytes;
+            if ((uint32_t)remaining_reg <= DATA_BYTES
+                || (uint32_t)chunk_reg == CHUNKS - 1) {
+                queue_sop_reg._next = first_beat_reg && command_sop_reg;
+                queue_eop_reg._next = (uint32_t)remaining_reg <= DATA_BYTES
+                    && command_eop_reg;
+                state_reg._next = MASTER_DMA_SEND_QUEUE;
             }
             else {
                 address_reg._next = address_reg + DATA_BYTES;
                 remaining_reg._next = remaining_reg - DATA_BYTES;
+                chunk_reg._next = chunk_reg + 1;
+                state_reg._next = MASTER_DMA_READ_ADDRESS;
+            }
+        }
+        else if ((uint32_t)state_reg == MASTER_DMA_SEND_QUEUE
+            && queue_output_ready_in()) {
+            bytes = (uint32_t)remaining_reg < DATA_BYTES
+                ? (uint32_t)remaining_reg : DATA_BYTES;
+            if ((uint32_t)remaining_reg <= DATA_BYTES) complete_command();
+            else {
+                address_reg._next = address_reg + bytes;
+                remaining_reg._next = remaining_reg - bytes;
                 first_beat_reg._next = false;
+                chunk_reg._next = 0;
+                queue_data_reg._next = 0;
+                queue_keep_reg._next = 0;
                 state_reg._next = MASTER_DMA_READ_ADDRESS;
             }
         }
@@ -309,10 +357,12 @@ public:
             command_sop_reg.clr();
             command_eop_reg.clr();
             first_beat_reg.clr();
-            beat_data_reg.clr();
-            beat_keep_reg.clr();
-            beat_sop_reg.clr();
-            beat_eop_reg.clr();
+            chunk_reg.clr();
+            queue_bytes_reg.clr();
+            queue_data_reg.clr();
+            queue_keep_reg.clr();
+            queue_sop_reg.clr();
+            queue_eop_reg.clr();
             completion_valid_reg.clr();
             completion_queue_reg.clr();
             completion_direction_reg.clr();
@@ -331,10 +381,12 @@ public:
         command_sop_reg.strobe();
         command_eop_reg.strobe();
         first_beat_reg.strobe();
-        beat_data_reg.strobe();
-        beat_keep_reg.strobe();
-        beat_sop_reg.strobe();
-        beat_eop_reg.strobe();
+        chunk_reg.strobe();
+        queue_bytes_reg.strobe();
+        queue_data_reg.strobe();
+        queue_keep_reg.strobe();
+        queue_sop_reg.strobe();
+        queue_eop_reg.strobe();
         completion_valid_reg.strobe();
         completion_queue_reg.strobe();
         completion_direction_reg.strobe();

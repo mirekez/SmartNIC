@@ -1,9 +1,7 @@
 /*
- * One capture worker runs in every four-core Tribe cluster. It enables the
- * local DescriptorFetcher, copies each RxRAM packet into the coherent L2
- * address space, then immediately sends it through the corresponding System
- * RxQueue. The host driver owns the System RX descriptor ring and destination
- * addresses.
+ * One capture worker runs on the single Tribe cluster.  Every descriptor is
+ * released, but only packet 100, 200, ... is copied through the System RxQueue
+ * to the host.
  */
 
     .section .text.start, "ax", @progbits
@@ -40,11 +38,17 @@ _start:
     li      s2, PACKET_BUFFER
     li      t0, 1
     sw      t0, FETCHER_CONTROL(s0)
+    li      s4, 0
 
 .Lnext_descriptor:
     lw      t0, FETCHER_STATUS(s0)
     andi    t0, t0, 1
     beqz    t0, .Lnext_descriptor
+
+    addi    s4, s4, 1
+    li      t0, 100
+    bne     s4, t0, .Lrelease_descriptor
+    li      s4, 0
 
     lw      a0, FETCHER_PACKET_ADDR(s0)
     lw      a1, FETCHER_PACKET_META(s0)
@@ -76,6 +80,7 @@ _start:
     lw      t0, DMA_COMPLETED(s1)
     beq     t0, s3, .Lwait_cpu_system
 
+.Lrelease_descriptor:
     li      t0, 1
     sw      t0, FETCHER_ACTION(s0)
     j       .Lnext_descriptor

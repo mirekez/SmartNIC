@@ -8,28 +8,28 @@ import PacketParserCursor_pkg::*;
 
 
 module PacketParser #(
-    parameter LANE_WIDTH = 'hA0
+    parameter LANE_WIDTH = 'h40
  )
  (
-    input wire clk
-,   input wire l2_clock
+    input wire net_clk
+,   input wire l2_clk
 ,   input wire reset
-,   input wire[8-1:0] valid_in
+,   input wire[2-1:0] valid_in
 ,   input wire[INPUT_BITS-1:0] data_in
 ,   input wire[INPUT_BYTES-1:0] keep_in
 ,   input wire[INPUT_BYTES-1:0] sop_in
 ,   input wire[INPUT_BYTES-1:0] eop_in
-,   input wire[8-1:0] raw_in
-,   output wire[8-1:0] ready_out
-,   output PacketParserWord[8-1:0] data_out
-,   output wire[512-1:0] keep_out
-,   output wire[8-1:0] valid_out
-,   output wire[8-1:0] last_out
-,   output wire[8-1:0] raw_out
-,   input wire[8-1:0] ready_in
+,   input wire[2-1:0] raw_in
+,   output wire[2-1:0] ready_out
+,   output PacketParserWord[2-1:0] data_out
+,   output wire[128-1:0] keep_out
+,   output wire[2-1:0] valid_out
+,   output wire[2-1:0] last_out
+,   output wire[2-1:0] raw_out
+,   input wire[2-1:0] ready_in
 ,   output wire protocol_error_out
 );
-    parameter  STREAMS = 64'h8;
+    parameter  STREAMS = 64'h2;
     parameter  LANE_BYTES = LANE_WIDTH/'h8;
     parameter  INPUT_BITS = STREAMS*LANE_WIDTH;
     parameter  INPUT_BYTES = STREAMS*LANE_BYTES;
@@ -42,43 +42,43 @@ module PacketParser #(
 
 
     // regs and combs
-    reg[3072-1:0] aligned_header_reg[8];
-    reg[9-1:0] header_count_reg[8];
-    reg[14-1:0] frame_length_reg[8];
-    reg in_frame_reg[8];
-    reg frame_raw_reg[8];
-    reg header_truncated_reg[8];
-    reg[512-1:0] fifo_data_reg[8][4];
-    reg[64-1:0] fifo_keep_reg[8][4];
-    reg fifo_last_reg[8][4];
-    reg fifo_raw_reg[8][4];
-    reg[2-1:0] fifo_head_reg[8];
-    reg[2-1:0] fifo_tail_reg[8];
-    reg[3-1:0] fifo_count_reg[8];
+    reg[3072-1:0] aligned_header_reg[2];
+    reg[9-1:0] header_count_reg[2];
+    reg[14-1:0] frame_length_reg[2];
+    reg in_frame_reg[2];
+    reg frame_raw_reg[2];
+    reg header_truncated_reg[2];
+    reg[512-1:0] fifo_data_reg[2][4];
+    reg[64-1:0] fifo_keep_reg[2][4];
+    reg fifo_last_reg[2][4];
+    reg fifo_raw_reg[2][4];
+    reg[2-1:0] fifo_head_reg[2];
+    reg[2-1:0] fifo_tail_reg[2];
+    reg[3-1:0] fifo_count_reg[2];
     reg protocol_error_reg;
-    PacketParserWord[8-1:0] output_data_comb;
-    logic[512-1:0] output_keep_comb;
-    logic[8-1:0] output_valid_comb;
-    logic[8-1:0] output_last_comb;
-    logic[8-1:0] output_raw_comb;
-    logic[8-1:0] input_ready_comb;
+    PacketParserWord[2-1:0] output_data_comb;
+    logic[128-1:0] output_keep_comb;
+    logic[2-1:0] output_valid_comb;
+    logic[2-1:0] output_last_comb;
+    logic[2-1:0] output_raw_comb;
+    logic[2-1:0] input_ready_comb;
 
     // members
 
     // tmp variables
-    logic[3072-1:0] aligned_header_reg_tmp[8];
-    logic[9-1:0] header_count_reg_tmp[8];
-    logic[14-1:0] frame_length_reg_tmp[8];
-    logic in_frame_reg_tmp[8];
-    logic frame_raw_reg_tmp[8];
-    logic header_truncated_reg_tmp[8];
-    logic[512-1:0] fifo_data_reg_tmp[8][4];
-    logic[64-1:0] fifo_keep_reg_tmp[8][4];
-    logic fifo_last_reg_tmp[8][4];
-    logic fifo_raw_reg_tmp[8][4];
-    logic[2-1:0] fifo_head_reg_tmp[8];
-    logic[2-1:0] fifo_tail_reg_tmp[8];
-    logic[3-1:0] fifo_count_reg_tmp[8];
+    logic[3072-1:0] aligned_header_reg_tmp[2];
+    logic[9-1:0] header_count_reg_tmp[2];
+    logic[14-1:0] frame_length_reg_tmp[2];
+    logic in_frame_reg_tmp[2];
+    logic frame_raw_reg_tmp[2];
+    logic header_truncated_reg_tmp[2];
+    logic[512-1:0] fifo_data_reg_tmp[2][4];
+    logic[64-1:0] fifo_keep_reg_tmp[2][4];
+    logic fifo_last_reg_tmp[2][4];
+    logic fifo_raw_reg_tmp[2][4];
+    logic[2-1:0] fifo_head_reg_tmp[2];
+    logic[2-1:0] fifo_tail_reg_tmp[2];
+    logic[3-1:0] fifo_count_reg_tmp[2];
     logic protocol_error_reg_tmp;
 
 
@@ -775,12 +775,18 @@ module PacketParser #(
     end
     endtask
 
-    task _work_l2_clock (input logic reset);
-    begin: _work_l2_clock
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
+        _work(reset);
     end
     endtask
 
-    always_ff @(posedge clk) begin
+    task _work_l2_clk (input logic unused);
+    begin: _work_l2_clk
+    end
+    endtask
+
+    always_ff @(posedge net_clk) begin
         aligned_header_reg_tmp = aligned_header_reg;
         header_count_reg_tmp = header_count_reg;
         frame_length_reg_tmp = frame_length_reg;
@@ -796,7 +802,7 @@ module PacketParser #(
         fifo_count_reg_tmp = fifo_count_reg;
         protocol_error_reg_tmp = protocol_error_reg;
 
-        _work(reset);
+        _work_net_clk(reset);
 
         aligned_header_reg <= aligned_header_reg_tmp;
         header_count_reg <= header_count_reg_tmp;
@@ -814,9 +820,9 @@ module PacketParser #(
         protocol_error_reg <= protocol_error_reg_tmp;
     end
 
-    always_ff @(posedge l2_clock) begin
+    always_ff @(posedge l2_clk) begin
 
-        _work_l2_clock(reset);
+        _work_l2_clk(reset);
 
     end
 

@@ -1,15 +1,14 @@
 #pragma once
 
 // Processing level.  Complete descriptors are distributed round-robin to
-// per-cluster prefetch queues.  Each four-core Tribe cluster owns one coherent
-// PacketDMA and one independent RxRAM read channel.  Stream CDC FIFOs isolate
-// the L2/network clock from the faster Tribe core/MMIO clock.
+// the single prefetch queue.  One Tribe cluster owns one coherent
+// PacketDMA and one RxRAM read channel. Network, L2, and processing share the
+// 156.25 MHz clock, so their former asynchronous FIFOs are unnecessary.
 
 #include "../../Config.h"
 #include "CPU.h"
 #include "DescriptorFetcher.h"
 #include "PacketDMA.h"
-#include "../common/AsyncFifo.h"
 #include "../../cpphdl/tribe_cpu/common/Axi4RegionMux.h"
 
 using namespace cpphdl;
@@ -19,7 +18,6 @@ template<size_t CPU_COUNT = CPUS_USED, size_t HANDLE_BITS = 16,
 class Processing : public Module
 {
 public:
-    static constexpr size_t DESCRIPTOR_CDC_BITS = 256 + 3 + 1 + 1;
     static constexpr size_t READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
     static constexpr size_t RX_STREAM_BITS = 256 + 32 + 1 + 1;
     static constexpr size_t TARGET_BITS = CPU_COUNT <= 1 ? 1 : clog2(CPU_COUNT);
@@ -28,14 +26,14 @@ public:
     static constexpr uint32_t DMA_BASE = 0x1000;
     static constexpr uint32_t DMA_SIZE = 0x1000;
 
-    static_assert(CPU_COUNT >= 1 && CPU_COUNT <= 8,
-        "CPUS_USED must select between one and eight Tribe clusters");
+    static_assert(CPU_COUNT == 1,
+        "Kintex-7 downgrade uses one Tribe cluster");
 
     CPU cpu[CPU_COUNT];
     DescriptorFetcher<> descriptor_fetcher[CPU_COUNT];
     PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS> packet_dma[CPU_COUNT];
 
-    // Aggregate descriptor stream from SmartNIC's L2-side CDC boundary.
+    // Aggregate descriptor stream from SmartNIC on the shared clock.
     _PORT(bool) descriptor_valid_in;
     _PORT(logic<256>) descriptor_data_in;
     _PORT(u<3>) descriptor_word_in;
@@ -55,8 +53,8 @@ public:
     _PORT(logic<CPU_COUNT>) rx_eop_in;
     _PORT(logic<CPU_COUNT>) rx_ready_out;
 
-    // PacketDMA streams at the L2-clock boundary.  The System level adds the
-    // final L2-to-host-clock CDC before its eight RxQueue/TxQueue instances.
+    // PacketDMA streams at the processing boundary. The System level retains
+    // the required processing-to-PCIe-clock CDC around its one queue pair.
     _PORT(logic<CPU_COUNT>) to_system_valid_out;
     _PORT(logic<CPU_COUNT * 256>) to_system_data_out;
     _PORT(logic<CPU_COUNT * 32>) to_system_keep_out;
@@ -70,7 +68,7 @@ public:
     _PORT(logic<CPU_COUNT>) from_system_eop_in;
     _PORT(logic<CPU_COUNT>) from_system_ready_out;
 
-    // CPU-to-network packet streams feed the matching SmartNIC L2 TxFIFO CDC.
+    // CPU-to-network packet streams feed the matching synchronous converters.
     _PORT(logic<CPU_COUNT>) to_network_valid_out;
     _PORT(logic<CPU_COUNT * 256>) to_network_data_out;
     _PORT(logic<CPU_COUNT * 32>) to_network_keep_out;
@@ -91,16 +89,8 @@ public:
     _PORT(bool) cache_invalidate_in[CPU_COUNT];
 
 private:
-    AsyncFifoL2ToCpu<DESCRIPTOR_CDC_BITS, 16> descriptor_cdc[CPU_COUNT];
-    AsyncFifoCpuToL2<READ_COMMAND_BITS, 16> read_command_cdc[CPU_COUNT];
-    AsyncFifoL2ToCpu<RX_STREAM_BITS, 16> rx_stream_cdc[CPU_COUNT];
-    AsyncFifoCpuToL2<RX_STREAM_BITS, 16> to_system_cdc[CPU_COUNT];
-    AsyncFifoL2ToCpu<RX_STREAM_BITS, 16> from_system_cdc[CPU_COUNT];
-    AsyncFifoCpuToL2<RX_STREAM_BITS, 16> to_network_cdc[CPU_COUNT];
     Axi4RegionMux<2, 32, 4, 256> iomem_mux[CPU_COUNT];
-    reg<u<TARGET_BITS>> descriptor_target_reg;
 
-    logic<DESCRIPTOR_CDC_BITS> descriptor_pack_comb;
     logic<CPU_COUNT> rx_read_valid_comb;
     logic<CPU_COUNT * HANDLE_BITS> rx_read_handle_comb;
     logic<CPU_COUNT * FRAME_LENGTH_BITS> rx_read_length_comb;
@@ -119,22 +109,12 @@ private:
     logic<CPU_COUNT> to_network_sop_comb;
     logic<CPU_COUNT> to_network_eop_comb;
 
-    logic<DESCRIPTOR_CDC_BITS>& descriptor_pack_comb_func()
-    {
-        descriptor_pack_comb = 0;
-        descriptor_pack_comb.bits(255, 0) = descriptor_data_in();
-        descriptor_pack_comb.bits(258, 256) = descriptor_word_in();
-        descriptor_pack_comb[259] = descriptor_sop_in();
-        descriptor_pack_comb[260] = descriptor_eop_in();
-        return descriptor_pack_comb;
-    }
-
     logic<CPU_COUNT>& rx_read_valid_comb_func()
     {
         uint32_t index;
         rx_read_valid_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            rx_read_valid_comb[index] = read_command_cdc[index].read_valid_out();
+            rx_read_valid_comb[index] = packet_dma[index].rx_read_valid_out();
         }
         return rx_read_valid_comb;
     }
@@ -146,7 +126,8 @@ private:
         logic<READ_COMMAND_BITS> command;
         rx_read_handle_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            command = read_command_cdc[index].read_data_out();
+            command = cat(packet_dma[index].rx_read_length_out(),
+                packet_dma[index].rx_read_handle_out());
             for (bit = 0; bit < HANDLE_BITS; ++bit) {
                 rx_read_handle_comb[index * HANDLE_BITS + bit] = command[bit];
             }
@@ -161,7 +142,8 @@ private:
         logic<READ_COMMAND_BITS> command;
         rx_read_length_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            command = read_command_cdc[index].read_data_out();
+            command = cat(packet_dma[index].rx_read_length_out(),
+                packet_dma[index].rx_read_handle_out());
             for (bit = 0; bit < FRAME_LENGTH_BITS; ++bit) {
                 rx_read_length_comb[index * FRAME_LENGTH_BITS + bit] =
                     command[HANDLE_BITS + bit];
@@ -175,7 +157,7 @@ private:
         uint32_t index;
         rx_ready_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            rx_ready_comb[index] = rx_stream_cdc[index].write_ready_out();
+            rx_ready_comb[index] = packet_dma[index].rx_ready_out();
         }
         return rx_ready_comb;
     }
@@ -219,13 +201,13 @@ private:
         return from_system_pack_comb;
     }
 
-#define PROCESSING_STREAM_OUTPUT_FUNCTIONS(prefix, fifo_name) \
+#define PROCESSING_STREAM_OUTPUT_FUNCTIONS(prefix, valid_port, data_port, keep_port, sop_port, eop_port) \
     logic<CPU_COUNT>& prefix##_valid_comb_func() \
     { \
         uint32_t index; \
         prefix##_valid_comb = 0; \
         for (index = 0; index < CPU_COUNT; ++index) \
-            prefix##_valid_comb[index] = fifo_name[index].read_valid_out(); \
+            prefix##_valid_comb[index] = packet_dma[index].valid_port(); \
         return prefix##_valid_comb; \
     } \
     logic<CPU_COUNT * 256>& prefix##_data_comb_func() \
@@ -235,7 +217,7 @@ private:
         for (index = 0; index < CPU_COUNT; ++index) \
             for (bit = 0; bit < 256; ++bit) \
                 prefix##_data_comb[index * 256 + bit] = \
-                    fifo_name[index].read_data_out()[bit]; \
+                    packet_dma[index].data_port()[bit]; \
         return prefix##_data_comb; \
     } \
     logic<CPU_COUNT * 32>& prefix##_keep_comb_func() \
@@ -245,7 +227,7 @@ private:
         for (index = 0; index < CPU_COUNT; ++index) \
             for (bit = 0; bit < 32; ++bit) \
                 prefix##_keep_comb[index * 32 + bit] = \
-                    fifo_name[index].read_data_out()[256 + bit]; \
+                    packet_dma[index].keep_port()[bit]; \
         return prefix##_keep_comb; \
     } \
     logic<CPU_COUNT>& prefix##_sop_comb_func() \
@@ -253,7 +235,7 @@ private:
         uint32_t index; \
         prefix##_sop_comb = 0; \
         for (index = 0; index < CPU_COUNT; ++index) \
-            prefix##_sop_comb[index] = fifo_name[index].read_data_out()[288]; \
+            prefix##_sop_comb[index] = packet_dma[index].sop_port(); \
         return prefix##_sop_comb; \
     } \
     logic<CPU_COUNT>& prefix##_eop_comb_func() \
@@ -261,11 +243,15 @@ private:
         uint32_t index; \
         prefix##_eop_comb = 0; \
         for (index = 0; index < CPU_COUNT; ++index) \
-            prefix##_eop_comb[index] = fifo_name[index].read_data_out()[289]; \
+            prefix##_eop_comb[index] = packet_dma[index].eop_port(); \
         return prefix##_eop_comb; \
     }
-    PROCESSING_STREAM_OUTPUT_FUNCTIONS(to_system, to_system_cdc)
-    PROCESSING_STREAM_OUTPUT_FUNCTIONS(to_network, to_network_cdc)
+    PROCESSING_STREAM_OUTPUT_FUNCTIONS(to_system, system_tx_valid_out,
+        system_tx_data_out, system_tx_keep_out, system_tx_sop_out,
+        system_tx_eop_out)
+    PROCESSING_STREAM_OUTPUT_FUNCTIONS(to_network, network_tx_valid_out,
+        network_tx_data_out, network_tx_keep_out, network_tx_sop_out,
+        network_tx_eop_out)
 #undef PROCESSING_STREAM_OUTPUT_FUNCTIONS
 
     logic<CPU_COUNT>& from_system_ready_comb_func()
@@ -274,7 +260,7 @@ private:
         from_system_ready_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
             from_system_ready_comb[index] =
-                from_system_cdc[index].write_ready_out();
+                packet_dma[index].system_rx_ready_out();
         }
         return from_system_ready_comb;
     }
@@ -286,7 +272,7 @@ public:
         uint32_t core;
 
         descriptor_ready_out = _ASSIGN(
-            descriptor_cdc[(uint32_t)descriptor_target_reg].write_ready_out());
+            descriptor_fetcher[0].descriptor_ready_out());
         rx_read_valid_out = _ASSIGN_COMB(rx_read_valid_comb_func());
         rx_read_handle_out = _ASSIGN_COMB(rx_read_handle_comb_func());
         rx_read_length_out = _ASSIGN_COMB(rx_read_length_comb_func());
@@ -304,24 +290,12 @@ public:
         to_network_eop_out = _ASSIGN_COMB(to_network_eop_comb_func());
 
         for (index = 0; index < CPU_COUNT; ++index) {
-            descriptor_cdc[index].write_valid_in = _ASSIGN_INDEXED((index),
-                descriptor_valid_in() && (uint32_t)descriptor_target_reg == index);
-            descriptor_cdc[index].write_data_in =
-                _ASSIGN_REG_INDEXED((index), descriptor_pack_comb_func());
-            descriptor_cdc[index].read_ready_in =
-                descriptor_fetcher[index].descriptor_ready_out;
-            descriptor_cdc[index]._assign();
-
             descriptor_fetcher[index].descriptor_valid_in =
-                descriptor_cdc[index].read_valid_out;
-            descriptor_fetcher[index].descriptor_data_in = _ASSIGN_INDEXED((index),
-                (logic<256>)descriptor_cdc[index].read_data_out().bits(255, 0));
-            descriptor_fetcher[index].descriptor_word_in = _ASSIGN_INDEXED((index),
-                (u<3>)descriptor_cdc[index].read_data_out().bits(258, 256));
-            descriptor_fetcher[index].descriptor_sop_in = _ASSIGN_INDEXED((index),
-                descriptor_cdc[index].read_data_out()[259]);
-            descriptor_fetcher[index].descriptor_eop_in = _ASSIGN_INDEXED((index),
-                descriptor_cdc[index].read_data_out()[260]);
+                descriptor_valid_in;
+            descriptor_fetcher[index].descriptor_data_in = descriptor_data_in;
+            descriptor_fetcher[index].descriptor_word_in = descriptor_word_in;
+            descriptor_fetcher[index].descriptor_sop_in = descriptor_sop_in;
+            descriptor_fetcher[index].descriptor_eop_in = descriptor_eop_in;
 
             // CPU uncached IOMEM is split into descriptor and DMA windows.
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(iomem_mux[index].slave_in,
@@ -347,78 +321,39 @@ public:
             AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].l2_dma,
                 cpu[index].dma_in);
 
-            read_command_cdc[index].write_valid_in =
-                packet_dma[index].rx_read_valid_out;
-            read_command_cdc[index].write_data_in = _ASSIGN_INDEXED((index), cat(
-                packet_dma[index].rx_read_length_out(),
-                packet_dma[index].rx_read_handle_out()));
             packet_dma[index].rx_read_ready_in =
-                read_command_cdc[index].write_ready_out;
-            read_command_cdc[index].read_ready_in = _ASSIGN_INDEXED((index),
-                rx_read_ready_in()[index]);
-            read_command_cdc[index]._assign();
-
-            rx_stream_cdc[index].write_valid_in = _ASSIGN_INDEXED((index),
+                _ASSIGN_INDEXED((index), rx_read_ready_in()[index]);
+            packet_dma[index].rx_valid_in = _ASSIGN_INDEXED((index),
                 rx_valid_in()[index]);
-            rx_stream_cdc[index].write_data_in = _ASSIGN_REG_INDEXED((index),
-                rx_stream_pack_comb_func()[index]);
-            rx_stream_cdc[index].read_ready_in = packet_dma[index].rx_ready_out;
-            rx_stream_cdc[index]._assign();
-            packet_dma[index].rx_valid_in = rx_stream_cdc[index].read_valid_out;
             packet_dma[index].rx_data_in = _ASSIGN_INDEXED((index),
-                (logic<256>)rx_stream_cdc[index].read_data_out().bits(255, 0));
+                (logic<256>)rx_data_in().bits(index * 256 + 255,
+                    index * 256));
             packet_dma[index].rx_keep_in = _ASSIGN_INDEXED((index),
-                (logic<32>)rx_stream_cdc[index].read_data_out().bits(287, 256));
+                (logic<32>)rx_keep_in().bits(index * 32 + 31,
+                    index * 32));
             packet_dma[index].rx_sop_in = _ASSIGN_INDEXED((index),
-                rx_stream_cdc[index].read_data_out()[288]);
+                rx_sop_in()[index]);
             packet_dma[index].rx_eop_in = _ASSIGN_INDEXED((index),
-                rx_stream_cdc[index].read_data_out()[289]);
+                rx_eop_in()[index]);
 
-            // CPU-domain PacketDMA streams cross back to the rate-matched L2
-            // boundary before entering either System or Network CDC logic.
-            to_system_cdc[index].write_valid_in =
-                packet_dma[index].system_tx_valid_out;
-            to_system_cdc[index].write_data_in = _ASSIGN_INDEXED((index), cat(
-                (u<1>)packet_dma[index].system_tx_eop_out(),
-                (u<1>)packet_dma[index].system_tx_sop_out(),
-                packet_dma[index].system_tx_keep_out(),
-                packet_dma[index].system_tx_data_out()));
+            // All processing packet streams are synchronous at 156.25 MHz.
             packet_dma[index].system_tx_ready_in =
-                to_system_cdc[index].write_ready_out;
-            to_system_cdc[index].read_ready_in = _ASSIGN_INDEXED((index),
-                to_system_ready_in()[index]);
-            to_system_cdc[index]._assign();
-
-            from_system_cdc[index].write_valid_in = _ASSIGN_INDEXED((index),
-                from_system_valid_in()[index]);
-            from_system_cdc[index].write_data_in = _ASSIGN_REG_INDEXED((index),
-                from_system_pack_comb_func()[index]);
-            from_system_cdc[index].read_ready_in =
-                packet_dma[index].system_rx_ready_out;
-            from_system_cdc[index]._assign();
+                _ASSIGN_INDEXED((index), to_system_ready_in()[index]);
             packet_dma[index].system_rx_valid_in =
-                from_system_cdc[index].read_valid_out;
+                _ASSIGN_INDEXED((index), from_system_valid_in()[index]);
             packet_dma[index].system_rx_data_in = _ASSIGN_INDEXED((index),
-                (logic<256>)from_system_cdc[index].read_data_out().bits(255, 0));
+                (logic<256>)from_system_data_in().bits(index * 256 + 255,
+                    index * 256));
             packet_dma[index].system_rx_keep_in = _ASSIGN_INDEXED((index),
-                (logic<32>)from_system_cdc[index].read_data_out().bits(287, 256));
+                (logic<32>)from_system_keep_in().bits(index * 32 + 31,
+                    index * 32));
             packet_dma[index].system_rx_sop_in = _ASSIGN_INDEXED((index),
-                from_system_cdc[index].read_data_out()[288]);
+                from_system_sop_in()[index]);
             packet_dma[index].system_rx_eop_in = _ASSIGN_INDEXED((index),
-                from_system_cdc[index].read_data_out()[289]);
+                from_system_eop_in()[index]);
 
-            to_network_cdc[index].write_valid_in =
-                packet_dma[index].network_tx_valid_out;
-            to_network_cdc[index].write_data_in = _ASSIGN_INDEXED((index), cat(
-                (u<1>)packet_dma[index].network_tx_eop_out(),
-                (u<1>)packet_dma[index].network_tx_sop_out(),
-                packet_dma[index].network_tx_keep_out(),
-                packet_dma[index].network_tx_data_out()));
             packet_dma[index].network_tx_ready_in =
-                to_network_cdc[index].write_ready_out;
-            to_network_cdc[index].read_ready_in = _ASSIGN_INDEXED((index),
-                to_network_ready_in()[index]);
-            to_network_cdc[index]._assign();
+                _ASSIGN_INDEXED((index), to_network_ready_in()[index]);
 
             // Preserve every CPU-memory AXI request and response signal at the
             // Processing boundary for attachment to external DDR controllers.
@@ -486,12 +421,6 @@ public:
             descriptor_fetcher[index]._work(reset);
             packet_dma[index]._work(reset);
             iomem_mux[index]._work(reset);
-            descriptor_cdc[index]._work_clk(reset);
-            read_command_cdc[index]._work_clk(reset);
-            rx_stream_cdc[index]._work_clk(reset);
-            to_system_cdc[index]._work_clk(reset);
-            from_system_cdc[index]._work_clk(reset);
-            to_network_cdc[index]._work_clk(reset);
         }
     }
 
@@ -506,20 +435,7 @@ public:
         uint32_t index;
         for (index = 0; index < CPU_COUNT; ++index) {
             cpu[index]._work_l2_clock(reset);
-            descriptor_cdc[index]._work_l2_clock(reset);
-            read_command_cdc[index]._work_l2_clock(reset);
-            rx_stream_cdc[index]._work_l2_clock(reset);
-            to_system_cdc[index]._work_l2_clock(reset);
-            from_system_cdc[index]._work_l2_clock(reset);
-            to_network_cdc[index]._work_l2_clock(reset);
         }
-        if (descriptor_valid_in() && descriptor_ready_out()
-            && descriptor_eop_in()) {
-            descriptor_target_reg._next =
-                (uint32_t)descriptor_target_reg + 1 == CPU_COUNT ?
-                    (uint32_t)0 : (uint32_t)descriptor_target_reg + 1;
-        }
-        if (reset) descriptor_target_reg.clr();
     }
 
     void _strobe()
@@ -530,12 +446,6 @@ public:
             descriptor_fetcher[index]._strobe();
             packet_dma[index]._strobe();
             iomem_mux[index]._strobe();
-            descriptor_cdc[index]._strobe_clk();
-            read_command_cdc[index]._strobe_clk();
-            rx_stream_cdc[index]._strobe_clk();
-            to_system_cdc[index]._strobe_clk();
-            from_system_cdc[index]._strobe_clk();
-            to_network_cdc[index]._strobe_clk();
         }
     }
 
@@ -544,14 +454,7 @@ public:
         uint32_t index;
         for (index = 0; index < CPU_COUNT; ++index) {
             cpu[index]._strobe_l2_clock();
-            descriptor_cdc[index]._strobe_l2_clock();
-            read_command_cdc[index]._strobe_l2_clock();
-            rx_stream_cdc[index]._strobe_l2_clock();
-            to_system_cdc[index]._strobe_l2_clock();
-            from_system_cdc[index]._strobe_l2_clock();
-            to_network_cdc[index]._strobe_l2_clock();
         }
-        descriptor_target_reg.strobe();
     }
 };
 

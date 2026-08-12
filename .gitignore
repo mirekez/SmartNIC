@@ -1,0 +1,9 @@
+# Out-of-tree CMake build products
+/build/
+
+# Dependencies prepared locally by the top-level CMake project
+/cpphdl
+/eth_pcs/
+
+# Legacy local dependency link (not used by this project)
+/mikos

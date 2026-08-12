@@ -1,4 +1,4 @@
-// SmartNIC integration test with the selected 400GBASE-R or 800GBASE-R PCS
+// SmartNIC integration test with two 10GBASE-R PCS lanes
 // front end.  Random Ethernet frames are packed into legal XGMII characters,
 // traversed through the complete eth_pcs encode/scramble/lane/decode path, and
 // adapted to the Network byte/SOP/EOP interface.  The reverse TX path checks
@@ -7,11 +7,7 @@
 
 #include "../SmartNIC.h"
 
-#if ENABLE_800G
-#include <800GBASE.h>
-#else
-#include <400GBASE.h>
-#endif
+#include <10GBASE.h>
 
 #if !defined(SYNTHESIS)
 
@@ -45,22 +41,17 @@ namespace
 {
 
 static constexpr size_t LANE_WIDTH = NET_LANE_WIDTH;
-static constexpr size_t STREAMS = 8;
+static constexpr size_t STREAMS = 2;
 static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
 static constexpr size_t NET_BYTES = NET_BITS / 8;
 static constexpr size_t L2_WIDTH = 256;
 static constexpr size_t L2_BYTES = L2_WIDTH / 8;
-static constexpr size_t READ_PORTS = 8;
+static constexpr size_t READ_PORTS = 1;
 static constexpr size_t HANDLE_BITS = SmartNIC<LANE_WIDTH>::HANDLE_BITS;
 static constexpr size_t FRAME_LENGTH_BITS = 14;
 
-#if ENABLE_800G
-using SelectedPCS = ethernet_pcs::PCS800G<NET_BITS, 8>;
-static constexpr const char* RATE_NAME = "800G";
-#else
-using SelectedPCS = ethernet_pcs::PCS400G<NET_BITS, 8>;
-static constexpr const char* RATE_NAME = "400G";
-#endif
+using SelectedPCS = ethernet_pcs::PCS10G<NET_BITS, 2, 2>;
+static constexpr const char* RATE_NAME = "2x10G";
 
 struct XgmiiCharacter
 {
@@ -420,7 +411,7 @@ public:
         size_t& pause_cycles, size_t& idle_characters)
     {
         std::deque<XgmiiBeat> expected;
-        std::mt19937 random(ENABLE_800G ? 0x8000a55a : 0x4000a55a);
+        std::mt19937 random(0x20a55a);
         size_t next = 0;
         bool ok = true;
         bool previous_in_frame = false;
@@ -434,7 +425,7 @@ public:
         for (size_t cycle_index = 0; cycle_index < input.size() * 3 + 32; ++cycle_index) {
             // Always pause once before the first transfer, then add randomized
             // pauses only at frame boundaries.  This makes the PCS valid/IDLE
-            // control check deterministic even when an 800G beat holds most of
+            // control check deterministic even when one aggregate beat holds
             // a short frame and therefore offers few boundary cycles.
             bool pause = next < input.size() && !previous_in_frame
                 && (cycle_index == 0 || cycle_index % 11 == 7 || random() % 41 == 0);
@@ -590,7 +581,6 @@ public:
     {
 #ifdef VERILATOR
         dut.net_clk = 0;
-        dut.l2_clk = 0;
         drive(reset);
         dut.eval();
 #else
@@ -615,28 +605,12 @@ public:
 
     void l2_low(bool reset)
     {
-#ifdef VERILATOR
-        dut.net_clk = 0;
-        dut.l2_clk = 0;
-        drive(reset);
-        dut.eval();
-#else
         (void)reset;
-#endif
     }
 
     void l2_rise(bool reset)
     {
-#ifdef VERILATOR
-        drive(reset);
-        dut.l2_clk = 1;
-        dut.eval();
-        dut.l2_clk = 0;
-        dut.eval();
-#else
-        dut._work_l2_clk(reset);
-        dut._strobe_l2_clk();
-#endif
+        (void)reset;
         ++_system_clock;
     }
 
@@ -840,7 +814,7 @@ class SmartNicPcsTest
         size_t reads = 0;
         size_t rx_stalls = 0;
         const size_t net_period = 5;
-        const size_t l2_period = ENABLE_800G ? 4 : 8;
+        const size_t l2_period = net_period;
 
         reset();
         for (size_t tick = 1; tick < 800000 && ok; ++tick) {
@@ -866,6 +840,7 @@ class SmartNicPcsTest
             }
 
             if (tick % l2_period == 0) {
+                bool command_started = false;
                 if (!active && !(bool)dut.read_valid[0] && !pending.empty()) {
                     PendingRead command = pending.front();
                     pending.pop_front();
@@ -875,10 +850,11 @@ class SmartNicPcsTest
                     dut.read_valid[0] = 1;
                     active = std::move(command);
                     readback.clear();
+                    command_started = true;
                 }
 
                 dut.l2_low(false);
-                bool command_fire = (bool)dut.read_valid[0]
+                bool command_fire = !command_started && (bool)dut.read_valid[0]
                     && (bool)dut.read_ready_out()[0];
                 if (dut.descriptor_valid_out()) {
                     if (dut.descriptor_word_out() != descriptor_bytes.size() / 32
@@ -965,7 +941,7 @@ class SmartNicPcsTest
         bool in_frame = false;
         size_t completed = 0;
         const size_t net_period = 5;
-        const size_t l2_period = ENABLE_800G ? 4 : 8;
+        const size_t l2_period = net_period;
 
         for (size_t index = 0; index < frames.size(); ++index) {
             assigned[index % STREAMS].push_back(index);
@@ -1061,7 +1037,7 @@ class SmartNicPcsTest
 public:
     bool run()
     {
-        std::print("{} SmartNIC + PCS integration ({}, {} bits @ 312.5 MHz)\n",
+        std::print("{} SmartNIC + PCS integration ({}, {} bits @ 156.25 MHz)\n",
 #ifdef VERILATOR
             "Verilator",
 #else
@@ -1069,11 +1045,9 @@ public:
 #endif
             RATE_NAME, NET_BITS);
 
-        auto rx_frames = make_random_frames(0x10000000, 24,
-            ENABLE_800G ? 0x8000400 : 0x4000400);
+        auto rx_frames = make_random_frames(0x10000000, 24, 0x200400);
         std::vector<size_t> requested_ipg;
-        auto rx_xgmii = pack_frames_for_pcs(rx_frames,
-            ENABLE_800G ? 0x8000d1c : 0x4000d1c, requested_ipg);
+        auto rx_xgmii = pack_frames_for_pcs(rx_frames, 0x200d1c, requested_ipg);
         std::vector<XgmiiBeat> rx_decoded;
         size_t rx_pause = 0;
         size_t rx_idle = 0;
@@ -1096,8 +1070,7 @@ public:
         if (!adapter_ok) fail("PCS-to-Network IDLE/SOP/EOP adaptation failed");
         run_rx(rx_frames, rx_network);
 
-        auto tx_frames = make_random_frames(0x20000000, 16,
-            ENABLE_800G ? 0x8000800 : 0x4000800);
+        auto tx_frames = make_random_frames(0x20000000, 16, 0x200800);
         std::vector<NetworkBeat> tx_network;
         run_tx(tx_frames, tx_network);
         adapter_ok = true;
@@ -1176,9 +1149,7 @@ static bool build_verilator_model(const char* source_file, const char* program_f
         "PacketParserCursor_pkg", "PacketParserFlags_pkg", "RxRAMWritePair_pkg",
         "RxDescriptor_pkg", "RxDescriptorWord_pkg", "RxDescriptorFlags_pkg",
         "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser", "RxRAM",
-        "RxFifo", "TxFifo", "OutputMerger", "Network",
-        "AsyncFifoNetToL2", "AsyncFifoL2ToNet",
-        "AsyncPacketStreamNetToL2", "AsyncPacketStreamL2ToNet"};
+        "RxFifo", "TxFifo", "OutputMerger", "Network", "PacketStream"};
     return VerilatorCompileInExactFolderFromGenerated(source.string(),
         model_dir.string(), "SmartNIC", generated, modules, includes);
 #endif

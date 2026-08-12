@@ -1,6 +1,6 @@
 #pragma once
 
-// Eight packet-committed TxFifos merged into one ordered 8-lane Ethernet
+// Two packet-committed TxFifos merged into one ordered 2-lane Ethernet
 // stream.  Packets are selected round-robin at frame boundaries.  A one-word
 // carry absorbs arbitrary output alignment; the merger inserts exactly the
 // configured IPG whenever another committed packet is immediately available.
@@ -10,20 +10,19 @@
 
 using namespace cpphdl;
 
-#define OUTPUT_MERGER_FOR_EACH_STREAM(M) \
-    M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
+#define OUTPUT_MERGER_FOR_EACH_STREAM(M) M(0) M(1)
 
-template<size_t LANE_WIDTH = 160, size_t FIFO_WORDS = 1024,
+template<size_t LANE_WIDTH = 64, size_t FIFO_WORDS = 2048,
     size_t MIN_IPG_BYTES = 12>
 class OutputMerger : public Module
 {
 public:
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t WINDOW_WORDS = 8;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t OUTPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t OUTPUT_BYTES = STREAMS * LANE_BYTES;
-    static constexpr size_t MAX_LANE_WIDTH = 320;
+    static constexpr size_t MAX_LANE_WIDTH = 64;
     static constexpr size_t MAX_LANE_BYTES = MAX_LANE_WIDTH / 8;
     static constexpr size_t OFFSET_BITS = clog2(LANE_BYTES);
     static constexpr size_t GAP_BITS = clog2(MIN_IPG_BYTES + 1);
@@ -493,13 +492,7 @@ private:
     {
         error_comb = (bool)protocol_error_reg
             || fifos[0].protocol_error_out()
-            || fifos[1].protocol_error_out()
-            || fifos[2].protocol_error_out()
-            || fifos[3].protocol_error_out()
-            || fifos[4].protocol_error_out()
-            || fifos[5].protocol_error_out()
-            || fifos[6].protocol_error_out()
-            || fifos[7].protocol_error_out();
+            || fifos[1].protocol_error_out();
         return error_comb;
     }
 
@@ -620,7 +613,6 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class OutputMerger<160, 1024, 12>;
-template class OutputMerger<320, 1024, 12>;
+template class OutputMerger<64, 2048, 12>;
 
 #undef OUTPUT_MERGER_FOR_EACH_STREAM

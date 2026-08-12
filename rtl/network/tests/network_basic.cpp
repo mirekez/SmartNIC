@@ -260,7 +260,7 @@ static NetworkPacket make_network_packet(uint32_t id, size_t target_size,
 template<size_t LANE_WIDTH, size_t READ_PORTS = 4, size_t BANK_DEPTH = 4096>
 class NetworkBasicTest
 {
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
@@ -644,7 +644,7 @@ class NetworkBasicTest
         GenEthStream<LANE_WIDTH> generator;
         std::map<uint32_t, NetworkPacket> expected;
         std::deque<std::pair<RxDescriptor, const NetworkPacket*>> reads;
-        generator.clear(3 + (LANE_WIDTH == 320 ? 11 : 0));
+        generator.clear(3);
         for (size_t index = 0; index < sizes.size(); ++index) {
             uint32_t id = id_base + (uint32_t)index;
             bool ipv6 = index % 3 == 2;
@@ -937,13 +937,10 @@ int main(int argc, char** argv)
             "RxRAMWritePair_pkg", "RxDescriptor_pkg", "RxDescriptorWord_pkg",
             "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser",
             "RxRAM", "RxFifo", "TxFifo", "OutputMerger"};
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "Network_160",
-            "Network", generated, modules, includes, 160, 4, 4096, 64);
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "Network_320",
-            "Network", generated, modules, includes, 320, 4, 4096, 64);
+        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "Network_64",
+            "Network", generated, modules, includes, 64, 1, 4096, 64);
         if (ok) {
-            ok &= std::system("Network_160/obj_dir/VNetwork 160") == 0;
-            ok &= std::system("Network_320/obj_dir/VNetwork 320") == 0;
+            ok &= std::system("Network_64/obj_dir/VNetwork 64") == 0;
         }
     }
 #else
@@ -952,13 +949,11 @@ int main(int argc, char** argv)
 
     if (!positional.empty()) {
         size_t width = std::stoull(positional[0]);
-        if (width == 160) return !(ok && NetworkBasicTest<160>().run());
-        if (width == 320) return !(ok && NetworkBasicTest<320>().run());
+        if (width == 64) return !(ok && NetworkBasicTest<64, 1>().run());
         std::print("unsupported Network lane width {}\n", width);
         return 1;
     }
-    ok = ok && NetworkBasicTest<160>().run();
-    ok = ok && NetworkBasicTest<320>().run();
+    ok = ok && NetworkBasicTest<64, 1>().run();
     return ok ? 0 : 1;
 }
 

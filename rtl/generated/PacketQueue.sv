@@ -9,7 +9,8 @@ module PacketQueue #(
 ,   parameter LENGTH_BITS = 'h10
  )
  (
-    input wire clk
+    input wire l2_clock
+,   input wire system_clock
 ,   input wire reset
 ,   input wire write_valid_in
 ,   input wire[DATA_WIDTH-1:0] write_data_in
@@ -59,7 +60,8 @@ module PacketQueue #(
 ,       1
 ,       0
     ) data_fifo (
-        .clk(clk)
+        .l2_clock(l2_clock)
+,       .system_clock(system_clock)
 ,       .reset(reset)
 ,       .write_in(data_fifo__write_in)
 ,       .write_data_in(data_fifo__write_data_in)
@@ -84,7 +86,8 @@ module PacketQueue #(
 ,       1
 ,       0
     ) length_fifo (
-        .clk(clk)
+        .l2_clock(l2_clock)
+,       .system_clock(system_clock)
 ,       .reset(reset)
 ,       .write_in(length_fifo__write_in)
 ,       .write_data_in(length_fifo__write_data_in)
@@ -215,7 +218,12 @@ module PacketQueue #(
     end
     endtask
 
-    always @(posedge clk) begin
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
+    end
+    endtask
+
+    always_ff @(posedge l2_clock) begin
         assembling_length_reg_tmp = assembling_length_reg;
         packet_count_reg_tmp = packet_count_reg;
         assembling_reg_tmp = assembling_reg;
@@ -227,6 +235,12 @@ module PacketQueue #(
         packet_count_reg <= packet_count_reg_tmp;
         assembling_reg <= assembling_reg_tmp;
         protocol_error_reg <= protocol_error_reg_tmp;
+    end
+
+    always_ff @(posedge system_clock) begin
+
+        _work_system_clock(reset);
+
     end
 
 

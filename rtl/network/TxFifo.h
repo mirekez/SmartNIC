@@ -12,20 +12,20 @@ using namespace cpphdl;
 
 #define TX_FIFO_FOR_EACH_BANK(M) M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
 
-template<size_t LANE_WIDTH = 160, size_t FIFO_WORDS = 1024>
+template<size_t LANE_WIDTH = 64, size_t FIFO_WORDS = 2048>
 class TxFifo : public Module
 {
 public:
     static constexpr size_t WINDOW_WORDS = 8;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
-    static constexpr size_t MAX_LANE_WIDTH = 320;
+    static constexpr size_t MAX_LANE_WIDTH = 64;
     static constexpr size_t MAX_LANE_BYTES = MAX_LANE_WIDTH / 8;
     static constexpr size_t BANK_DEPTH = FIFO_WORDS / WINDOW_WORDS;
     static constexpr size_t POINTER_BITS = clog2(FIFO_WORDS);
     static constexpr size_t COUNT_BITS = clog2(FIFO_WORDS + 1);
 
-    static_assert(LANE_WIDTH == 160 || LANE_WIDTH == 320,
-        "TxFifo supports 160-bit and 320-bit words");
+    static_assert(LANE_WIDTH == 64,
+        "TxFifo supports 64-bit 10GbE MAC words");
     static_assert(FIFO_WORDS >= 16
             && (FIFO_WORDS & (FIFO_WORDS - 1)) == 0,
         "TxFifo depth must be a power of two of at least 16 words");
@@ -346,7 +346,6 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class TxFifo<160, 1024>;
-template class TxFifo<320, 1024>;
+template class TxFifo<64, 2048>;
 
 #undef TX_FIFO_FOR_EACH_BANK

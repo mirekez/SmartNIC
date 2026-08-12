@@ -1,7 +1,7 @@
 #pragma once
 
 // Shared full-SoC simulation harness. It composes the Network SmartNIC root,
-// four Tribe processing clusters, the System queues/controller/MasterDMA,
+// one Tribe processing cluster, the System queue/controller/MasterDMA,
 // external CPU DDR models, a wire-rate Ethernet source, and an Avalon host.
 
 #include "../Config.h"
@@ -20,7 +20,7 @@ template<size_t LANE_WIDTH = NET_LANE_WIDTH, size_t CPU_COUNT = CPUS_USED,
 class SmartNICTest : public Module
 {
 public:
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = NETWORK_PORTS;
     static constexpr size_t L2_WIDTH = 256;
     static constexpr size_t L2_BYTES = 32;
     static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
@@ -28,12 +28,12 @@ public:
     static constexpr size_t HANDLE_BITS = 16;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
 
-    static_assert(CPU_COUNT == 4,
-        "capture harness currently uses four Tribe clusters");
+    static_assert(CPU_COUNT == 1,
+        "Kintex-7 capture harness uses one Tribe cluster");
 
-    SmartNIC<LANE_WIDTH, 4096, 64, 1024> smartnic;
+    SmartNIC<LANE_WIDTH, 4096, 64, 2048> smartnic;
     Processing<CPU_COUNT, HANDLE_BITS, FRAME_LENGTH_BITS> processing;
-    System<8, 256> system;
+    System<SYSTEM_QUEUES, 256> system;
     TrafficGenerator<LANE_WIDTH, TRAFFIC_DEPTH> traffic;
     AvalonHost<HOST_MEMORY_BYTES> host;
     Axi4Ram<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
@@ -67,21 +67,21 @@ public:
     _PORT(bool) storage_full_out;
 
 private:
-    logic<STREAMS> smartnic_rx_ready_comb;
+    logic<CPU_COUNT> smartnic_rx_ready_comb;
     logic<STREAMS> smartnic_tx_valid_comb;
     logic<STREAMS * L2_WIDTH> smartnic_tx_data_comb;
     logic<STREAMS * L2_BYTES> smartnic_tx_keep_comb;
     logic<STREAMS> smartnic_tx_sop_comb;
     logic<STREAMS> smartnic_tx_eop_comb;
-    logic<STREAMS> system_rx_valid_comb;
-    logic<STREAMS * L2_WIDTH> system_rx_data_comb;
-    logic<STREAMS * L2_BYTES> system_rx_keep_comb;
-    logic<STREAMS> system_rx_sop_comb;
-    logic<STREAMS> system_rx_eop_comb;
-    logic<STREAMS> system_tx_ready_comb;
+    logic<SYSTEM_QUEUES> system_rx_valid_comb;
+    logic<SYSTEM_QUEUES * L2_WIDTH> system_rx_data_comb;
+    logic<SYSTEM_QUEUES * L2_BYTES> system_rx_keep_comb;
+    logic<SYSTEM_QUEUES> system_rx_sop_comb;
+    logic<SYSTEM_QUEUES> system_rx_eop_comb;
+    logic<SYSTEM_QUEUES> system_tx_ready_comb;
     bool protocol_error_comb;
 
-    logic<STREAMS>& smartnic_rx_ready_comb_func()
+    logic<CPU_COUNT>& smartnic_rx_ready_comb_func()
     {
         uint32_t index;
         smartnic_rx_ready_comb = 0;
@@ -152,7 +152,7 @@ private:
         return smartnic_tx_eop_comb;
     }
 
-    logic<STREAMS>& system_rx_valid_comb_func()
+    logic<SYSTEM_QUEUES>& system_rx_valid_comb_func()
     {
         uint32_t index;
         system_rx_valid_comb = 0;
@@ -162,7 +162,7 @@ private:
         return system_rx_valid_comb;
     }
 
-    logic<STREAMS * L2_WIDTH>& system_rx_data_comb_func()
+    logic<SYSTEM_QUEUES * L2_WIDTH>& system_rx_data_comb_func()
     {
         uint32_t index;
         uint32_t bit;
@@ -176,7 +176,7 @@ private:
         return system_rx_data_comb;
     }
 
-    logic<STREAMS * L2_BYTES>& system_rx_keep_comb_func()
+    logic<SYSTEM_QUEUES * L2_BYTES>& system_rx_keep_comb_func()
     {
         uint32_t index;
         uint32_t bit;
@@ -190,7 +190,7 @@ private:
         return system_rx_keep_comb;
     }
 
-    logic<STREAMS>& system_rx_sop_comb_func()
+    logic<SYSTEM_QUEUES>& system_rx_sop_comb_func()
     {
         uint32_t index;
         system_rx_sop_comb = 0;
@@ -200,7 +200,7 @@ private:
         return system_rx_sop_comb;
     }
 
-    logic<STREAMS>& system_rx_eop_comb_func()
+    logic<SYSTEM_QUEUES>& system_rx_eop_comb_func()
     {
         uint32_t index;
         system_rx_eop_comb = 0;
@@ -210,7 +210,7 @@ private:
         return system_rx_eop_comb;
     }
 
-    logic<STREAMS>& system_tx_ready_comb_func()
+    logic<SYSTEM_QUEUES>& system_tx_ready_comb_func()
     {
         uint32_t index;
         system_tx_ready_comb = 0;
@@ -266,11 +266,11 @@ private:
         smartnic.l2_descriptor_ready_in = processing.descriptor_ready_out;
 
         smartnic.l2_rx_read_valid_in = _ASSIGN(
-            (logic<STREAMS>)processing.rx_read_valid_out());
+            (logic<CPU_COUNT>)processing.rx_read_valid_out());
         smartnic.l2_rx_read_handle_in = _ASSIGN(
-            (logic<STREAMS * HANDLE_BITS>)processing.rx_read_handle_out());
+            (logic<CPU_COUNT * HANDLE_BITS>)processing.rx_read_handle_out());
         smartnic.l2_rx_read_length_in = _ASSIGN(
-            (logic<STREAMS * FRAME_LENGTH_BITS>)processing.rx_read_length_out());
+            (logic<CPU_COUNT * FRAME_LENGTH_BITS>)processing.rx_read_length_out());
         processing.rx_read_ready_in = _ASSIGN(
             (logic<CPU_COUNT>)smartnic.l2_rx_read_ready_out().bits(
                 CPU_COUNT - 1, 0));
@@ -429,14 +429,14 @@ public:
     {
         smartnic._work_l2_clk(reset);
         processing._work_l2_clock(reset);
-        system._work_l2_clock(reset);
+        system._work(reset);
     }
 
     void _strobe_l2_clk()
     {
         smartnic._strobe_l2_clk();
         processing._strobe_l2_clock();
-        system._strobe_l2_clock();
+        system._strobe();
     }
 
     void _work_net_clk(bool reset)
@@ -453,13 +453,13 @@ public:
 
     void _work_system_clk(bool reset)
     {
-        system._work(reset);
+        system._work_system_clock(reset);
         host._work_system_clock(reset);
     }
 
     void _strobe_system_clk()
     {
-        system._strobe();
+        system._strobe_system_clock();
         host._strobe_system_clock();
     }
 

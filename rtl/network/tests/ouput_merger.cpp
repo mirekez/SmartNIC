@@ -67,10 +67,10 @@ static uint32_t tx_packet_id(const std::vector<uint8_t>& bytes)
         | ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
 }
 
-template<size_t LANE_WIDTH, size_t FIFO_WORDS = 1024>
+template<size_t LANE_WIDTH, size_t FIFO_WORDS = 2048>
 class OutputMergerTest
 {
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t OUTPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t OUTPUT_BYTES = STREAMS * LANE_BYTES;
@@ -470,14 +470,10 @@ int main(int argc, char** argv)
             (project_root / "cpphdl" / "include").string(),
             project_root.string()};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__,
-            "OutputMerger_160", "OutputMerger", generated,
-            {"Predef_pkg", "TxFifo"}, includes, 160, 1024, 12);
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__,
-            "OutputMerger_320", "OutputMerger", generated,
-            {"Predef_pkg", "TxFifo"}, includes, 320, 1024, 12);
+            "OutputMerger_64", "OutputMerger", generated,
+            {"Predef_pkg", "TxFifo"}, includes, 64, 2048, 12);
         if (ok) {
-            ok &= std::system("OutputMerger_160/obj_dir/VOutputMerger 160") == 0;
-            ok &= std::system("OutputMerger_320/obj_dir/VOutputMerger 320") == 0;
+            ok &= std::system("OutputMerger_64/obj_dir/VOutputMerger 64") == 0;
         }
     }
 #else
@@ -486,13 +482,11 @@ int main(int argc, char** argv)
 
     if (!positional.empty()) {
         size_t width = std::stoull(positional[0]);
-        if (width == 160) return !(ok && OutputMergerTest<160>().run());
-        if (width == 320) return !(ok && OutputMergerTest<320>().run());
+        if (width == 64) return !(ok && OutputMergerTest<64>().run());
         std::print("unsupported OutputMerger lane width {}\n", width);
         return 1;
     }
-    ok = ok && OutputMergerTest<160>().run();
-    ok = ok && OutputMergerTest<320>().run();
+    ok = ok && OutputMergerTest<64>().run();
     return ok ? 0 : 1;
 }
 

@@ -35,21 +35,20 @@ union RxDescriptorWord
     logic<1280> raw;
 } __PACKED;
 
-using RxDescriptorInputBus = array<8, RxDescriptorWord, true>;
+using RxDescriptorInputBus = array<2, RxDescriptorWord, true>;
 
 static_assert(sizeof(RxDescriptor) == 160,
     "RxDescriptor must occupy five 256-bit words");
 static_assert(sizeof(RxDescriptorWord) == 160,
     "RxDescriptorWord must occupy five 256-bit words");
 
-#define RX_FIFO_FOR_EACH_STREAM(M) \
-    M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
+#define RX_FIFO_FOR_EACH_STREAM(M) M(0) M(1)
 
 template<size_t FIFO_DEPTH = 64>
 class RxFifo : public Module
 {
 public:
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t DESCRIPTOR_BYTES = 160;
     static constexpr size_t DESCRIPTOR_BITS = DESCRIPTOR_BYTES * 8;
 
@@ -65,7 +64,7 @@ public:
 
 private:
     Fifo<DESCRIPTOR_BYTES, FIFO_DEPTH, true, false> fifos[STREAMS];
-    reg<u<3>> rr_reg;
+    reg<u<1>> rr_reg;
 
     logic<STREAMS> input_ready_comb;
     logic<STREAMS> almost_full_comb;
@@ -109,7 +108,7 @@ private:
         uint32_t offset;
         uint32_t candidate;
         for (offset = 0; offset < STREAMS; ++offset) {
-            candidate = ((uint32_t)rr_reg + offset) & 7;
+            candidate = ((uint32_t)rr_reg + offset) & 1;
             if (!fifos[candidate].empty_out()) {
                 return candidate;
             }
@@ -193,7 +192,7 @@ public:
         }
         selected = selected_stream_value();
         if (selected < STREAMS && ready_in()) {
-            rr_reg._next = (selected + 1) & 7;
+            rr_reg._next = (selected + 1) & 1;
         }
     }
 

@@ -2,7 +2,7 @@
 
 // Generic Ethernet aggregate-stream generator used by network-level tests.
 // Frames are serialized in wire order with explicit IPG bytes, then each
-// aggregate word is laid out as eight adjacent IEEE-ordered lane slices:
+// aggregate word is laid out as two adjacent IEEE-ordered lane slices:
 // lane 0 byte 0 is earliest, followed by the rest of lane 0, then lane 1.
 
 #include <cpphdl.h>
@@ -12,12 +12,14 @@
 #include <cstdint>
 #include <vector>
 
+#include "../../Config.h"
+
 using namespace cpphdl;
 
 template<size_t LANE_WIDTH>
 struct GenEthBeat
 {
-    static constexpr size_t LANES = 8;
+    static constexpr size_t LANES = NETWORK_PORTS;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t WORD_BITS = LANES * LANE_WIDTH;
     static constexpr size_t WORD_BYTES = LANES * LANE_BYTES;
@@ -32,7 +34,7 @@ template<size_t LANE_WIDTH>
 class GenEthStream
 {
 public:
-    static constexpr size_t LANES = 8;
+    static constexpr size_t LANES = NETWORK_PORTS;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t WORD_BYTES = LANES * LANE_BYTES;
     using Beat = GenEthBeat<LANE_WIDTH>;

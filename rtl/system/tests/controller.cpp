@@ -27,7 +27,7 @@ long _system_clock = -1;
 namespace
 {
 
-using Dut = Controller<8, 1024, 256>;
+using Dut = Controller<1, 1024, 64>;
 
 template<typename T, typename V>
 static void copy_to_verilator(T& target, const V& value)
@@ -52,19 +52,19 @@ class ControllerTest
     Dut dut;
 #endif
 #if HOST_AXI4
-    Axi4Driver<32, 4, 256> host = {};
+    Axi4Driver<32, 4, 64> host = {};
 #else
     u<32> host_address = 0;
     bool host_read = false;
     bool host_write = false;
-    logic<256> host_writedata = 0;
-    logic<32> host_byteenable = 0;
+    logic<64> host_writedata = 0;
+    logic<8> host_byteenable = 0;
 #endif
-    logic<8> rx_empty = 0xff;
-    logic<128> rx_length = 0;
-    logic<8> tx_full = 0;
-    logic<128> rx_count = 0;
-    logic<128> tx_count = 0;
+    logic<1> rx_empty = 1;
+    logic<16> rx_length = 0;
+    logic<1> tx_full = 0;
+    logic<16> rx_count = 0;
+    logic<16> tx_count = 0;
     bool dma_ready = true;
     bool completion_valid = false;
     u<3> completion_queue = 0;
@@ -209,10 +209,10 @@ class ControllerTest
         return dut.host_control.rvalid_out();
 #endif
     }
-    logic<256> rdata()
+    logic<64> rdata()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<logic<256>>(dut.host_control___05Frdata_out);
+        return copy_from_verilator<logic<64>>(dut.host_control___05Frdata_out);
 #else
         return dut.host_control.rdata_out();
 #endif
@@ -227,10 +227,10 @@ class ControllerTest
         return dut.host_control.readdatavalid_out();
 #endif
     }
-    logic<256> readdata()
+    logic<64> readdata()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<logic<256>>(
+        return copy_from_verilator<logic<64>>(
             dut.host_control___05Freaddata_out);
 #else
         return dut.host_control.readdata_out();
@@ -240,7 +240,7 @@ class ControllerTest
 
     void write32(uint32_t address, uint32_t value)
     {
-        uint32_t lane = address & 31u;
+        uint32_t lane = address & 7u;
 #if HOST_AXI4
         host.aw.valid = true;
         host.aw.addr = address;
@@ -275,7 +275,7 @@ class ControllerTest
 
     uint32_t read32(uint32_t address)
     {
-        uint32_t lane = address & 31u;
+        uint32_t lane = address & 7u;
 #if HOST_AXI4
         host.ar.valid = true;
         host.ar.addr = address;
@@ -406,43 +406,42 @@ public:
         bind_native();
         for (int i = 0; i < 4; ++i) cycle(true);
 
-        rx_empty[2] = 0;
-        rx_length.bits(2 * 16 + 15, 2 * 16) = 60;
-        rx_count.bits(2 * 16 + 15, 2 * 16) = 1;
+        rx_empty[0] = 0;
+        rx_length.bits(15, 0) = 60;
+        rx_count.bits(15, 0) = 1;
 
         // Test 1: host register/ring readback and RX queue status.
-        write_descriptor(Dut::REG_RX_RING_BASE, 0, 0x300, 128, 2, 0);
+        write_descriptor(Dut::REG_RX_RING_BASE, 0, 0x300, 128, 0, 0);
         if (read32(Dut::REG_RX_RING_BASE) != 0x300
-            || read32(Dut::REG_RX_RING_BASE + 8) != (128u | (2u << 16))) {
+            || read32(Dut::REG_RX_RING_BASE + 8) != 128u) {
             fail("RX ring readback mismatch");
         }
-        uint32_t queue_status = read32(Dut::REG_QUEUE_BASE
-            + 2 * Dut::REG_QUEUE_STRIDE);
+        uint32_t queue_status = read32(Dut::REG_QUEUE_BASE);
         if (queue_status & 1u) fail("RX queue status incorrectly reported empty");
-        if (read32(Dut::REG_QUEUE_BASE + 2 * Dut::REG_QUEUE_STRIDE + 12) != 60) {
+        if (read32(Dut::REG_QUEUE_BASE + 12) != 60) {
             fail("RX front packet length register mismatch");
         }
 
         // Test 2: an RX ring buffer dispatches the complete queued packet.
         write32(Dut::REG_RX_PRODUCER, 1);
         write32(Dut::REG_CONTROL, Dut::CONTROL_ENABLE);
-        expect_command(MASTER_DMA_QUEUE_TO_HOST, 2, 0x300, 60, true, true);
+        expect_command(MASTER_DMA_QUEUE_TO_HOST, 0, 0x300, 60, true, true);
         if (read32(Dut::REG_RX_CONSUMER) != 1) fail("RX consumer did not advance");
-        rx_empty[2] = 1;
-        rx_count.bits(2 * 16 + 15, 2 * 16) = 0;
+        rx_empty[0] = 1;
+        rx_count.bits(15, 0) = 0;
 
         // Test 3: two TX SG entries produce SOP only on the first fragment and
         // EOP only on the final fragment before advancing the TX consumer.
-        write_descriptor(Dut::REG_TX_RING_BASE, 0, 0x500, 36, 5, 0);
-        write_descriptor(Dut::REG_TX_RING_BASE, 1, 0x704, 44, 5,
+        write_descriptor(Dut::REG_TX_RING_BASE, 0, 0x500, 36, 0, 0);
+        write_descriptor(Dut::REG_TX_RING_BASE, 1, 0x704, 44, 0,
             SYSTEM_TX_DESCRIPTOR_EOP);
         if (read32(Dut::REG_TX_RING_BASE + Dut::RING_ENTRY_BYTES + 8)
-            != (44u | (5u << 16) | (1u << 24))) {
+            != (44u | (1u << 24))) {
             fail("TX ring readback mismatch");
         }
         write32(Dut::REG_TX_PRODUCER, 2);
-        expect_command(MASTER_DMA_HOST_TO_QUEUE, 5, 0x500, 36, true, false);
-        expect_command(MASTER_DMA_HOST_TO_QUEUE, 5, 0x704, 44, false, true);
+        expect_command(MASTER_DMA_HOST_TO_QUEUE, 0, 0x500, 36, true, false);
+        expect_command(MASTER_DMA_HOST_TO_QUEUE, 0, 0x704, 44, false, true);
         if (read32(Dut::REG_TX_CONSUMER) != 2) fail("TX consumer did not advance");
         if (read32(Dut::REG_COMPLETED) != 3) fail("completion count mismatch");
         if (protocol_error_value()) fail("well-formed ring traffic set protocol error");

@@ -306,7 +306,7 @@ static PacketCase make_stack_limit_packet(uint32_t id, bool vlan_limit)
 template<size_t LANE_WIDTH>
 class PacketParserTest
 {
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
@@ -675,13 +675,10 @@ int main(int argc, char** argv)
         const std::vector<std::string> packages = {
             "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
             "PacketParserCursor_pkg", "PacketParserFlags_pkg"};
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "PacketParser_160",
-            "PacketParser", generated, packages, includes, 160);
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "PacketParser_320",
-            "PacketParser", generated, packages, includes, 320);
+        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "PacketParser_64",
+            "PacketParser", generated, packages, includes, 64);
         if (ok) {
-            ok &= std::system("PacketParser_160/obj_dir/VPacketParser 160") == 0;
-            ok &= std::system("PacketParser_320/obj_dir/VPacketParser 320") == 0;
+            ok &= std::system("PacketParser_64/obj_dir/VPacketParser 64") == 0;
         }
     }
 #else
@@ -690,13 +687,11 @@ int main(int argc, char** argv)
 
     if (!positional.empty()) {
         size_t width = std::stoull(positional[0]);
-        if (width == 160) return !(ok && PacketParserTest<160>().run());
-        if (width == 320) return !(ok && PacketParserTest<320>().run());
+        if (width == 64) return !(ok && PacketParserTest<64>().run());
         std::print("unsupported PacketParser lane width {}\n", width);
         return 1;
     }
-    ok = ok && PacketParserTest<160>().run();
-    ok = ok && PacketParserTest<320>().run();
+    ok = ok && PacketParserTest<64>().run();
     return ok ? 0 : 1;
 }
 

@@ -59,7 +59,7 @@ union PacketParserWord
     logic<512> raw;
 } __PACKED;
 
-using PacketParserOutputBus = array<8, PacketParserWord, true>;
+using PacketParserOutputBus = array<2, PacketParserWord, true>;
 
 static_assert(PACKET_PARSER_FIELDS_RESERVED_BITS > 0,
     "PacketParserFields configuration exceeds 512 bits");
@@ -96,11 +96,11 @@ struct PacketParserCursor
     u1 ok;
 } __PACKED;
 
-template<size_t LANE_WIDTH = 160>
+template<size_t LANE_WIDTH = 64>
 class PacketParser : public Module
 {
 public:
-    static constexpr size_t STREAMS = 8;
+    static constexpr size_t STREAMS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
@@ -111,8 +111,8 @@ public:
     static constexpr size_t OUTPUT_BYTES = 64;
     static constexpr size_t OUTPUT_FIFO_WORDS = 4;
 
-    static_assert(LANE_WIDTH == 160 || LANE_WIDTH == 320,
-        "PacketParser supports 160-bit and 320-bit streams");
+    static_assert(LANE_WIDTH == 64,
+        "PacketParser supports 64-bit 10GbE MAC words");
     static_assert(PACKET_PARSER_MAX_IPV4_OPTION_BYTES <= 40,
         "IPv4 has at most 40 option bytes");
     static_assert(PACKET_PARSER_MAX_TCP_OPTION_BYTES <= 40,
@@ -916,8 +916,7 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class PacketParser<160>;
-template class PacketParser<320>;
+template class PacketParser<64>;
 
 #undef PACKET_PARSER_FIELDS_USED_BITS
 #undef PACKET_PARSER_FIELDS_RESERVED_BITS

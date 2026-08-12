@@ -9,8 +9,8 @@ module SmartNicMemory #(
 ,   parameter SHOWAHEAD = 1
  )
  (
-    input wire system_clock
-,   input wire l2_clock
+    input wire l2_clock
+,   input wire system_clock
 ,   input wire reset
 ,   input wire[$clog2(MEM_DEPTH)-1:0] write_addr_in
 ,   input wire write_in
@@ -67,12 +67,12 @@ module SmartNicMemory #(
     end
     endtask
 
-    task _work_l2_clock (input logic reset);
-    begin: _work_l2_clock
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
     end
     endtask
 
-    always_ff @(posedge system_clock) begin
+    always_ff @(posedge l2_clock) begin
         data_out_reg_tmp = data_out_reg;
 
         _work(reset);
@@ -80,9 +80,9 @@ module SmartNicMemory #(
         data_out_reg <= data_out_reg_tmp;
     end
 
-    always_ff @(posedge l2_clock) begin
+    always_ff @(posedge system_clock) begin
 
-        _work_l2_clock(reset);
+        _work_system_clock(reset);
 
     end
 

@@ -5,17 +5,8 @@ add_executable(output_merger_tests tests/ouput_merger.cpp)
 add_executable(network_basic_tests tests/network_basic.cpp)
 add_executable(smartnic_test ../tests/smartnic_test.cpp)
 
-# CppHDL requires the fastest named clock to be declared primary.  The selected
-# SmartNIC mode comes from Config.h and changes which side of the CDC is faster.
-file(STRINGS "${PROJECT_SOURCE_DIR}/Config.h" SMARTNIC_ENABLE_800G_DEFINE
-    REGEX "^#define[ \t]+ENABLE_800G[ \t]+[01]")
-if(SMARTNIC_ENABLE_800G_DEFINE MATCHES "ENABLE_800G[ \t]+1")
-    set(SMARTNIC_PRIMARY_CLOCK l2_clk 390625000)
-    set(SMARTNIC_SECONDARY_CLOCK net_clk 312500000)
-else()
-    set(SMARTNIC_PRIMARY_CLOCK net_clk 312500000)
-    set(SMARTNIC_SECONDARY_CLOCK l2_clk 195312500)
-endif()
+set(SMARTNIC_PRIMARY_CLOCK net_clk 156250000)
+set(SMARTNIC_SECONDARY_CLOCK l2_clk 156250000)
 
 target_include_directories(input_balancer_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/cpphdl/include"
@@ -174,10 +165,7 @@ add_custom_command(
         "${SMARTNIC_GENERATED_DIR}/TxFifo.sv"
         "${SMARTNIC_GENERATED_DIR}/OutputMerger.sv"
         "${SMARTNIC_GENERATED_DIR}/Network.sv"
-        "${SMARTNIC_GENERATED_DIR}/AsyncFifoNetToL2.sv"
-        "${SMARTNIC_GENERATED_DIR}/AsyncFifoL2ToNet.sv"
-        "${SMARTNIC_GENERATED_DIR}/AsyncPacketStreamNetToL2.sv"
-        "${SMARTNIC_GENERATED_DIR}/AsyncPacketStreamL2ToNet.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketStream.sv"
         "${SMARTNIC_GENERATED_DIR}/SmartNIC.sv"
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     VERBATIM
@@ -312,7 +300,7 @@ if(BUILD_TESTING)
     )
     set_tests_properties(smartnic_integration PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-        LABELS "smartnic;network;cpphdl;cdc;verilator;integration"
+        LABELS "smartnic;network;cpphdl;sync;verilator;integration"
         TIMEOUT 1200
         ENVIRONMENT
             "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"

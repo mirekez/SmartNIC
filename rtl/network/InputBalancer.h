@@ -1,14 +1,14 @@
 #pragma once
 
-// Eight-lane Ethernet input balancer for 8x160-bit 400G and 8x320-bit 800G
-// streams at 312.5 MHz.  PCS lane reconstruction and ordering are upstream.
+// Two-lane Ethernet input balancer for 2x64-bit 10GbE streams at 156.25 MHz.
+// PCS lane reconstruction and ordering are upstream.
 //
 // The input is one ordered aggregate stream.  Byte-qualified SOP/EOP masks
 // allow several frame boundaries, including EOP followed by SOP, in one clock.
 // Frames are assigned round-robin to output streams that have room reserved for
 // a maximum frame.  Per-output byte packers remove input IPG holes and retain
 // both boundary masks when an old frame stops and a new frame starts in one
-// output word.  Eight-bank FIFOs accept the worst-case eight words for one
+// output word. Eight-bank storage accepts a complete frame burst for one
 // destination in a single aggregate input clock.
 
 #include <cpphdl.h>
@@ -23,28 +23,22 @@ extern long _system_clock;
 // writable banks, so one aggregate beat can enqueue eight consecutive words.
 #define INPUT_BALANCER_FOR_EACH_BANK(M) \
     M(0, 0) M(0, 1) M(0, 2) M(0, 3) M(0, 4) M(0, 5) M(0, 6) M(0, 7) \
-    M(1, 0) M(1, 1) M(1, 2) M(1, 3) M(1, 4) M(1, 5) M(1, 6) M(1, 7) \
-    M(2, 0) M(2, 1) M(2, 2) M(2, 3) M(2, 4) M(2, 5) M(2, 6) M(2, 7) \
-    M(3, 0) M(3, 1) M(3, 2) M(3, 3) M(3, 4) M(3, 5) M(3, 6) M(3, 7) \
-    M(4, 0) M(4, 1) M(4, 2) M(4, 3) M(4, 4) M(4, 5) M(4, 6) M(4, 7) \
-    M(5, 0) M(5, 1) M(5, 2) M(5, 3) M(5, 4) M(5, 5) M(5, 6) M(5, 7) \
-    M(6, 0) M(6, 1) M(6, 2) M(6, 3) M(6, 4) M(6, 5) M(6, 6) M(6, 7) \
-    M(7, 0) M(7, 1) M(7, 2) M(7, 3) M(7, 4) M(7, 5) M(7, 6) M(7, 7)
+    M(1, 0) M(1, 1) M(1, 2) M(1, 3) M(1, 4) M(1, 5) M(1, 6) M(1, 7)
 
-template<size_t LANE_WIDTH = 160>
+template<size_t LANE_WIDTH = 64>
 class InputBalancer : public Module
 {
 public:
-    static constexpr size_t LANES = 8;
-    static constexpr size_t FIFO_WORDS = 1024;
+    static constexpr size_t LANES = 2;
+    static constexpr size_t FIFO_WORDS = 2048;
     static constexpr size_t MAX_FRAME_BYTES = 9216;
     static constexpr size_t FLUSH_CYCLES = 8;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = LANES * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = LANES * LANE_BYTES;
-    static constexpr size_t FIFO_BANKS = LANES;
+    static constexpr size_t FIFO_BANKS = 8;
     static constexpr size_t FIFO_BANK_DEPTH = FIFO_WORDS / FIFO_BANKS;
-    static constexpr size_t MAX_LANE_WIDTH = 320;
+    static constexpr size_t MAX_LANE_WIDTH = 64;
     static constexpr size_t MAX_LANE_BYTES = MAX_LANE_WIDTH / 8;
     static constexpr size_t POINTER_BITS = clog2(FIFO_WORDS);
     static constexpr size_t COUNT_BITS = clog2(FIFO_WORDS + 1);
@@ -54,8 +48,8 @@ public:
         (MAX_FRAME_BYTES + LANE_BYTES - 1) / LANE_BYTES + LANES;
     static constexpr size_t ELIGIBLE_WORDS = FIFO_WORDS - RESERVED_WORDS;
 
-    static_assert(LANE_WIDTH == 160 || LANE_WIDTH == 320,
-        "InputBalancer supports the 400G 160-bit and 800G 320-bit lane widths");
+    static_assert(LANE_WIDTH == 64,
+        "InputBalancer supports 64-bit 10GbE MAC words");
     static_assert((LANE_WIDTH % 8) == 0, "lane width must be byte aligned");
     static_assert((FIFO_WORDS & (FIFO_WORDS - 1)) == 0,
         "FIFO_WORDS must be a power of two");
@@ -614,7 +608,6 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class InputBalancer<160>;
-template class InputBalancer<320>;
+template class InputBalancer<64>;
 
 #undef INPUT_BALANCER_FOR_EACH_BANK

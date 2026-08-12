@@ -1,7 +1,7 @@
 #pragma once
 
-// SmartNIC system level.  Eight processing-to-host RxQueues and eight
-// host-to-processing TxQueues sit behind explicit L2/system-clock CDC FIFOs.
+// SmartNIC system level. One processing-to-host RxQueue and one
+// host-to-processing TxQueue sit behind explicit 156.25/125 MHz CDC FIFOs.
 // A host-programmed controller consumes RX/TX descriptor rings and shares one
 // host-memory DMA engine across the queue pairs.
 
@@ -14,7 +14,7 @@
 
 using namespace cpphdl;
 
-template<size_t QUEUES = 8, size_t QUEUE_DEPTH = 256>
+template<size_t QUEUES = SYSTEM_QUEUES, size_t QUEUE_DEPTH = 256>
 class System : public Module
 {
 public:
@@ -22,7 +22,7 @@ public:
     static constexpr size_t DATA_BYTES = 32;
     static constexpr size_t STREAM_BITS = DATA_WIDTH + DATA_BYTES + 2;
 
-    static_assert(QUEUES == 8, "System contains exactly eight RX/TX queue pairs");
+    static_assert(QUEUES == 1, "Kintex-7 system contains one RX/TX queue pair");
 
     // L2-clock Processing boundary.  CPU_SYSTEM writes l2_rx; SYSTEM_CPU reads
     // l2_tx.  CDC is complete before either synchronous System queue.
@@ -413,7 +413,7 @@ public:
         protocol_error_out = _ASSIGN_COMB(protocol_error_comb_func());
     }
 
-    void _work(bool reset)
+    void _work_system_clock(bool reset)
     {
         uint32_t queue;
         master_dma._work(reset);
@@ -426,7 +426,7 @@ public:
         }
     }
 
-    void _work_l2_clock(bool reset)
+    void _work(bool reset)
     {
         uint32_t queue;
         for (queue = 0; queue < QUEUES; ++queue) {
@@ -435,7 +435,7 @@ public:
         }
     }
 
-    void _strobe()
+    void _strobe_system_clock()
     {
         uint32_t queue;
         master_dma._strobe();
@@ -448,7 +448,7 @@ public:
         }
     }
 
-    void _strobe_l2_clock()
+    void _strobe()
     {
         uint32_t queue;
         for (queue = 0; queue < QUEUES; ++queue) {
@@ -458,4 +458,4 @@ public:
     }
 };
 
-template class System<8, 256>;
+template class System<SYSTEM_QUEUES, 256>;

@@ -11,59 +11,53 @@ module RxFifo #(
     parameter FIFO_DEPTH = 'h40
  )
  (
-    input wire clk
-,   input wire l2_clock
+    input wire net_clk
+,   input wire l2_clk
 ,   input wire reset
-,   input wire[8-1:0] valid_in
-,   input RxDescriptorWord[8-1:0] data_in
-,   output wire[8-1:0] ready_out
-,   output wire[8-1:0] almost_full_out
+,   input wire[2-1:0] valid_in
+,   input RxDescriptorWord[2-1:0] data_in
+,   output wire[2-1:0] ready_out
+,   output wire[2-1:0] almost_full_out
 ,   output wire valid_out
 ,   output RxDescriptorWord data_out
 ,   input wire ready_in
 ,   input wire clear_in
 );
-    parameter  STREAMS = 64'h8;
+    parameter  STREAMS = 64'h2;
     parameter  DESCRIPTOR_BYTES = 64'hA0;
     parameter  DESCRIPTOR_BITS = 64'h500;
 
 
     // regs and combs
-    reg[3-1:0] rr_reg;
-    logic[8-1:0] input_ready_comb;
-    logic[8-1:0] almost_full_comb;
-    logic[8-1:0] fifo_read_comb;
+    reg[1-1:0] rr_reg;
+    logic[2-1:0] input_ready_comb;
+    logic[2-1:0] almost_full_comb;
+    logic[2-1:0] fifo_read_comb;
     logic[1280-1:0] input_bits_0_comb;
     logic[1280-1:0] input_bits_1_comb;
-    logic[1280-1:0] input_bits_2_comb;
-    logic[1280-1:0] input_bits_3_comb;
-    logic[1280-1:0] input_bits_4_comb;
-    logic[1280-1:0] input_bits_5_comb;
-    logic[1280-1:0] input_bits_6_comb;
-    logic[1280-1:0] input_bits_7_comb;
     logic output_valid_comb;
     RxDescriptorWord output_data_comb;
 
     // members
     genvar __i;
-    wire fifos__write_in[8];
-    wire[DESCRIPTOR_BYTES*'h8-1:0] fifos__write_data_in[8];
-    wire fifos__read_in[8];
-    wire[DESCRIPTOR_BYTES*'h8-1:0] fifos__read_data_out[8];
-    wire fifos__empty_out[8];
-    wire fifos__full_out[8];
-    wire fifos__clear_in[8];
-    wire fifos__afull_out[8];
+    wire fifos__write_in[2];
+    wire[DESCRIPTOR_BYTES*'h8-1:0] fifos__write_data_in[2];
+    wire fifos__read_in[2];
+    wire[DESCRIPTOR_BYTES*'h8-1:0] fifos__read_data_out[2];
+    wire fifos__empty_out[2];
+    wire fifos__full_out[2];
+    wire fifos__clear_in[2];
+    wire fifos__afull_out[2];
     generate
-    for (__i=0; __i < 8; __i = __i + 1) begin
+    for (__i=0; __i < 2; __i = __i + 1) begin
         Fifo #(
         DESCRIPTOR_BYTES
 ,       FIFO_DEPTH
 ,       1
 ,       0
         ) fifos (
-            .clk(clk)
-        ,           .l2_clock(l2_clock)
+            .net_clk(net_clk)
+        ,           .l2_clk(l2_clk)
         ,           .reset(reset)
         ,           .write_in(fifos__write_in[__i])
         ,           .write_data_in(fifos__write_data_in[__i])
@@ -78,7 +72,7 @@ module RxFifo #(
     endgenerate
 
     // tmp variables
-    logic[3-1:0] rr_reg_tmp;
+    logic[1-1:0] rr_reg_tmp;
 
 
     always_comb begin : input_bits_0_comb_func  // input_bits_0_comb_func
@@ -91,42 +85,6 @@ module RxFifo #(
         RxDescriptorWord word;
         word = data_in['h1];
         input_bits_1_comb = word.raw;
-    end
-
-    always_comb begin : input_bits_2_comb_func  // input_bits_2_comb_func
-        RxDescriptorWord word;
-        word = data_in['h2];
-        input_bits_2_comb = word.raw;
-    end
-
-    always_comb begin : input_bits_3_comb_func  // input_bits_3_comb_func
-        RxDescriptorWord word;
-        word = data_in['h3];
-        input_bits_3_comb = word.raw;
-    end
-
-    always_comb begin : input_bits_4_comb_func  // input_bits_4_comb_func
-        RxDescriptorWord word;
-        word = data_in['h4];
-        input_bits_4_comb = word.raw;
-    end
-
-    always_comb begin : input_bits_5_comb_func  // input_bits_5_comb_func
-        RxDescriptorWord word;
-        word = data_in['h5];
-        input_bits_5_comb = word.raw;
-    end
-
-    always_comb begin : input_bits_6_comb_func  // input_bits_6_comb_func
-        RxDescriptorWord word;
-        word = data_in['h6];
-        input_bits_6_comb = word.raw;
-    end
-
-    always_comb begin : input_bits_7_comb_func  // input_bits_7_comb_func
-        RxDescriptorWord word;
-        word = data_in['h7];
-        input_bits_7_comb = word.raw;
     end
 
     always_comb begin : input_ready_comb_func  // input_ready_comb_func
@@ -149,7 +107,7 @@ module RxFifo #(
         logic[31:0] offset;
         logic[31:0] candidate;
         for (offset='h0;offset < STREAMS;offset=offset+1) begin
-            candidate=((unsigned'(32'(rr_reg)) + offset)) & 'h7;
+            candidate=((unsigned'(32'(rr_reg)) + offset)) & 'h1;
             if (!fifos__empty_out[candidate]) begin
                 return candidate;
             end
@@ -188,30 +146,6 @@ module RxFifo #(
         assign fifos__write_data_in['h1] = input_bits_1_comb;
         assign fifos__read_in['h1] = fifo_read_comb['h1];
         assign fifos__clear_in['h1] = clear_in;
-        assign fifos__write_in['h2] = valid_in['h2] && input_ready_comb['h2];
-        assign fifos__write_data_in['h2] = input_bits_2_comb;
-        assign fifos__read_in['h2] = fifo_read_comb['h2];
-        assign fifos__clear_in['h2] = clear_in;
-        assign fifos__write_in['h3] = valid_in['h3] && input_ready_comb['h3];
-        assign fifos__write_data_in['h3] = input_bits_3_comb;
-        assign fifos__read_in['h3] = fifo_read_comb['h3];
-        assign fifos__clear_in['h3] = clear_in;
-        assign fifos__write_in['h4] = valid_in['h4] && input_ready_comb['h4];
-        assign fifos__write_data_in['h4] = input_bits_4_comb;
-        assign fifos__read_in['h4] = fifo_read_comb['h4];
-        assign fifos__clear_in['h4] = clear_in;
-        assign fifos__write_in['h5] = valid_in['h5] && input_ready_comb['h5];
-        assign fifos__write_data_in['h5] = input_bits_5_comb;
-        assign fifos__read_in['h5] = fifo_read_comb['h5];
-        assign fifos__clear_in['h5] = clear_in;
-        assign fifos__write_in['h6] = valid_in['h6] && input_ready_comb['h6];
-        assign fifos__write_data_in['h6] = input_bits_6_comb;
-        assign fifos__read_in['h6] = fifo_read_comb['h6];
-        assign fifos__clear_in['h6] = clear_in;
-        assign fifos__write_in['h7] = valid_in['h7] && input_ready_comb['h7];
-        assign fifos__write_data_in['h7] = input_bits_7_comb;
-        assign fifos__read_in['h7] = fifo_read_comb['h7];
-        assign fifos__clear_in['h7] = clear_in;
         assign ready_out = input_ready_comb;
         assign almost_full_out = almost_full_comb;
         assign valid_out = output_valid_comb;
@@ -232,27 +166,33 @@ module RxFifo #(
         end
         selected=selected_stream_value();
         if ((selected < STREAMS) && ready_in) begin
-            rr_reg_tmp = ((selected + 'h1)) & 'h7;
+            rr_reg_tmp = ((selected + 'h1)) & 'h1;
         end
     end
     endtask
 
-    task _work_l2_clock (input logic reset);
-    begin: _work_l2_clock
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
+        _work(reset);
     end
     endtask
 
-    always_ff @(posedge clk) begin
+    task _work_l2_clk (input logic unused);
+    begin: _work_l2_clk
+    end
+    endtask
+
+    always_ff @(posedge net_clk) begin
         rr_reg_tmp = rr_reg;
 
-        _work(reset);
+        _work_net_clk(reset);
 
         rr_reg <= rr_reg_tmp;
     end
 
-    always_ff @(posedge l2_clock) begin
+    always_ff @(posedge l2_clk) begin
 
-        _work_l2_clock(reset);
+        _work_l2_clk(reset);
 
     end
 

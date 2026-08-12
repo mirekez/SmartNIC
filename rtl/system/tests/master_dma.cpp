@@ -28,7 +28,7 @@ long _system_clock = -1;
 namespace
 {
 
-using Dma = MasterDMA<64, 256, 4, 16>;
+using Dma = MasterDMA<64, 64, 4, 16>;
 
 template<typename T, typename V>
 static void copy_to_verilator(T& target, const V& value)
@@ -74,27 +74,27 @@ class MasterDmaTest
     bool error = false;
 
 #if HOST_AXI4
-    Axi4Responder<4, 256> host = {};
+    Axi4Responder<4, 64> host = {};
     uint64_t pending_aw = 0;
     bool have_aw = false;
     bool snap_awvalid = false;
     uint64_t snap_awaddr = 0;
     bool snap_wvalid = false;
-    logic<256> snap_wdata = 0;
-    logic<32> snap_wstrb = 0;
+    logic<64> snap_wdata = 0;
+    logic<8> snap_wstrb = 0;
     bool snap_bready = false;
     bool snap_arvalid = false;
     uint64_t snap_araddr = 0;
     bool snap_rready = false;
 #else
     bool host_waitrequest = false;
-    logic<256> host_readdata = 0;
+    logic<64> host_readdata = 0;
     bool host_readdatavalid = false;
     bool snap_write = false;
     bool snap_read = false;
     uint64_t snap_address = 0;
-    logic<256> snap_writedata = 0;
-    logic<32> snap_byteenable = 0;
+    logic<64> snap_writedata = 0;
+    logic<8> snap_byteenable = 0;
     bool snap_waitrequest = false;
 #endif
 
@@ -292,18 +292,18 @@ class MasterDmaTest
         return dut.host.wvalid_out();
 #endif
     }
-    logic<256> host_value_wdata()
+    logic<64> host_value_wdata()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<logic<256>>(dut.host___05Fwdata_out);
+        return copy_from_verilator<logic<64>>(dut.host___05Fwdata_out);
 #else
         return dut.host.wdata_out();
 #endif
     }
-    logic<32> host_value_wstrb()
+    logic<8> host_value_wstrb()
     {
 #ifdef VERILATOR
-        return logic<32>(dut.host___05Fwstrb_out);
+        return logic<8>(dut.host___05Fwstrb_out);
 #else
         return dut.host.wstrb_out();
 #endif
@@ -365,18 +365,18 @@ class MasterDmaTest
         return dut.host_out.read_in();
 #endif
     }
-    logic<256> host_writedata_value()
+    logic<64> host_writedata_value()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<logic<256>>(dut.host_out___05Fwritedata_out);
+        return copy_from_verilator<logic<64>>(dut.host_out___05Fwritedata_out);
 #else
         return dut.host_out.writedata_in();
 #endif
     }
-    logic<32> host_byteenable_value()
+    logic<8> host_byteenable_value()
     {
 #ifdef VERILATOR
-        return logic<32>(dut.host_out___05Fbyteenable_out);
+        return logic<8>(dut.host_out___05Fbyteenable_out);
 #else
         return dut.host_out.byteenable_in();
 #endif
@@ -394,7 +394,7 @@ class MasterDmaTest
         }
         if (snap_wvalid && host.w.ready) {
             if (!have_aw) fail("AXI W arrived without AW");
-            for (uint32_t byte = 0; byte < 32; ++byte) {
+            for (uint32_t byte = 0; byte < 8; ++byte) {
                 if (snap_wstrb[byte] && pending_aw + byte < host_memory.size()) {
                     host_memory[pending_aw + byte] =
                         (uint8_t)snap_wdata.bits(byte * 8 + 7, byte * 8);
@@ -407,7 +407,7 @@ class MasterDmaTest
         if (snap_arvalid && host.ar.ready && !host.r.valid) {
             uint64_t address = snap_araddr;
             host.r.data = 0;
-            for (uint32_t byte = 0; byte < 32; ++byte) {
+            for (uint32_t byte = 0; byte < 8; ++byte) {
                 if (address + byte < host_memory.size()) {
                     host.r.data.bits(byte * 8 + 7, byte * 8) =
                         host_memory[address + byte];
@@ -423,7 +423,7 @@ class MasterDmaTest
 #else
         host_readdatavalid = false;
         if (snap_write && !snap_waitrequest) {
-            for (uint32_t byte = 0; byte < 32; ++byte) {
+            for (uint32_t byte = 0; byte < 8; ++byte) {
                 if (snap_byteenable[byte]
                     && snap_address + byte < host_memory.size()) {
                     host_memory[snap_address + byte] =
@@ -433,7 +433,7 @@ class MasterDmaTest
         }
         if (snap_read && !snap_waitrequest) {
             host_readdata = 0;
-            for (uint32_t byte = 0; byte < 32; ++byte) {
+            for (uint32_t byte = 0; byte < 8; ++byte) {
                 if (snap_address + byte < host_memory.size()) {
                     host_readdata.bits(byte * 8 + 7, byte * 8) =
                         host_memory[snap_address + byte];

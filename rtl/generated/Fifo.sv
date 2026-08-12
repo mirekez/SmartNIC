@@ -10,7 +10,8 @@ module Fifo #(
 ,   parameter OUTPUT_REG = 0
  )
  (
-    input wire clk
+    input wire l2_clock
+,   input wire system_clock
 ,   input wire reset
 ,   input wire write_in
 ,   input wire[FIFO_WIDTH_BYTES*'h8-1:0] write_data_in
@@ -44,12 +45,13 @@ module Fifo #(
     wire[$clog2(FIFO_DEPTH)-1:0] mem__read_addr_in;
     wire mem__read_in;
     wire[FIFO_WIDTH_BYTES*'h8-1:0] mem__read_data_out;
-    Memory #(
+    SmartNicMemory #(
         FIFO_WIDTH_BYTES
 ,       FIFO_DEPTH
 ,       (OUTPUT_REG) ? (1) : (SHOWAHEAD)
     ) mem (
-        .clk(clk)
+        .l2_clock(l2_clock)
+,       .system_clock(system_clock)
 ,       .reset(reset)
 ,       .write_addr_in(mem__write_addr_in)
 ,       .write_in(mem__write_in)
@@ -196,7 +198,12 @@ module Fifo #(
     end
     endtask
 
-    always @(posedge clk) begin
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
+    end
+    endtask
+
+    always_ff @(posedge l2_clock) begin
         wp_reg_tmp = wp_reg;
         rp_reg_tmp = rp_reg;
         full_reg_tmp = full_reg;
@@ -212,6 +219,12 @@ module Fifo #(
         afull_reg <= afull_reg_tmp;
         read_valid_reg <= read_valid_reg_tmp;
         read_data_reg <= read_data_reg_tmp;
+    end
+
+    always_ff @(posedge system_clock) begin
+
+        _work_system_clock(reset);
+
     end
 
 
