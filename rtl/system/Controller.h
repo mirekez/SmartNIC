@@ -63,7 +63,7 @@ public:
 #if HOST_AXI4
     Axi4If<32, 4, DATA_WIDTH> host_control;
 #else
-    AvalonSlaveIf<32, DATA_WIDTH> host_control;
+    AvalonIf<32, DATA_WIDTH> host_control;
 #endif
 
     _PORT(logic<QUEUES>) rx_empty_in;

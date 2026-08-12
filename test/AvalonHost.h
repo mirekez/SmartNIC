@@ -21,8 +21,8 @@ public:
     static_assert(MEMORY_BYTES % DATA_BYTES == 0);
     static_assert((WORDS & (WORDS - 1)) == 0);
 
-    AvalonMasterIf<32, DATA_WIDTH> control;
-    AvalonSlaveIf<HOST_ADDR_WIDTH, DATA_WIDTH> dma;
+    AvalonIf<32, DATA_WIDTH> control_out;
+    AvalonIf<HOST_ADDR_WIDTH, DATA_WIDTH> dma;
 
     _PORT(bool) driver_read_in;
     _PORT(bool) driver_write_in;
@@ -49,14 +49,14 @@ private:
 public:
     void _assign()
     {
-        control.address_out = driver_address_in;
-        control.read_out = driver_read_in;
-        control.write_out = driver_write_in;
-        control.writedata_out = driver_writedata_in;
-        control.byteenable_out = driver_byteenable_in;
-        driver_waitrequest_out = control.waitrequest_in;
-        driver_readdata_out = control.readdata_in;
-        driver_readdatavalid_out = control.readdatavalid_in;
+        control_out.address_in = driver_address_in;
+        control_out.read_in = driver_read_in;
+        control_out.write_in = driver_write_in;
+        control_out.writedata_in = driver_writedata_in;
+        control_out.byteenable_in = driver_byteenable_in;
+        driver_waitrequest_out = control_out.waitrequest_out;
+        driver_readdata_out = control_out.readdata_out;
+        driver_readdatavalid_out = control_out.readdatavalid_out;
 
         dma.waitrequest_out = _ASSIGN(false);
         dma.readdata_out = _ASSIGN_REG(dma_read_data_reg);

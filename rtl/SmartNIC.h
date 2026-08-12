@@ -378,6 +378,41 @@ private:
 #undef SMARTNIC_DECLARE_READ_PORT_FUNCS
 
 public:
+#ifndef SYNTHESIS
+    bool debug_network_balancer_error()
+    {
+        return network.debug_balancer_error();
+    }
+    bool debug_network_parser_error()
+    {
+        return network.debug_parser_error();
+    }
+    bool debug_network_rx_ram_error()
+    {
+        return network.debug_rx_ram_error();
+    }
+    bool debug_network_join_error()
+    {
+        return network.debug_join_error();
+    }
+    uint32_t debug_network_balancer_words() const
+    {
+        return network.debug_balancer_words();
+    }
+    uint32_t debug_network_balancer_max_words() const
+    {
+        return network.debug_balancer_max_words();
+    }
+    uint32_t debug_network_rx_fifo_descriptors() const
+    {
+        return network.debug_rx_fifo_descriptors();
+    }
+    uint32_t debug_network_rx_ram_completions() const
+    {
+        return network.debug_rx_ram_completions();
+    }
+#endif
+
     void _assign()
     {
         network.valid_in = net_rx_valid_in;

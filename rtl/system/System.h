@@ -44,8 +44,8 @@ public:
     Axi4If<32, 4, HOST_DATA_WIDTH> host_control;
     Axi4MasterIf<HOST_ADDR_WIDTH, 4, HOST_DATA_WIDTH> host_dma;
 #else
-    AvalonSlaveIf<32, HOST_DATA_WIDTH> host_control;
-    AvalonMasterIf<HOST_ADDR_WIDTH, HOST_DATA_WIDTH> host_dma;
+    AvalonIf<32, HOST_DATA_WIDTH> host_control;
+    AvalonIf<HOST_ADDR_WIDTH, HOST_DATA_WIDTH> host_dma_out;
 #endif
 
     _PORT(logic<QUEUES>) rx_queue_empty_out;
@@ -392,14 +392,14 @@ public:
         host_control.waitrequest_out = controller.host_control.waitrequest_out;
         host_control.readdata_out = controller.host_control.readdata_out;
         host_control.readdatavalid_out = controller.host_control.readdatavalid_out;
-        host_dma.address_out = master_dma.host.address_out;
-        host_dma.read_out = master_dma.host.read_out;
-        host_dma.write_out = master_dma.host.write_out;
-        host_dma.writedata_out = master_dma.host.writedata_out;
-        host_dma.byteenable_out = master_dma.host.byteenable_out;
-        master_dma.host.waitrequest_in = host_dma.waitrequest_in;
-        master_dma.host.readdata_in = host_dma.readdata_in;
-        master_dma.host.readdatavalid_in = host_dma.readdatavalid_in;
+        host_dma_out.address_in = master_dma.host_out.address_in;
+        host_dma_out.read_in = master_dma.host_out.read_in;
+        host_dma_out.write_in = master_dma.host_out.write_in;
+        host_dma_out.writedata_in = master_dma.host_out.writedata_in;
+        host_dma_out.byteenable_in = master_dma.host_out.byteenable_in;
+        master_dma.host_out.waitrequest_out = host_dma_out.waitrequest_out;
+        master_dma.host_out.readdata_out = host_dma_out.readdata_out;
+        master_dma.host_out.readdatavalid_out = host_dma_out.readdatavalid_out;
 #endif
 
         l2_rx_ready_out = _ASSIGN_COMB(l2_rx_ready_comb_func());

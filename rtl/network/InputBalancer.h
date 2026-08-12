@@ -12,6 +12,7 @@
 // destination in a single aggregate input clock.
 
 #include <cpphdl.h>
+#include <algorithm>
 #include "../common/ClockDomains.h"
 
 using namespace cpphdl;
@@ -315,6 +316,26 @@ private:
     }
 
 public:
+#ifndef SYNTHESIS
+    uint32_t debug_total_words() const
+    {
+        uint32_t total = 0;
+        for (uint32_t output = 0; output < LANES; ++output) {
+            total += (uint32_t)count_reg[output];
+        }
+        return total;
+    }
+
+    uint32_t debug_max_words() const
+    {
+        uint32_t maximum = 0;
+        for (uint32_t output = 0; output < LANES; ++output) {
+            maximum = std::max(maximum, (uint32_t)count_reg[output]);
+        }
+        return maximum;
+    }
+#endif
+
     void _assign()
     {
         ready_out = _ASSIGN_COMB(input_ready_comb_func());

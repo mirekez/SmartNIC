@@ -66,7 +66,7 @@ public:
 #if HOST_AXI4
     Axi4MasterIf<ADDR_WIDTH, ID_WIDTH, DATA_WIDTH> host;
 #else
-    AvalonMasterIf<ADDR_WIDTH, DATA_WIDTH> host;
+    AvalonIf<ADDR_WIDTH, DATA_WIDTH> host_out;
 #endif
 
     _PORT(bool) busy_out;
@@ -163,11 +163,11 @@ public:
         host.arid_out = _ASSIGN((u<ID_WIDTH>)0);
         host.rready_out = _ASSIGN((uint32_t)state_reg == MASTER_DMA_READ_DATA);
 #else
-        host.address_out = _ASSIGN_REG(address_reg);
-        host.read_out = _ASSIGN((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS);
-        host.write_out = _ASSIGN((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS);
-        host.writedata_out = _ASSIGN_REG(beat_data_reg);
-        host.byteenable_out = _ASSIGN_REG(beat_keep_reg);
+        host_out.address_in = _ASSIGN_REG(address_reg);
+        host_out.read_in = _ASSIGN((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS);
+        host_out.write_in = _ASSIGN((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS);
+        host_out.writedata_in = _ASSIGN_REG(beat_data_reg);
+        host_out.byteenable_in = _ASSIGN_REG(beat_keep_reg);
 #endif
 
         busy_out = _ASSIGN((uint32_t)state_reg != MASTER_DMA_IDLE);
@@ -257,7 +257,7 @@ public:
         }
 #else
         else if ((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS
-            && !host.waitrequest_in()) {
+            && !host_out.waitrequest_out()) {
             bytes = kept_bytes(beat_keep_reg);
             if (bytes == 0 || bytes > (uint32_t)remaining_reg) {
                 protocol_error_reg._next = true;
@@ -274,12 +274,12 @@ public:
             }
         }
         else if ((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS
-            && !host.waitrequest_in()) {
+            && !host_out.waitrequest_out()) {
             state_reg._next = MASTER_DMA_READ_DATA;
         }
         else if ((uint32_t)state_reg == MASTER_DMA_READ_DATA
-            && host.readdatavalid_in()) {
-            beat_data_reg._next = host.readdata_in();
+            && host_out.readdatavalid_out()) {
+            beat_data_reg._next = host_out.readdata_out();
             beat_keep_reg._next = read_keep_comb_func();
             beat_sop_reg._next = first_beat_reg && command_sop_reg;
             beat_eop_reg._next = (uint32_t)remaining_reg <= DATA_BYTES
