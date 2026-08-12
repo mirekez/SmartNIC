@@ -320,7 +320,7 @@ static bool build_queue_verilator()
             .parent_path() / "cpphdl" / "include").string()};
     return VerilatorCompileInExactFolderFromGenerated(QUEUE_SOURCE_FILE,
         std::string(QUEUE_TOP) + "_verilator", QUEUE_TOP, generated,
-        {"Memory", "Fifo", "PacketQueue"}, includes);
+        {"SmartNicMemory", "Fifo", "PacketQueue"}, includes);
 #endif
 }
 

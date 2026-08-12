@@ -208,6 +208,29 @@ private:
     }
 
 public:
+#ifndef SYNTHESIS
+    bool debug_balancer_error() { return balancer.protocol_error_out(); }
+    bool debug_parser_error() { return parser.protocol_error_out(); }
+    bool debug_rx_ram_error() { return rx_ram.protocol_error_out(); }
+    bool debug_join_error() { return protocol_error_reg; }
+    uint32_t debug_balancer_words() const
+    {
+        return balancer.debug_total_words();
+    }
+    uint32_t debug_balancer_max_words() const
+    {
+        return balancer.debug_max_words();
+    }
+    uint32_t debug_rx_fifo_descriptors() const
+    {
+        return rx_fifo.debug_total_descriptors();
+    }
+    uint32_t debug_rx_ram_completions() const
+    {
+        return rx_ram.debug_completion_count();
+    }
+#endif
+
     void _assign()
     {
         balancer.valid_in = valid_in;

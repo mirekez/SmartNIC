@@ -33,6 +33,8 @@ public:
     _PORT(bool) load_ready_out;
     _PORT(bool) start_in;
     _PORT(bool) clear_in;
+    // Number of times to emit the loaded image. Zero is treated as one pass.
+    _PORT(u<16>) repeat_count_in;
 
     _PORT(bool) valid_out;
     _PORT(logic<DATA_BITS>) data_out;
@@ -53,6 +55,7 @@ private:
     reg<u<INDEX_BITS>> read_index_reg;
     reg<u1> running_reg;
     reg<u1> done_reg;
+    reg<u<16>> repeats_remaining_reg;
     reg<u<32>> emitted_reg;
     reg<u<32>> backpressure_reg;
     reg<u1> protocol_error_reg;
@@ -103,13 +106,14 @@ public:
     void _work_net_clk(bool reset)
     {
         if (clear_in()) {
-            load_count_reg.clr();
-            read_index_reg.clr();
-            running_reg.clr();
-            done_reg.clr();
-            emitted_reg.clr();
-            backpressure_reg.clr();
-            protocol_error_reg.clr();
+            load_count_reg._next = 0;
+            read_index_reg._next = 0;
+            running_reg._next = 0;
+            done_reg._next = 0;
+            repeats_remaining_reg._next = 0;
+            emitted_reg._next = 0;
+            backpressure_reg._next = 0;
+            protocol_error_reg._next = 0;
         }
         else {
             if (load_valid_in()) {
@@ -124,10 +128,12 @@ public:
                     protocol_error_reg._next = true;
                 }
                 else {
-                    read_index_reg.clr();
-                    emitted_reg.clr();
-                    backpressure_reg.clr();
-                    done_reg.clr();
+                    read_index_reg._next = 0;
+                    emitted_reg._next = 0;
+                    backpressure_reg._next = 0;
+                    done_reg._next = 0;
+                    repeats_remaining_reg._next = (uint32_t)repeat_count_in()
+                        == 0 ? u<16>(1) : repeat_count_in();
                     running_reg._next = true;
                 }
             }
@@ -136,8 +142,16 @@ public:
                 if (!ready_in()) backpressure_reg._next = backpressure_reg + 1;
                 if ((uint32_t)read_index_reg + 1
                     == (uint32_t)load_count_reg) {
-                    running_reg.clr();
-                    done_reg._next = true;
+                    if ((uint32_t)repeats_remaining_reg > 1) {
+                        read_index_reg._next = 0;
+                        repeats_remaining_reg._next =
+                            repeats_remaining_reg - 1;
+                    }
+                    else {
+                        running_reg._next = 0;
+                        repeats_remaining_reg._next = 0;
+                        done_reg._next = true;
+                    }
                 }
                 else read_index_reg._next = read_index_reg + 1;
             }
@@ -147,6 +161,7 @@ public:
             read_index_reg.clr();
             running_reg.clr();
             done_reg.clr();
+            repeats_remaining_reg.clr();
             emitted_reg.clr();
             backpressure_reg.clr();
             protocol_error_reg.clr();
@@ -160,6 +175,7 @@ public:
         read_index_reg.strobe();
         running_reg.strobe();
         done_reg.strobe();
+        repeats_remaining_reg.strobe();
         emitted_reg.strobe();
         backpressure_reg.strobe();
         protocol_error_reg.strobe();

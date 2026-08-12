@@ -491,6 +491,17 @@ private:
     }
 
 public:
+#ifndef SYNTHESIS
+    uint32_t debug_completion_count() const
+    {
+        uint32_t total = 0;
+        for (uint32_t stream = 0; stream < STREAMS; ++stream) {
+            total += (uint32_t)completion_count_reg[stream];
+        }
+        return total;
+    }
+#endif
+
     void _assign()
     {
 #define RX_RAM_BIND_BANK(number) \

@@ -134,9 +134,9 @@ class MasterDmaTest
 #if HOST_AXI4
         dut.host = host;
 #else
-        dut.host.waitrequest_in = _ASSIGN(host_waitrequest);
-        dut.host.readdata_in = _ASSIGN(host_readdata);
-        dut.host.readdatavalid_in = _ASSIGN(host_readdatavalid);
+        dut.host_out.waitrequest_out = _ASSIGN(host_waitrequest);
+        dut.host_out.readdata_out = _ASSIGN(host_readdata);
+        dut.host_out.readdatavalid_out = _ASSIGN(host_readdatavalid);
 #endif
         dut.__inst_name = "master_dma";
         dut._assign();
@@ -172,9 +172,9 @@ class MasterDmaTest
         dut.host___05Frlast_in = host.r.last;
         dut.host___05Frid_in = (uint8_t)(uint32_t)host.r.id;
 #else
-        dut.host___05Fwaitrequest_in = host_waitrequest;
-        copy_to_verilator(dut.host___05Freaddata_in, host_readdata);
-        dut.host___05Freaddatavalid_in = host_readdatavalid;
+        dut.host_out___05Fwaitrequest_in = host_waitrequest;
+        copy_to_verilator(dut.host_out___05Freaddata_in, host_readdata);
+        dut.host_out___05Freaddatavalid_in = host_readdatavalid;
 #endif
         dut.eval();
 #else
@@ -344,41 +344,41 @@ class MasterDmaTest
     uint64_t host_address_value()
     {
 #ifdef VERILATOR
-        return dut.host___05Faddress_out;
+        return dut.host_out___05Faddress_out;
 #else
-        return (uint64_t)dut.host.address_out();
+        return (uint64_t)dut.host_out.address_in();
 #endif
     }
     bool host_write_value()
     {
 #ifdef VERILATOR
-        return dut.host___05Fwrite_out;
+        return dut.host_out___05Fwrite_out;
 #else
-        return dut.host.write_out();
+        return dut.host_out.write_in();
 #endif
     }
     bool host_read_value()
     {
 #ifdef VERILATOR
-        return dut.host___05Fread_out;
+        return dut.host_out___05Fread_out;
 #else
-        return dut.host.read_out();
+        return dut.host_out.read_in();
 #endif
     }
     logic<256> host_writedata_value()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<logic<256>>(dut.host___05Fwritedata_out);
+        return copy_from_verilator<logic<256>>(dut.host_out___05Fwritedata_out);
 #else
-        return dut.host.writedata_out();
+        return dut.host_out.writedata_in();
 #endif
     }
     logic<32> host_byteenable_value()
     {
 #ifdef VERILATOR
-        return logic<32>(dut.host___05Fbyteenable_out);
+        return logic<32>(dut.host_out___05Fbyteenable_out);
 #else
-        return dut.host.byteenable_out();
+        return dut.host_out.byteenable_in();
 #endif
     }
 #endif

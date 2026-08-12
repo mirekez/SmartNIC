@@ -48,6 +48,7 @@ public:
     _PORT(bool) traffic_load_ready_out;
     _PORT(bool) traffic_start_in;
     _PORT(bool) traffic_clear_in;
+    _PORT(u<16>) traffic_repeat_count_in;
     _PORT(bool) traffic_done_out;
     _PORT(u32) traffic_emitted_beats_out;
     _PORT(u32) traffic_backpressure_cycles_out;
@@ -246,6 +247,7 @@ private:
         traffic.load_eop_in = traffic_load_eop_in;
         traffic.start_in = traffic_start_in;
         traffic.clear_in = traffic_clear_in;
+        traffic.repeat_count_in = traffic_repeat_count_in;
         traffic.ready_in = smartnic.net_rx_ready_out;
 
         smartnic.net_rx_valid_in = traffic.valid_out;
@@ -321,23 +323,23 @@ private:
         host.driver_writedata_in = host_writedata_in;
         host.driver_byteenable_in = host_byteenable_in;
 
-        system.host_control.address_in = host.control.address_out;
-        system.host_control.read_in = host.control.read_out;
-        system.host_control.write_in = host.control.write_out;
-        system.host_control.writedata_in = host.control.writedata_out;
-        system.host_control.byteenable_in = host.control.byteenable_out;
-        host.control.waitrequest_in = system.host_control.waitrequest_out;
-        host.control.readdata_in = system.host_control.readdata_out;
-        host.control.readdatavalid_in = system.host_control.readdatavalid_out;
+        system.host_control.address_in = host.control_out.address_in;
+        system.host_control.read_in = host.control_out.read_in;
+        system.host_control.write_in = host.control_out.write_in;
+        system.host_control.writedata_in = host.control_out.writedata_in;
+        system.host_control.byteenable_in = host.control_out.byteenable_in;
+        host.control_out.waitrequest_out = system.host_control.waitrequest_out;
+        host.control_out.readdata_out = system.host_control.readdata_out;
+        host.control_out.readdatavalid_out = system.host_control.readdatavalid_out;
 
-        host.dma.address_in = system.host_dma.address_out;
-        host.dma.read_in = system.host_dma.read_out;
-        host.dma.write_in = system.host_dma.write_out;
-        host.dma.writedata_in = system.host_dma.writedata_out;
-        host.dma.byteenable_in = system.host_dma.byteenable_out;
-        system.host_dma.waitrequest_in = host.dma.waitrequest_out;
-        system.host_dma.readdata_in = host.dma.readdata_out;
-        system.host_dma.readdatavalid_in = host.dma.readdatavalid_out;
+        host.dma.address_in = system.host_dma_out.address_in;
+        host.dma.read_in = system.host_dma_out.read_in;
+        host.dma.write_in = system.host_dma_out.write_in;
+        host.dma.writedata_in = system.host_dma_out.writedata_in;
+        host.dma.byteenable_in = system.host_dma_out.byteenable_in;
+        system.host_dma_out.waitrequest_out = host.dma.waitrequest_out;
+        system.host_dma_out.readdata_out = host.dma.readdata_out;
+        system.host_dma_out.readdatavalid_out = host.dma.readdatavalid_out;
 
         for (index = 0; index < CPU_COUNT; ++index) {
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(cpu_memory[index].axi_in,

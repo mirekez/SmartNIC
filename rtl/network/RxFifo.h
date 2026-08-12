@@ -146,6 +146,17 @@ private:
     }
 
 public:
+#ifndef SYNTHESIS
+    uint32_t debug_total_descriptors() const
+    {
+        uint32_t total = 0;
+        for (uint32_t stream = 0; stream < STREAMS; ++stream) {
+            total += fifos[stream].debug_count();
+        }
+        return total;
+    }
+#endif
+
     void _assign()
     {
 #define RX_FIFO_BIND_STREAM(number) \

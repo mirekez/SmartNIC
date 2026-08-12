@@ -96,6 +96,9 @@ link_up_in
 - A 16-entry asynchronous FIFO in each direction crosses `l2_clk`/`sys_clk`
   before the corresponding System queue.
 - `HOST_AXI4=0` selects Avalon-MM ports; `HOST_AXI4=1` selects AXI4 ports.
+- Avalon uses one target-oriented `AvalonIf` type for both sides. An interface
+  instance ending in `_out` is automatically direction-reversed by cpphdl;
+  `host_control` is target-facing and `host_dma_out` is master-facing.
 - Control/slave port: 32-bit address, 256-bit data.
 - Host-memory/master port: 64-bit address, 256-bit data.
 

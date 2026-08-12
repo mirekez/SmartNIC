@@ -104,6 +104,16 @@ private:
     }
 
 public:
+#ifndef SYNTHESIS
+    uint32_t debug_count() const
+    {
+        if (full_reg) return FIFO_DEPTH;
+        const uint32_t write = (uint32_t)wp_reg;
+        const uint32_t read = (uint32_t)rp_reg;
+        return write >= read ? write - read : FIFO_DEPTH - read + write;
+    }
+#endif
+
     void _assign()
     {
         mem.write_data_in = write_data_in;

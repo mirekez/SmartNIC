@@ -23,6 +23,34 @@
 - One 256-bit `MasterDMA` executes one host transfer at a time.
 - TX descriptors support scatter/gather; entries are combined until EOP.
 
+## Sustained capture throughput test
+
+- `run_capture_400_throughput` and `run_capture_800_throughput` inject 960
+  consecutive 1516-byte packets with 12-byte IPG.
+- The traffic source advances like a physical Ethernet link and asserts on the
+  first cycle that SmartNIC deasserts ingress ready.
+- The test reports balancer occupancy, RX descriptor FIFO occupancy, RxRAM
+  completion occupancy, CPU prefetched descriptors and completed DMA commands.
+- These targets currently expose a known processing bottleneck and therefore
+  are not registered in default CTest.
+- Configure with `-DSMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS=ON` to register
+  them as deliberately strict performance gates.
+- Current first-stall measurements with 1516-byte packets:
+  - 800G: network cycle 3671; 512/512 descriptors occupied; measured
+    PacketDMA/host payload rates are 12.4/9.3 Gb/s.
+  - 400G: network cycle 6312; 512/512 descriptors occupied; measured
+    PacketDMA/host payload rates are approximately 6.0/4.8 Gb/s.
+- Current architectural bandwidth ceilings explain the failure:
+  - Four 256-bit PacketDMA paths provide 400 Gb/s aggregate at the 800G L2
+    clock, but capture traverses them twice, limiting useful copy throughput to
+    about 200 Gb/s before control overhead.
+  - The single 256-bit, 250 MHz System MasterDMA can write at most 64 Gb/s to
+    host memory before protocol overhead.
+- Sustained 400G/800G host capture therefore requires parallel System DMA
+  engines/queues and either a direct RxRAM-to-System path or enough parallel
+  PacketDMA bandwidth to cover both packet-copy passes. Larger FIFOs alone only
+  delay backpressure.
+
 ## Structure
 
 ```text
