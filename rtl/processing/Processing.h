@@ -14,7 +14,8 @@
 
 using namespace cpphdl;
 
-template<size_t CPU_COUNT = CPUS_USED, size_t HANDLE_BITS = 16,
+template<size_t CPU_COUNT = CPUS_USED,
+    size_t HANDLE_BITS = clog2(RX_RAM_BANK_DEPTH * 2) + 3,
     size_t FRAME_LENGTH_BITS = 14>
 class Processing : public Module
 {
@@ -32,7 +33,8 @@ public:
         "CPUS_USED must select between one and eight Tribe clusters");
 
     CPU cpu[CPU_COUNT];
-    DescriptorFetcher<> descriptor_fetcher[CPU_COUNT];
+    DescriptorFetcher<4, 32, 4, 256, HANDLE_BITS>
+        descriptor_fetcher[CPU_COUNT];
     PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS> packet_dma[CPU_COUNT];
 
     // Aggregate descriptor stream from SmartNIC's L2-side CDC boundary.
@@ -322,6 +324,16 @@ public:
                 descriptor_cdc[index].read_data_out()[259]);
             descriptor_fetcher[index].descriptor_eop_in = _ASSIGN_INDEXED((index),
                 descriptor_cdc[index].read_data_out()[260]);
+            descriptor_fetcher[index].packet_command_ready_in =
+                packet_dma[index].command_ready_out;
+            packet_dma[index].descriptor_command_valid_in =
+                descriptor_fetcher[index].packet_command_valid_out;
+            packet_dma[index].descriptor_command_handle_in =
+                descriptor_fetcher[index].packet_command_handle_out;
+            packet_dma[index].descriptor_command_length_in =
+                descriptor_fetcher[index].packet_command_length_out;
+            packet_dma[index].descriptor_command_system_in =
+                descriptor_fetcher[index].packet_command_system_out;
 
             // CPU uncached IOMEM is split into descriptor and DMA windows.
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(iomem_mux[index].slave_in,
@@ -555,4 +567,4 @@ public:
     }
 };
 
-template class Processing<CPUS_USED, 16, 14>;
+template class Processing<CPUS_USED, clog2(RX_RAM_BANK_DEPTH * 2) + 3, 14>;

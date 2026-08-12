@@ -105,7 +105,7 @@ TX paths:
   Network/System CDC side.
 - `cpu_clk`: currently `4 * l2_clk`; Tribe cores, primary memory interface,
   fetchers and packet DMA.
-- `sys_clk`: 250 MHz in the shared harness; system queues, controller and host DMA.
+- `sys_clk`: 256 MHz in the shared harness; system queues, controller and host DMA.
 - `mgmt_clk`: low-rate reset, MDIO and configuration.
 - All domain crossings use asynchronous FIFOs, synchronizers or reset handshakes.
 - Resets assert asynchronously and release synchronously within each domain.
@@ -153,10 +153,14 @@ ctest --test-dir build
 
 ## Verified capture system
 
-- Four Tribe clusters, four cores per cluster.
+- Eight Tribe clusters, four cores per cluster.
+- RX-RAM uses 8,192 rows per sub-bank in the shared harness. Handles are 17
+  bits, preserving equal byte capacity in 160-bit and 320-bit configurations.
 - Only local hart 0 runs the capture loop; `mhartid` is wired from Tribe's
   boot hart ID.
-- 32 deterministic mixed-size frames, 12-byte IPG, no source-side stalls.
+- Functional capture injects 32 deterministic mixed-size frames with 12-byte
+  IPG and samples eight to host; sustained mode injects 960 full-size frames
+  and samples 96, with no source-side stalls.
 - 400G: 117 aggregate input beats; all packets captured byte-for-byte.
 - 800G: 59 aggregate input beats; all packets captured byte-for-byte.
 - Balanced streams may complete in different global order. Validation is an

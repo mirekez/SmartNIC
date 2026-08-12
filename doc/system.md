@@ -20,7 +20,8 @@
   - `0`: Avalon-MM control slave and host-memory master.
   - `1`: AXI4 control slave and host-memory master.
 - The Controller implements 1024 RX and 1024 TX descriptors.
-- One 256-bit `MasterDMA` executes one host transfer at a time.
+- One 512-bit, 256 MHz `MasterDMA` executes one host transfer at a time and
+  packs/unpacks the 256-bit queue format.
 - TX descriptors support scatter/gather; entries are combined until EOP.
 
 ## Sustained capture throughput test
@@ -31,25 +32,24 @@
   first cycle that SmartNIC deasserts ingress ready.
 - The test reports balancer occupancy, RX descriptor FIFO occupancy, RxRAM
   completion occupancy, CPU prefetched descriptors and completed DMA commands.
-- These targets currently expose a known processing bottleneck and therefore
-  are not registered in default CTest.
+- Capture firmware drains every packet from RxRAM through one of eight
+  PacketDMAs and forwards every tenth packet directly to the matching System
+  queue (96 of 960); unselected packets use the PacketDMA discard path.
+- The targets are not registered in default CTest because the eight full CPU
+  clusters make their C++ simulation intentionally long.
 - Configure with `-DSMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS=ON` to register
   them as deliberately strict performance gates.
-- Current first-stall measurements with 1516-byte packets:
-  - 800G: network cycle 3671; 512/512 descriptors occupied; measured
-    PacketDMA/host payload rates are 12.4/9.3 Gb/s.
-  - 400G: network cycle 6312; 512/512 descriptors occupied; measured
-    PacketDMA/host payload rates are approximately 6.0/4.8 Gb/s.
-- Current architectural bandwidth ceilings explain the failure:
-  - Four 256-bit PacketDMA paths provide 400 Gb/s aggregate at the 800G L2
-    clock, but capture traverses them twice, limiting useful copy throughput to
-    about 200 Gb/s before control overhead.
-  - The single 256-bit, 250 MHz System MasterDMA can write at most 64 Gb/s to
-    host memory before protocol overhead.
-- Sustained 400G/800G host capture therefore requires parallel System DMA
-  engines/queues and either a direct RxRAM-to-System path or enough parallel
-  PacketDMA bandwidth to cover both packet-copy passes. Larger FIFOs alone only
-  delay backpressure.
+- Eight 256-bit PacketDMA paths provide 800 Gb/s aggregate gross bandwidth at
+  the 800G L2 clock.
+- The 512-bit, 256 MHz host MasterDMA has a 131.072 Gb/s theoretical ceiling;
+  one-in-ten capture keeps offered packet payload below that ceiling.
+- Current measured results for 1516-byte packets and 12-byte IPG:
+  - 800G: 960 packets in 4,584 uninterrupted network cycles, zero backpressure.
+  - 400G: 960 packets in 9,168 uninterrupted network cycles, zero backpressure.
+  - Every PacketDMA completes 120 packets; 96 sampled host packets are checked
+    byte-for-byte.
+- Full capture of every 800G packet still requires more host-DMA parallelism;
+  the current test deliberately limits PCIe traffic to one packet in ten.
 
 ## Structure
 
@@ -79,8 +79,8 @@ CPU -> Network:
 L2 -> PacketDMA(DMA_CPU_NETWORK) -> Network TxFifo
 ```
 
-- The current capture path deliberately traverses L2 and proves functional
-  integration; it is not the final line-rate host architecture.
+- Capture uses PacketDMA's direct RxRAM-to-System fast path for selected packets
+  and discard path for the rest; ordinary DMA operations still exercise L2.
 - Direct RxRAM-to-host and host-to-Network paths remain required for sustained
   400G/800G host traffic.
 
@@ -109,7 +109,8 @@ L2 -> PacketDMA(DMA_CPU_NETWORK) -> Network TxFifo
 
 ## Current host DMA
 
-- `MasterDMA` accepts Controller commands and transfers 256-bit beats.
+- `MasterDMA` accepts Controller commands and transfers 512-bit host beats,
+  packing or splitting the 256-bit packet-queue beats.
 - Card-to-host consumes a selected RxQueue and writes the posted host address.
 - Host-to-card reads one or more host fragments and emits one packet into the
   selected TxQueue.
@@ -186,11 +187,12 @@ yet. The capture harness currently preloads each external DDR model directly.
 
 ## End-to-end capture test
 
-- `test/SmartNICTest.h` composes SmartNIC, four Processing clusters, System,
+- `test/SmartNICTest.h` composes SmartNIC, eight Processing clusters, System,
   external DDR models, a traffic source and an Avalon host-memory model.
-- `test/capture.elf` polls descriptors, copies RxRAM to L2, then L2 to the
-  matching System RxQueue.
-- The host posts 32 receive-ring entries across queues and validates every
-  captured byte in 400G and 800G builds.
+- `test/capture.elf` polls every descriptor; every tenth local packet streams
+  RxRAM-to-System and all others are drained through the discard fast path.
+- The functional host test posts eight receive-ring entries and validates the
+  selected packet bytes in both 400G and 800G builds. Sustained mode uses 960
+  ingress packets and 96 host entries.
 - The source offers traffic every Network clock and treats any `ready` stall as
   a wire-speed error.

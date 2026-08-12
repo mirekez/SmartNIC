@@ -1,7 +1,7 @@
 #pragma once
 
 // Shared full-SoC simulation harness. It composes the Network SmartNIC root,
-// four Tribe processing clusters, the System queues/controller/MasterDMA,
+// eight Tribe processing clusters, the System queues/controller/MasterDMA,
 // external CPU DDR models, a wire-rate Ethernet source, and an Avalon host.
 
 #include "../Config.h"
@@ -25,13 +25,13 @@ public:
     static constexpr size_t L2_BYTES = 32;
     static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t NET_BYTES = NET_BITS / 8;
-    static constexpr size_t HANDLE_BITS = 16;
+    static constexpr size_t HANDLE_BITS = clog2(RX_RAM_BANK_DEPTH * 2) + 3;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
 
-    static_assert(CPU_COUNT == 4,
-        "capture harness currently uses four Tribe clusters");
+    static_assert(CPU_COUNT >= 1 && CPU_COUNT <= STREAMS,
+        "capture harness supports one through eight Tribe clusters");
 
-    SmartNIC<LANE_WIDTH, 4096, 64, 1024> smartnic;
+    SmartNIC<LANE_WIDTH, RX_RAM_BANK_DEPTH, 64, 1024> smartnic;
     Processing<CPU_COUNT, HANDLE_BITS, FRAME_LENGTH_BITS> processing;
     System<8, 256> system;
     TrafficGenerator<LANE_WIDTH, TRAFFIC_DEPTH> traffic;

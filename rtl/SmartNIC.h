@@ -18,7 +18,8 @@ using namespace cpphdl;
 #define SMARTNIC_FOR_EACH_TX_STREAM(M) \
     M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
 
-template<size_t LANE_WIDTH = NET_LANE_WIDTH, size_t BANK_DEPTH = 4096,
+template<size_t LANE_WIDTH = NET_LANE_WIDTH,
+    size_t BANK_DEPTH = RX_RAM_BANK_DEPTH,
     size_t RX_FIFO_DEPTH = 64, size_t TX_FIFO_WORDS = 1024>
 class SmartNIC : public Module
 {
@@ -701,7 +702,9 @@ public:
     }
 };
 
-template class SmartNIC<160, 4096, 64, 1024>;
+#ifdef SYNTHESIS
+template class SmartNIC<160, RX_RAM_BANK_DEPTH, 64, 1024>;
+#endif
 
 #undef SMARTNIC_FOR_EACH_RX_PORT
 #undef SMARTNIC_FOR_EACH_TX_STREAM

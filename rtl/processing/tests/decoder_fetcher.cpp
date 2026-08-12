@@ -81,6 +81,7 @@ class DescriptorFetcherTest
         dut.descriptor_word_in = _ASSIGN(descriptor_word);
         dut.descriptor_sop_in = _ASSIGN(descriptor_sop);
         dut.descriptor_eop_in = _ASSIGN(descriptor_eop);
+        dut.packet_command_ready_in = _ASSIGN(true);
         dut.mmio = axi;
         dut.__inst_name = "descriptor_fetcher";
         dut._assign();
@@ -97,6 +98,7 @@ class DescriptorFetcherTest
         dut.descriptor_word_in = (uint8_t)(uint32_t)descriptor_word;
         dut.descriptor_sop_in = descriptor_sop;
         dut.descriptor_eop_in = descriptor_eop;
+        dut.packet_command_ready_in = true;
         dut.mmio___05Fawvalid_in = axi.aw.valid;
         dut.mmio___05Fawaddr_in = (uint32_t)axi.aw.addr;
         dut.mmio___05Fawid_in = (uint8_t)(uint32_t)axi.aw.id;

@@ -41,8 +41,14 @@ private:
     bool& write_ready_comb_func()
     {
         u<PTR_BITS> full_gray;
+#ifndef SYNTHESIS
         full_gray = read_gray_write2_reg
             ^ u<PTR_BITS>((1u << ADDR_BITS) | (1u << (ADDR_BITS - 1)));
+#else
+        full_gray = read_gray_write2_reg;
+        full_gray[ADDR_BITS] = !full_gray[ADDR_BITS];
+        full_gray[ADDR_BITS - 1] = !full_gray[ADDR_BITS - 1];
+#endif
         write_ready_comb = write_gray_reg != full_gray;
         return write_ready_comb;
     }

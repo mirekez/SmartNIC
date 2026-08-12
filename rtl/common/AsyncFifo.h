@@ -90,5 +90,7 @@ using namespace cpphdl;
 
 template class AsyncFifoNetToL2<1280, 16>;
 template class AsyncFifoNetToL2<522, 16>;
-template class AsyncFifoL2ToNet<30, 16>;
+#ifdef SYNTHESIS
+template class AsyncFifoL2ToNet<31, 16>;
+#endif
 template class AsyncFifoL2ToNet<522, 16>;

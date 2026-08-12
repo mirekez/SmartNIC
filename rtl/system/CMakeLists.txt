@@ -62,7 +62,7 @@ if(SMARTNIC_SYSTEM_ENABLE_800G_LINE MATCHES "1$")
 else()
     set(SMARTNIC_SYSTEM_L2_CLOCK_HZ 195312500)
 endif()
-set(SMARTNIC_SYSTEM_CLOCK_HZ 250000000)
+set(SMARTNIC_SYSTEM_CLOCK_HZ 256000000)
 
 function(smartnic_add_complete_system_target target generated_dir)
     add_custom_target(${target}

@@ -11,7 +11,8 @@
 using namespace cpphdl;
 
 template<size_t DEPTH = 4, size_t AXI_ADDR_WIDTH = 32,
-    size_t AXI_ID_WIDTH = 4, size_t AXI_DATA_WIDTH = 256>
+    size_t AXI_ID_WIDTH = 4, size_t AXI_DATA_WIDTH = 256,
+    size_t HANDLE_BITS = 17>
 class DescriptorFetcher : public Module
 {
 public:
@@ -52,9 +53,12 @@ public:
 
     static constexpr uint32_t CONTROL_ENABLE = 1u << 0;
     static constexpr uint32_t ACTION_NEXT = 1u << 0;
+    static constexpr uint32_t ACTION_DMA_DISCARD = 1u << 1;
+    static constexpr uint32_t ACTION_DMA_SYSTEM = 1u << 2;
     static constexpr uint32_t STATUS_AVAILABLE = 1u << 0;
     static constexpr uint32_t STATUS_PREFETCH_ENABLED = 1u << 1;
     static constexpr uint32_t STATUS_PROTOCOL_ERROR = 1u << 2;
+    static constexpr uint32_t STATUS_DMA_READY = 1u << 3;
 
     _PORT(bool) descriptor_valid_in;
     _PORT(logic<DESCRIPTOR_WORD_BITS>) descriptor_data_in;
@@ -62,6 +66,14 @@ public:
     _PORT(bool) descriptor_sop_in;
     _PORT(bool) descriptor_eop_in;
     _PORT(bool) descriptor_ready_out;
+
+    // One-write descriptor-to-DMA doorbell.  The current descriptor supplies
+    // handle/length in hardware; the CPU supplies only its packet disposition.
+    _PORT(bool) packet_command_ready_in;
+    _PORT(bool) packet_command_valid_out;
+    _PORT(u<HANDLE_BITS>) packet_command_handle_out;
+    _PORT(u<14>) packet_command_length_out;
+    _PORT(bool) packet_command_system_out;
 
     Axi4If<AXI_ADDR_WIDTH, AXI_ID_WIDTH, AXI_DATA_WIDTH> mmio;
 
@@ -80,6 +92,10 @@ private:
     reg<u1> assembly_active_reg;
     reg<u1> enabled_reg;
     reg<u1> protocol_error_reg;
+    reg<u1> packet_command_valid_reg;
+    reg<u<HANDLE_BITS>> packet_command_handle_reg;
+    reg<u<14>> packet_command_length_reg;
+    reg<u1> packet_command_system_reg;
 
     reg<u<AXI_ADDR_WIDTH>> write_addr_reg;
     reg<u<AXI_ID_WIDTH>> write_id_reg;
@@ -126,6 +142,7 @@ private:
             return ((uint32_t)count_reg != 0 ? STATUS_AVAILABLE : 0)
                 | ((bool)enabled_reg ? STATUS_PREFETCH_ENABLED : 0)
                 | ((bool)protocol_error_reg ? STATUS_PROTOCOL_ERROR : 0)
+                | (packet_command_ready_in() ? STATUS_DMA_READY : 0)
                 | ((uint32_t)count_reg << 8);
         }
         if (address >= REG_DESCRIPTOR_BASE
@@ -194,6 +211,10 @@ public:
         descriptor_count_out = _ASSIGN_REG(count_reg);
         prefetch_enabled_out = _ASSIGN_REG(enabled_reg);
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
+        packet_command_valid_out = _ASSIGN_REG(packet_command_valid_reg);
+        packet_command_handle_out = _ASSIGN_REG(packet_command_handle_reg);
+        packet_command_length_out = _ASSIGN_REG(packet_command_length_reg);
+        packet_command_system_out = _ASSIGN_REG(packet_command_system_reg);
 
         mmio.awready_out = _ASSIGN(!write_addr_valid_reg
             && !write_response_valid_reg);
@@ -223,6 +244,7 @@ public:
         count = (uint32_t)count_reg;
         pop = false;
         input_fire = descriptor_valid_in() && descriptor_ready_out();
+        packet_command_valid_reg._next = false;
 
         if (mmio.awvalid_in() && mmio.awready_out()) {
             write_addr_reg._next = mmio.awaddr_in();
@@ -236,7 +258,20 @@ public:
                 enabled_reg._next = (value & CONTROL_ENABLE) != 0;
             }
             else if (address == REG_ACTION && (value & ACTION_NEXT) != 0) {
-                pop = count != 0;
+                if ((value & (ACTION_DMA_DISCARD | ACTION_DMA_SYSTEM)) == 0) {
+                    pop = count != 0;
+                }
+                else if (count != 0 && packet_command_ready_in()
+                    && !((value & ACTION_DMA_DISCARD) != 0
+                        && (value & ACTION_DMA_SYSTEM) != 0)) {
+                    packet_command_handle_reg._next = descriptor_bits32(0);
+                    packet_command_length_reg._next = descriptor_bits32(32);
+                    packet_command_system_reg._next =
+                        (value & ACTION_DMA_SYSTEM) != 0;
+                    packet_command_valid_reg._next = true;
+                    pop = true;
+                }
+                else protocol_error_reg._next = true;
             }
             write_addr_valid_reg._next = false;
             write_response_valid_reg._next = true;
@@ -312,6 +347,10 @@ public:
             assembly_active_reg.clr();
             enabled_reg.clr();
             protocol_error_reg.clr();
+            packet_command_valid_reg.clr();
+            packet_command_handle_reg.clr();
+            packet_command_length_reg.clr();
+            packet_command_system_reg.clr();
             write_addr_reg.clr();
             write_id_reg.clr();
             write_addr_valid_reg.clr();
@@ -335,6 +374,10 @@ public:
         assembly_active_reg.strobe();
         enabled_reg.strobe();
         protocol_error_reg.strobe();
+        packet_command_valid_reg.strobe();
+        packet_command_handle_reg.strobe();
+        packet_command_length_reg.strobe();
+        packet_command_system_reg.strobe();
         write_addr_reg.strobe();
         write_id_reg.strobe();
         write_addr_valid_reg.strobe();
@@ -345,4 +388,4 @@ public:
     }
 };
 
-template class DescriptorFetcher<4, 32, 4, 256>;
+template class DescriptorFetcher<4, 32, 4, 256, 17>;

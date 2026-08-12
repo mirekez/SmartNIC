@@ -99,8 +99,10 @@ link_up_in
 - Avalon uses one target-oriented `AvalonIf` type for both sides. An interface
   instance ending in `_out` is automatically direction-reversed by cpphdl;
   `host_control` is target-facing and `host_dma_out` is master-facing.
-- Control/slave port: 32-bit address, 256-bit data.
-- Host-memory/master port: 64-bit address, 256-bit data.
+- Control/slave port: 32-bit address, 512-bit data at 256 MHz.
+- Host-memory/master port: 64-bit address, 512-bit data at 256 MHz.
+- `MasterDMA` packs two 256-bit Processing queue beats into one host beat and
+  splits host reads back into two queue beats.
 
 ```text
 Processing        clock crossing       System             host model/wrapper
