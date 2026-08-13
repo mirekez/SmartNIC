@@ -1,6 +1,6 @@
-// Full 800G capture demonstration. This is the production capture test with
-// visualization observers attached to every public datapath boundary. Packet
-// payloads, including their first bytes, use repeating two-byte color words.
+// Sustained 400G capture demonstration. The compact generator image is replayed
+// long enough to exceed all modeled receive buffering, while visualization
+// observers mirror public datapath boundaries without changing RTL state.
 
 #include "../test/SmartNICTest.h"
 #include "../rtl/testing/GenEthStream.h"
@@ -23,7 +23,7 @@
 namespace
 {
 
-constexpr uint32_t DEMO_TRAFFIC_DEPTH = 2048;
+constexpr uint32_t DEMO_TRAFFIC_DEPTH = 1024;
 constexpr uint32_t DEMO_CPU_RAM_WORDS = 8192;
 using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, DEMO_TRAFFIC_DEPTH,
     DEMO_CPU_RAM_WORDS>;
@@ -34,15 +34,30 @@ using smartnic_demo::Canvas;
 
 constexpr uint64_t HOST_PACKET_BASE = 0x00100000;
 constexpr uint32_t HOST_PACKET_STRIDE = 2048;
-constexpr uint32_t BASE_FRAME_COUNT = 32;
-constexpr uint32_t TRAFFIC_MULTIPLIER = 20;
-constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_MULTIPLIER;
-constexpr uint32_t VIDEO_DECIMATION = TRAFFIC_MULTIPLIER;
-// Twenty times the original traffic is sampled every twentieth Network clock;
-// 140-fps playback absorbs the host-drain tail and stays near 36 seconds.
+constexpr uint32_t BASE_FRAME_COUNT = 40;
+constexpr uint32_t TRAFFIC_REPEATS = 64;
+constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_REPEATS;
+constexpr uint32_t HOST_SAMPLE_PERIOD = 10;
+constexpr uint32_t FRAMES_PER_CPU = FRAME_COUNT / CPUS_USED;
+constexpr uint32_t HOST_FRAMES_PER_CPU =
+    (FRAMES_PER_CPU + HOST_SAMPLE_PERIOD - 1) / HOST_SAMPLE_PERIOD;
+constexpr uint32_t HOST_FRAME_COUNT = HOST_FRAMES_PER_CPU * CPUS_USED;
+constexpr uint32_t VIDEO_DECIMATION = 8;
 constexpr uint32_t VIDEO_FPS = 140;
-constexpr uint64_t MAX_CPU_TICKS = 30000000;
+constexpr uint64_t MAX_CPU_TICKS = 15000000;
 constexpr uint64_t PROGRESS_INTERVAL = 25000;
+constexpr uint64_t BALANCER_BYTES = 8ull * 1024 * (NET_LANE_WIDTH / 8);
+constexpr uint64_t RX_RAM_BYTES = 8ull * RX_RAM_BANK_DEPTH * 2
+    * (NET_LANE_WIDTH / 8);
+constexpr uint64_t RX_DESCRIPTOR_BYTES = 8ull * 64 * 160 + 16ull * 160;
+constexpr uint64_t SYSTEM_RX_QUEUE_BYTES = 8ull * 256 * 32;
+constexpr uint64_t TOTAL_RX_BUFFER_BYTES = BALANCER_BYTES + RX_RAM_BYTES
+    + RX_DESCRIPTOR_BYTES + SYSTEM_RX_QUEUE_BYTES;
+constexpr uint64_t ABSORPTION_NET_CYCLES =
+    (TOTAL_RX_BUFFER_BYTES + Dut::NET_BYTES - 1) / Dut::NET_BYTES;
+constexpr uint32_t MAX_RETIREMENT_LAG_PACKETS = 128;
+static_assert(!ENABLE_800G, "the sustained video demo is the 400G proof");
+static_assert(FRAME_COUNT % CPUS_USED == 0);
 
 struct Elf32Header
 {
@@ -84,7 +99,7 @@ class CaptureDemo
     logic<Dut::NET_BYTES> traffic_load_eop = 0;
     bool traffic_start = false;
     bool traffic_clear = false;
-    u<16> traffic_repeat_count = 1;
+    u<16> traffic_repeat_count = TRAFFIC_REPEATS;
     bool host_read = false;
     bool host_write = false;
     u32 host_address = 0;
@@ -94,6 +109,13 @@ class CaptureDemo
     uint64_t l2_phase = 0;
     uint64_t system_phase = 0;
     uint64_t ticks = 0;
+    uint64_t net_cycles = 0;
+    uint64_t wire_start_cycle = 0;
+    uint64_t wire_stop_cycle = 0;
+    bool wire_started = false;
+    bool wire_midpoint_seen = false;
+    uint32_t wire_midpoint_completed = 0;
+    uint32_t wire_end_completed = 0;
     uint32_t video_decimation_phase = 0;
     uint32_t host_consumer = 0;
     bool error = false;
@@ -101,6 +123,23 @@ class CaptureDemo
     std::unique_ptr<Visualizer> visualizer;
 
     static constexpr uint64_t CPU_CLOCK_HZ = L2_CLK_HZ * 4;
+
+    uint64_t wire_elapsed_cycles() const
+    {
+        const uint64_t end = wire_stop_cycle != 0
+            ? wire_stop_cycle : net_cycles;
+        return wire_started ? end - wire_start_cycle : 0;
+    }
+
+    uint32_t completed_packets()
+    {
+        uint32_t completed = 0;
+        for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
+            completed += (uint32_t)dut.processing.packet_dma[cluster]
+                .completed_count_out();
+        }
+        return completed;
+    }
 
     struct Edges
     {
@@ -111,7 +150,7 @@ class CaptureDemo
 
     void fail(const std::string& message)
     {
-        std::cerr << "800G demo: " << message << '\n';
+        std::cerr << "400G demo: " << message << '\n';
         error = true;
     }
 
@@ -145,8 +184,24 @@ class CaptureDemo
         if (net_phase >= CPU_CLOCK_HZ) {
             net_phase -= CPU_CLOCK_HZ;
             if (visualizer) visualizer->observe_net_before(dut);
+            if (dut.traffic.valid_out() && !wire_started) {
+                wire_started = true;
+                wire_start_cycle = net_cycles;
+            }
             dut._work_net_clk(reset);
             dut._strobe_net_clk();
+            if (wire_started && !wire_midpoint_seen
+                && (uint32_t)dut.traffic_emitted_beats_out()
+                    >= (382u * TRAFFIC_REPEATS) / 2) {
+                wire_midpoint_seen = true;
+                wire_midpoint_completed = completed_packets();
+            }
+            if (wire_started && dut.traffic.done_out()
+                && wire_stop_cycle == 0) {
+                wire_stop_cycle = net_cycles + 1;
+                wire_end_completed = completed_packets();
+            }
+            ++net_cycles;
             edges.net = true;
         }
         l2_phase += L2_CLK_HZ;
@@ -295,8 +350,6 @@ class CaptureDemo
 
     static std::vector<std::vector<uint8_t>> make_frames()
     {
-        static constexpr std::array<uint32_t, 8> sizes = {
-            64, 128, 256, 512, 1024, 1516, 768, 300};
         // High component nibbles and modest gain values produce vivid packet
         // bands against the neutral gray block backgrounds.
         static constexpr std::array<uint16_t, BASE_FRAME_COUNT> patterns = {
@@ -304,17 +357,42 @@ class CaptureDemo
             0x00c0, 0x0c00, 0x00cc, 0x0c0c, 0x0cc0, 0x0ccc, 0x009f, 0x00f9,
             0x090f, 0x0f09, 0x09f0, 0x0f90, 0x1099, 0x1909, 0x1990, 0x1066,
             0x1606, 0x1660, 0x2066, 0x2606, 0x2660, 0x2048, 0x2480, 0x2804};
-        std::vector<std::vector<uint8_t>> frames;
-        for (uint32_t index = 0; index < FRAME_COUNT; ++index) {
-            std::vector<uint8_t> frame(sizes[index % sizes.size()]);
+        std::vector<std::vector<uint8_t>> image;
+        for (uint32_t index = 0; index < BASE_FRAME_COUNT; ++index) {
+            std::vector<uint8_t> frame(1516);
             const uint16_t pattern = patterns[index % patterns.size()];
             for (uint32_t byte = 0; byte < frame.size(); byte += 2) {
                 frame[byte] = (uint8_t)pattern;
                 if (byte + 1 < frame.size()) frame[byte + 1] = pattern >> 8;
             }
-            frames.push_back(std::move(frame));
+            image.push_back(std::move(frame));
+        }
+        std::vector<std::vector<uint8_t>> frames;
+        frames.reserve(FRAME_COUNT);
+        for (uint32_t repeat = 0; repeat < TRAFFIC_REPEATS; ++repeat) {
+            frames.insert(frames.end(), image.begin(), image.end());
         }
         return frames;
+    }
+
+    static std::vector<std::vector<uint8_t>> base_frames(
+        const std::vector<std::vector<uint8_t>>& frames)
+    {
+        return {frames.begin(), frames.begin() + BASE_FRAME_COUNT};
+    }
+
+    static std::vector<std::vector<uint8_t>> sampled_host_frames(
+        const std::vector<std::vector<uint8_t>>& frames)
+    {
+        std::vector<std::vector<uint8_t>> sampled;
+        sampled.reserve(HOST_FRAME_COUNT);
+        for (uint32_t local = 0; local < FRAMES_PER_CPU;
+            local += HOST_SAMPLE_PERIOD) {
+            for (uint32_t queue = 0; queue < CPUS_USED; ++queue) {
+                sampled.push_back(frames[local * CPUS_USED + queue]);
+            }
+        }
+        return sampled;
     }
 
     static std::vector<Beat> pack_traffic(
@@ -359,10 +437,11 @@ class CaptureDemo
         return true;
     }
 
-    bool verify_packets(const std::vector<std::vector<uint8_t>>& frames)
+    bool verify_packets(const std::vector<std::vector<uint8_t>>& frames,
+        uint32_t slots)
     {
         std::vector<bool> captured(frames.size(), false);
-        for (uint32_t slot = 0; slot < frames.size(); ++slot) {
+        for (uint32_t slot = 0; slot < slots; ++slot) {
             const uint64_t base = HOST_PACKET_BASE + slot * HOST_PACKET_STRIDE;
             uint32_t match = frames.size();
             for (uint32_t frame = 0; frame < frames.size(); ++frame) {
@@ -388,8 +467,9 @@ class CaptureDemo
 
     void report_progress()
     {
-        std::cerr << "800G demo progress: ticks=" << ticks
-                  << " host=" << host_consumer << '/' << FRAME_COUNT;
+        std::cerr << "400G demo progress: ticks=" << ticks
+                  << " host=" << host_consumer << '/' << HOST_FRAME_COUNT
+                  << " ingress=" << completed_packets() << '/' << FRAME_COUNT;
         for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
             std::cerr << " c" << cluster << "{desc="
                       << (uint32_t)dut.processing.descriptor_fetcher[cluster]
@@ -408,20 +488,22 @@ public:
         bind();
         if (!load_elf(firmware)) return false;
         const auto frames = make_frames();
-        const auto beats = pack_traffic(frames);
+        const auto image_frames = base_frames(frames);
+        const auto host_frames = sampled_host_frames(frames);
+        const auto beats = pack_traffic(image_frames);
         visualizer = std::make_unique<Visualizer>(output, frames, beats,
-            firmware_image, VIDEO_FPS, background);
+            firmware_image, TRAFFIC_REPEATS, VIDEO_FPS, background);
 
         // Include reset, ring programming, generator loading, wire burst and
         // host drain in the movie. A frame is emitted after every net-clock
         // evaluation while all other clocks retain their exact phase ratios.
         for (uint32_t index = 0; index < 512; ++index) cycle(true);
-        for (uint32_t frame = 0; frame < frames.size(); ++frame) {
+        for (uint32_t frame = 0; frame < host_frames.size(); ++frame) {
             write_ring_descriptor(frame,
                 HOST_PACKET_BASE + frame * HOST_PACKET_STRIDE,
                 HOST_PACKET_STRIDE, frame % CPUS_USED);
         }
-        write32(Controller<>::REG_RX_PRODUCER, frames.size());
+        write32(Controller<>::REG_RX_PRODUCER, host_frames.size());
         write32(Controller<>::REG_CONTROL, Controller<>::CONTROL_ENABLE);
         if (!load_traffic(beats)) return false;
 
@@ -432,7 +514,9 @@ public:
         uint64_t next_poll = ticks;
         uint64_t next_progress = ticks + PROGRESS_INTERVAL;
         report_progress();
-        while (ticks < MAX_CPU_TICKS && host_consumer != frames.size()
+        while (ticks < MAX_CPU_TICKS
+            && (host_consumer != host_frames.size()
+                || completed_packets() != frames.size())
             && !error) {
             cycle();
             if (ticks >= next_poll) {
@@ -449,21 +533,44 @@ public:
             if (dut.storage_full_out()) fail("RxRAM/RxFIFO storage_full asserted");
         }
         host_consumer = read32(Controller<>::REG_RX_CONSUMER);
-        if (host_consumer != frames.size()) {
+        if (host_consumer != host_frames.size()) {
             fail(std::format("capture timed out: {} of {} packets reached host",
-                host_consumer, frames.size()));
+                host_consumer, host_frames.size()));
+        }
+        if (completed_packets() != frames.size()) {
+            fail(std::format("processing drained {} of {} ingress packets",
+                completed_packets(), frames.size()));
         }
         if (!dut.traffic_done_out()) fail("traffic source did not drain");
         if ((uint32_t)dut.traffic_backpressure_cycles_out() != 0) {
             fail(std::format("wire-speed violation: {} network cycles backpressured",
                 (uint32_t)dut.traffic_backpressure_cycles_out()));
         }
-        if (!error) verify_packets(frames);
+        if (wire_elapsed_cycles() <= ABSORPTION_NET_CYCLES) {
+            fail(std::format(
+                "wire interval {} did not exceed modeled absorption {}",
+                wire_elapsed_cycles(), ABSORPTION_NET_CYCLES));
+        }
+        if (!wire_midpoint_seen) fail("wire midpoint was not observed");
+        const uint32_t second_half_retired = wire_end_completed
+            - wire_midpoint_completed;
+        if (second_half_retired + MAX_RETIREMENT_LAG_PACKETS
+            < FRAME_COUNT / 2) {
+            fail(std::format(
+                "processing retired only {} of {} second-half packets by wire end",
+                second_half_retired, FRAME_COUNT / 2));
+        }
+        if (!error) verify_packets(frames, host_frames.size());
         visualizer->finish();
 
-        std::print("800G demo: packets={} beats={} CPU ticks={} video_frames={} "
-                   "result={}\nvideo: {}\n",
-            frames.size(), (uint32_t)dut.traffic_emitted_beats_out(), ticks,
+        std::print("400G sustained video: ingress_packets={} host_packets={} "
+                   "beats={} wire_cycles={} absorption_cycles={} "
+                   "midpoint_retired={} wire_end_retired={} CPU_ticks={} "
+                   "video_frames={} result={}\nvideo: {}\n",
+            frames.size(), host_frames.size(),
+            (uint32_t)dut.traffic_emitted_beats_out(), wire_elapsed_cycles(),
+            ABSORPTION_NET_CYCLES, wire_midpoint_completed, wire_end_completed,
+            ticks,
             visualizer->frame_count(), error ? "FAILED" : "PASSED",
             output.string());
         return !error;
@@ -478,7 +585,7 @@ int main(int argc, char** argv)
         const std::filesystem::path firmware = argc > 1
             ? argv[1] : "capture.elf";
         const std::filesystem::path output = argc > 2
-            ? argv[2] : "smartnic_800g.avi";
+            ? argv[2] : "smartnic_400g_long.avi";
         uint8_t background = Canvas::UI_OUTSIDE;
         if (argc > 3) {
             std::string color = argv[3];
@@ -496,7 +603,7 @@ int main(int argc, char** argv)
         return CaptureDemo().run(firmware, output, background) ? 0 : 1;
     }
     catch (const std::exception& exception) {
-        std::cerr << "800G demo exception: " << exception.what() << '\n';
+        std::cerr << "400G demo exception: " << exception.what() << '\n';
         return 1;
     }
 }

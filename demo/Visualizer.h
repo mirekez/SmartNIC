@@ -43,10 +43,13 @@ class Visualizer
 
     const PacketList& source_packets;
     const std::vector<BEAT>& source_beats;
+    const uint32_t source_repeats;
     const std::vector<uint8_t>& firmware;
     std::filesystem::path video_path;
     RleAviWriter video;
+#if DEMO_TRANSPARENT_VIDEO
     ApngWriter transparent_video;
+#endif
     std::ofstream trace;
     Canvas canvas;
     uint8_t background_color;
@@ -134,7 +137,15 @@ class Visualizer
         PacketList packets;
         Packet current;
         const size_t end = std::min(loaded_beats, source_beats.size());
-        for (size_t index = std::min(emitted_beats, end); index < end; ++index) {
+        const uint64_t total_beats = (uint64_t)source_beats.size()
+            * source_repeats;
+        if (source_beats.empty() || emitted_beats >= total_beats) return packets;
+        // The hardware generator retains one compact image and replays it.
+        // Show the unconsumed tail of the current pass; it refills at the next
+        // replay boundary instead of pretending all repeated beats are stored.
+        const size_t begin = std::min<size_t>(emitted_beats
+            % source_beats.size(), end);
+        for (size_t index = begin; index < end; ++index) {
             const BEAT& beat = source_beats[index];
             for (size_t byte = 0; byte < DUT::NET_BYTES; ++byte) {
                 if (beat.sop[byte] && !current.empty()) {
@@ -304,7 +315,7 @@ class Visualizer
         const Rect rx_queue_rect{437, 2, 60, 146};
         const Rect tx_queue_rect{437, 152, 60, 146};
 
-        panel(canvas, channel, "800G");
+        panel(canvas, channel, ENABLE_800G ? "800G" : "400G");
         canvas.text(channel.x + 3, channel.y + 9, "CHANNEL", TEXT);
         packets(canvas, Rect{channel.x, channel.y + 7,
             channel.width, channel.height - 7}, channel_packets());
@@ -369,7 +380,9 @@ class Visualizer
         }
 
         video.write(canvas);
+#if DEMO_TRANSPARENT_VIDEO
         transparent_video.write(canvas);
+#endif
         trace << video.frame_count() - 1 << ',' << ticks << ',' << net_cycles
               << ',' << cpu_cycles << ',' << l2_cycles << ',' << system_cycles
               << ',' << loaded_beats << ',' << emitted_beats << ','
@@ -379,12 +392,16 @@ class Visualizer
 public:
     Visualizer(const std::filesystem::path& path, const PacketList& packets,
         const std::vector<BEAT>& beats, const std::vector<uint8_t>& image,
-        uint32_t fps = 120,
+        uint32_t repeats = 1, uint32_t fps = 120,
         uint8_t background = Canvas::UI_OUTSIDE)
-        : source_packets(packets), source_beats(beats), firmware(image),
-          video_path(path), video(path, fps), transparent_video(
-              path.parent_path() / (path.stem().string() + "_transparent.png"),
-              fps, background), background_color(background)
+        : source_packets(packets), source_beats(beats),
+          source_repeats(repeats), firmware(image),
+          video_path(path), video(path, fps),
+#if DEMO_TRANSPARENT_VIDEO
+          transparent_video(path.parent_path()
+              / (path.stem().string() + "_transparent.png"), fps, background),
+#endif
+          background_color(background)
     {
         const std::filesystem::path trace_path = path.parent_path()
             / (path.stem().string() + ".csv");
@@ -585,7 +602,9 @@ public:
             ++loaded_beats;
         }
         if (!dut.traffic.valid_out()) return;
-        if (emitted_beats < source_beats.size()) ++emitted_beats;
+        const uint64_t total_beats = (uint64_t)source_beats.size()
+            * source_repeats;
+        if (emitted_beats < total_beats) ++emitted_beats;
         uint32_t completions = 0;
         for (uint32_t byte = 0; byte < DUT::NET_BYTES; ++byte) {
             if (dut.traffic.eop_out()[byte]) ++completions;

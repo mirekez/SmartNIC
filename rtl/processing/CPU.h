@@ -13,6 +13,19 @@
 #define MULTICORE
 #endif
 
+// SmartNIC packet workers use the lean RV32IM+Zicsr profile. Atomics,
+// interrupts and virtual memory are intentionally excluded from every Tribe
+// cluster instantiated through this wrapper, independent of cpphdl defaults.
+#ifdef ENABLE_RV32IA
+#undef ENABLE_RV32IA
+#endif
+#ifdef ENABLE_ISR
+#undef ENABLE_ISR
+#endif
+#ifdef ENABLE_MMU_TLB
+#undef ENABLE_MMU_TLB
+#endif
+
 #include "../../cpphdl/tribe_cpu/TribeTestModule.h"
 #include "../common/Axi4Master.h"
 
@@ -86,7 +99,16 @@ public:
     // visualization dependency out of production RTL and normal test builds.
     TribeCacheDebug demo_cache_debug(uint32_t core)
     {
-        return tribe.cores[core].debug_cache_out();
+        TribeCacheDebug debug = {};
+        debug.icache_read_valid = true;
+        debug.icache_read_addr = tribe.cores[core].imem_read_addr_out();
+        debug.icache_read_in = true;
+        debug.dcache_cpu_read = tribe.cores[core].dmem_read_out();
+        debug.dcache_cpu_write = tribe.cores[core].dmem_write_out();
+        debug.dcache_cpu_addr = tribe.cores[core].dmem_addr_out();
+        debug.dcache_cpu_wdata = tribe.cores[core].dmem_write_data_out();
+        debug.dcache_cpu_wmask = tribe.cores[core].dmem_write_mask_out();
+        return debug;
     }
 #endif
 
