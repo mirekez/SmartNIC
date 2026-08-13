@@ -513,7 +513,8 @@ module InputBalancer #(
         assign protocol_error_out = protocol_error_reg;
     endgenerate
 
-    always @(posedge net_clk) begin: input_balancer_clocked
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
         logic[63:0] _output;
         logic[63:0] _byte;
         logic[63:0] offset;
@@ -634,22 +635,6 @@ module InputBalancer #(
         logic[31:0] bank;
         logic[31:0] row;
         logic[7:0] input_byte;
-
-        head_reg_tmp = head_reg;
-        tail_reg_tmp = tail_reg;
-        count_reg_tmp = count_reg;
-        pack_data_reg_tmp = pack_data_reg;
-        pack_keep_reg_tmp = pack_keep_reg;
-        pack_sop_reg_tmp = pack_sop_reg;
-        pack_eop_reg_tmp = pack_eop_reg;
-        pack_count_reg_tmp = pack_count_reg;
-        pack_boundary_reg_tmp = pack_boundary_reg;
-        pack_age_reg_tmp = pack_age_reg;
-        rr_reg_tmp = rr_reg;
-        frame_dest_reg_tmp = frame_dest_reg;
-        in_frame_reg_tmp = in_frame_reg;
-        protocol_error_reg_tmp = protocol_error_reg;
-
         if (reset) begin
             for (_output='h0;_output < LANES;_output=_output+1) begin
                 head_reg_tmp[_output] = 'h0;
@@ -667,7 +652,7 @@ module InputBalancer #(
             frame_dest_reg_tmp = 'h0;
             in_frame_reg_tmp = unsigned'(1'h0);
             protocol_error_reg_tmp = unsigned'(1'h0);
-            disable input_balancer_clocked;
+            disable _work_net_clk;
         end
         write_valid_0_0=0;
         write_row_0_0='h0;
@@ -1245,6 +1230,36 @@ module InputBalancer #(
         rr_reg_tmp = unsigned'(3'(unsigned'(3'(rr))));
         frame_dest_reg_tmp = unsigned'(3'(unsigned'(3'(dest))));
         in_frame_reg_tmp = unsigned'(1'(in_frame));
+    end
+    endtask
+
+    task _work (input logic reset);
+    begin: _work
+    end
+    endtask
+
+    task _work_l2_clk (input logic unused);
+    begin: _work_l2_clk
+    end
+    endtask
+
+    always_ff @(posedge net_clk) begin
+        head_reg_tmp = head_reg;
+        tail_reg_tmp = tail_reg;
+        count_reg_tmp = count_reg;
+        pack_data_reg_tmp = pack_data_reg;
+        pack_keep_reg_tmp = pack_keep_reg;
+        pack_sop_reg_tmp = pack_sop_reg;
+        pack_eop_reg_tmp = pack_eop_reg;
+        pack_count_reg_tmp = pack_count_reg;
+        pack_boundary_reg_tmp = pack_boundary_reg;
+        pack_age_reg_tmp = pack_age_reg;
+        rr_reg_tmp = rr_reg;
+        frame_dest_reg_tmp = frame_dest_reg;
+        in_frame_reg_tmp = in_frame_reg;
+        protocol_error_reg_tmp = protocol_error_reg;
+
+        _work_net_clk(reset);
 
         head_reg <= head_reg_tmp;
         tail_reg <= tail_reg_tmp;
@@ -1260,6 +1275,12 @@ module InputBalancer #(
         frame_dest_reg <= frame_dest_reg_tmp;
         in_frame_reg <= in_frame_reg_tmp;
         protocol_error_reg <= protocol_error_reg_tmp;
+    end
+
+    always_ff @(posedge l2_clk) begin
+
+        _work_l2_clk(reset);
+
     end
 
 
