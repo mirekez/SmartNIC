@@ -94,3 +94,5 @@ template class AsyncFifoNetToL2<522, 16>;
 template class AsyncFifoL2ToNet<31, 16>;
 #endif
 template class AsyncFifoL2ToNet<522, 16>;
+template class AsyncFifoCpuToL2<321, 16>;
+template class AsyncFifoL2ToCpu<1, 4>;

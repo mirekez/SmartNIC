@@ -23,6 +23,7 @@ public:
     static constexpr size_t DESCRIPTOR_CDC_BITS = 256 + 3 + 1 + 1;
     static constexpr size_t READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
     static constexpr size_t RX_STREAM_BITS = 256 + 32 + 1 + 1;
+    static constexpr size_t DMA_LINE_BITS = 32 + 256 + 32 + 1;
     static constexpr size_t TARGET_BITS = CPU_COUNT <= 1 ? 1 : clog2(CPU_COUNT);
     static constexpr uint32_t FETCHER_BASE = 0x0000;
     static constexpr uint32_t FETCHER_SIZE = 0x1000;
@@ -99,6 +100,8 @@ private:
     AsyncFifoCpuToL2<RX_STREAM_BITS, 16> to_system_cdc[CPU_COUNT];
     AsyncFifoL2ToCpu<RX_STREAM_BITS, 16> from_system_cdc[CPU_COUNT];
     AsyncFifoCpuToL2<RX_STREAM_BITS, 16> to_network_cdc[CPU_COUNT];
+    AsyncFifoCpuToL2<DMA_LINE_BITS, 16> dma_line_cdc[CPU_COUNT];
+    AsyncFifoL2ToCpu<1, 4> dma_commit_cdc[CPU_COUNT];
     Axi4RegionMux<2, 32, 4, 256> iomem_mux[CPU_COUNT];
     reg<u<TARGET_BITS>> descriptor_target_reg;
 
@@ -334,6 +337,12 @@ public:
                 descriptor_fetcher[index].packet_command_length_out;
             packet_dma[index].descriptor_command_system_in =
                 descriptor_fetcher[index].packet_command_system_out;
+            packet_dma[index].descriptor_command_cache_in =
+                descriptor_fetcher[index].packet_command_cache_out;
+            packet_dma[index].descriptor_command_destination_in =
+                descriptor_fetcher[index].packet_command_destination_out;
+            descriptor_fetcher[index].packet_cache_completed_in =
+                packet_dma[index].cache_completed_count_out;
 
             // CPU uncached IOMEM is split into descriptor and DMA windows.
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(iomem_mux[index].slave_in,
@@ -358,6 +367,45 @@ public:
                 packet_dma[index].l2_dma);
             AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].l2_dma,
                 cpu[index].dma_in);
+
+            // Cache-allocation writes cross from the fast core/MMIO domain to
+            // the L2 RAM clock as complete 32-byte lines.  The reverse FIFO
+            // carries an EOP commit token so firmware cannot observe a packet
+            // before all of its cache lines are installed.
+            dma_line_cdc[index].write_valid_in =
+                packet_dma[index].l2_line_valid_out;
+            dma_line_cdc[index].write_data_in = _ASSIGN_INDEXED((index), cat(
+                (u<1>)packet_dma[index].l2_line_eop_out(),
+                packet_dma[index].l2_line_keep_out(),
+                packet_dma[index].l2_line_data_out(),
+                packet_dma[index].l2_line_addr_out()));
+            packet_dma[index].l2_line_ready_in =
+                dma_line_cdc[index].write_ready_out;
+            cpu[index].dma_line_valid_in = _ASSIGN_INDEXED((index),
+                dma_line_cdc[index].read_valid_out()
+                && (!dma_line_cdc[index].read_data_out()[320]
+                    || dma_commit_cdc[index].write_ready_out()));
+            cpu[index].dma_line_addr_in = _ASSIGN_INDEXED((index),
+                (u32)dma_line_cdc[index].read_data_out().bits(31, 0));
+            cpu[index].dma_line_data_in = _ASSIGN_INDEXED((index),
+                (logic<256>)dma_line_cdc[index].read_data_out().bits(287, 32));
+            cpu[index].dma_line_keep_in = _ASSIGN_INDEXED((index),
+                (logic<32>)dma_line_cdc[index].read_data_out().bits(319, 288));
+            dma_line_cdc[index].read_ready_in = _ASSIGN_INDEXED((index),
+                cpu[index].dma_line_ready_out()
+                && (!dma_line_cdc[index].read_data_out()[320]
+                    || dma_commit_cdc[index].write_ready_out()));
+            dma_commit_cdc[index].write_valid_in = _ASSIGN_INDEXED((index),
+                dma_line_cdc[index].read_valid_out()
+                && dma_line_cdc[index].read_data_out()[320]
+                && cpu[index].dma_line_ready_out());
+            dma_commit_cdc[index].write_data_in = _ASSIGN((logic<1>)1);
+            dma_commit_cdc[index].read_ready_in =
+                packet_dma[index].l2_commit_ready_out;
+            packet_dma[index].l2_commit_valid_in =
+                dma_commit_cdc[index].read_valid_out;
+            dma_line_cdc[index]._assign();
+            dma_commit_cdc[index]._assign();
 
             read_command_cdc[index].write_valid_in =
                 packet_dma[index].rx_read_valid_out;
@@ -481,10 +529,38 @@ public:
                 iomem_mux[index].masters_out[1]);
             AXI4_RESPONDER_FROM(iomem_mux[index].masters_out[1],
                 packet_dma[index].mmio);
+            descriptor_fetcher[index].packet_command_ready_in =
+                packet_dma[index].descriptor_command_ready_out;
+            packet_dma[index].descriptor_command_valid_in =
+                descriptor_fetcher[index].packet_command_valid_out;
+            packet_dma[index].descriptor_command_handle_in =
+                descriptor_fetcher[index].packet_command_handle_out;
+            packet_dma[index].descriptor_command_length_in =
+                descriptor_fetcher[index].packet_command_length_out;
+            packet_dma[index].descriptor_command_system_in =
+                descriptor_fetcher[index].packet_command_system_out;
+            packet_dma[index].descriptor_command_cache_in =
+                descriptor_fetcher[index].packet_command_cache_out;
+            packet_dma[index].descriptor_command_destination_in =
+                descriptor_fetcher[index].packet_command_destination_out;
+            descriptor_fetcher[index].packet_cache_completed_in =
+                packet_dma[index].cache_completed_count_out;
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(cpu[index].dma_in,
                 packet_dma[index].l2_dma);
             AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].l2_dma,
                 cpu[index].dma_in);
+            dma_line_cdc[index].write_valid_in =
+                packet_dma[index].l2_line_valid_out;
+            packet_dma[index].l2_line_ready_in =
+                dma_line_cdc[index].write_ready_out;
+            dma_line_cdc[index].read_ready_in = _ASSIGN_INDEXED((index),
+                cpu[index].dma_line_ready_out()
+                && (!dma_line_cdc[index].read_data_out()[320]
+                    || dma_commit_cdc[index].write_ready_out()));
+            dma_commit_cdc[index].read_ready_in =
+                packet_dma[index].l2_commit_ready_out;
+            packet_dma[index].l2_commit_valid_in =
+                dma_commit_cdc[index].read_valid_out;
             AXI4_MASTER_FROM_MASTER(ddr[index], cpu[index].memory);
             AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory, ddr[index]);
         }
@@ -504,6 +580,8 @@ public:
             to_system_cdc[index]._work_clk(reset);
             from_system_cdc[index]._work_clk(reset);
             to_network_cdc[index]._work_clk(reset);
+            dma_line_cdc[index]._work_clk(reset);
+            dma_commit_cdc[index]._work_clk(reset);
         }
     }
 
@@ -524,6 +602,8 @@ public:
             to_system_cdc[index]._work_l2_clock(reset);
             from_system_cdc[index]._work_l2_clock(reset);
             to_network_cdc[index]._work_l2_clock(reset);
+            dma_line_cdc[index]._work_l2_clock(reset);
+            dma_commit_cdc[index]._work_l2_clock(reset);
         }
         if (descriptor_valid_in() && descriptor_ready_out()
             && descriptor_eop_in()) {
@@ -548,6 +628,8 @@ public:
             to_system_cdc[index]._strobe_clk();
             from_system_cdc[index]._strobe_clk();
             to_network_cdc[index]._strobe_clk();
+            dma_line_cdc[index]._strobe_clk();
+            dma_commit_cdc[index]._strobe_clk();
         }
     }
 
@@ -562,6 +644,8 @@ public:
             to_system_cdc[index]._strobe_l2_clock();
             from_system_cdc[index]._strobe_l2_clock();
             to_network_cdc[index]._strobe_l2_clock();
+            dma_line_cdc[index]._strobe_l2_clock();
+            dma_commit_cdc[index]._strobe_l2_clock();
         }
         descriptor_target_reg.strobe();
     }

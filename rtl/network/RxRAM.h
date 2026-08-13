@@ -49,6 +49,10 @@ public:
     static constexpr size_t READ_RR_BITS = READ_PORTS <= 1 ? 1 : clog2(READ_PORTS);
     static constexpr size_t FRAME_LENGTH_BITS = 14;
     static constexpr size_t COMPLETION_FIFO_WORDS = 4;
+    // Descriptor processing is independent across CPU clusters, so packet
+    // reads from one ingress stream may finish out of order.  Reclamation can
+    // only advance at the oldest packet; hold later releases in this CAM.
+    static constexpr size_t RELEASE_SLOTS = READ_PORTS * 4;
 
     static_assert(LANE_WIDTH == 160 || LANE_WIDTH == 320,
         "RxRAM supports 160-bit and 320-bit balanced streams");
@@ -106,6 +110,9 @@ private:
     reg<u<LOGICAL_ROW_BITS>> packet_start_reg[STREAMS];
     reg<u<FRAME_LENGTH_BITS>> packet_length_reg[STREAMS];
     reg<u1> in_frame_reg[STREAMS];
+    reg<u1> deferred_release_valid_reg[STREAMS][RELEASE_SLOTS];
+    reg<u<HANDLE_BITS>> deferred_release_handle_reg[STREAMS][RELEASE_SLOTS];
+    reg<u<FRAME_LENGTH_BITS>> deferred_release_length_reg[STREAMS][RELEASE_SLOTS];
 
     reg<u<HANDLE_BITS>> completion_handle_reg[STREAMS][COMPLETION_FIFO_WORDS];
     reg<u<FRAME_LENGTH_BITS>> completion_length_reg[STREAMS][COMPLETION_FIFO_WORDS];
@@ -321,8 +328,7 @@ private:
         pipe_free = false;
         for (bank = 0; bank < PHYSICAL_BANKS; ++bank) {
             found = false;
-            if (!(bool)bank_write_valid_comb_func()[bank]) {
-                for (offset = 0; offset < READ_PORTS; ++offset) {
+            for (offset = 0; offset < READ_PORTS; ++offset) {
                     candidate = ((uint32_t)read_rr_reg[bank] + offset)
                         % READ_PORTS;
                     response_free = !(bool)read_response_valid_reg[candidate]
@@ -336,7 +342,6 @@ private:
                         read_ready_comb[candidate] = 1;
                         found = true;
                     }
-                }
             }
         }
         return read_ready_comb;
@@ -407,6 +412,32 @@ private:
             }
         }
         return bank_addr_comb;
+    }
+
+    logic<PHYSICAL_BANKS * PHYSICAL_ROW_BITS> bank_read_addr_comb;
+    logic<PHYSICAL_BANKS * PHYSICAL_ROW_BITS>& bank_read_addr_comb_func()
+    {
+        uint32_t port;
+        uint32_t bank;
+        uint32_t bit;
+        uint32_t row;
+        bank_read_addr_comb = 0;
+        bank = 0;
+        row = 0;
+        for (port = 0; port < READ_PORTS; ++port) {
+            if ((bool)read_valid_in()[port]
+                && (bool)read_ready_comb_func()[port]) {
+                bank = request_physical_bank(read_handle_in(),
+                    read_word_in(), port);
+                row = request_logical_row(read_handle_in(),
+                    read_word_in(), port) >> 1;
+                for (bit = 0; bit < PHYSICAL_ROW_BITS; ++bit) {
+                    bank_read_addr_comb[bank * PHYSICAL_ROW_BITS + bit] =
+                        (row >> bit) & 1;
+                }
+            }
+        }
+        return bank_read_addr_comb;
     }
 
     logic<STREAMS>& input_ready_comb_func()
@@ -526,7 +557,9 @@ public:
     void _assign()
     {
 #define RX_RAM_BIND_BANK(number) \
-        banks[number].addr_in = _ASSIGN(u<PHYSICAL_ROW_BITS>(bank_addr_comb_func().bits( \
+        banks[number].write_addr_in = _ASSIGN(u<PHYSICAL_ROW_BITS>(bank_addr_comb_func().bits( \
+            number * PHYSICAL_ROW_BITS + PHYSICAL_ROW_BITS - 1, number * PHYSICAL_ROW_BITS))); \
+        banks[number].read_addr_in = _ASSIGN(u<PHYSICAL_ROW_BITS>(bank_read_addr_comb_func().bits( \
             number * PHYSICAL_ROW_BITS + PHYSICAL_ROW_BITS - 1, number * PHYSICAL_ROW_BITS))); \
         banks[number].data_in = _ASSIGN(bank_write_data_comb_func().bits( \
             number * LANE_WIDTH + LANE_WIDTH - 1, number * LANE_WIDTH)); \
@@ -571,6 +604,9 @@ public:
         uint32_t release_handle;
         uint32_t release_length;
         uint32_t rows;
+        uint32_t release_slot;
+        uint32_t free_release_slot;
+        uint64_t claimed_release_slots;
         uint8_t input_byte;
         bool in_frame;
         bool keep;
@@ -595,6 +631,11 @@ public:
                 for (slot = 0; slot < COMPLETION_FIFO_WORDS; ++slot) {
                     completion_handle_reg[stream][slot]._next = 0;
                     completion_length_reg[stream][slot]._next = 0;
+                }
+                for (slot = 0; slot < RELEASE_SLOTS; ++slot) {
+                    deferred_release_valid_reg[stream][slot]._next = 0;
+                    deferred_release_handle_reg[stream][slot]._next = 0;
+                    deferred_release_length_reg[stream][slot]._next = 0;
                 }
             }
             for (port = 0; port < READ_PORTS; ++port) {
@@ -624,6 +665,30 @@ public:
             completion_count = (uint32_t)completion_count_reg[stream];
             used_rows = (uint32_t)used_rows_reg[stream];
             release_row = (uint32_t)release_row_reg[stream];
+            claimed_release_slots = 0;
+
+            // Retire one previously completed out-of-order read when it has
+            // become the oldest allocation. One per stream per clock is more
+            // than sufficient because at most READ_PORTS new EOPs can arrive.
+            for (release_slot = 0; release_slot < RELEASE_SLOTS;
+                ++release_slot) {
+                if ((bool)deferred_release_valid_reg[stream][release_slot]
+                    && ((uint32_t)deferred_release_handle_reg[stream]
+                        [release_slot] >> 3) == release_row) {
+                    rows = released_rows((uint32_t)deferred_release_length_reg
+                        [stream][release_slot]);
+                    if (rows == 0 || rows > used_rows) {
+                        protocol_error_reg._next = 1;
+                    }
+                    else {
+                        release_row = (release_row + rows)
+                            & (LOGICAL_ROWS - 1);
+                        used_rows -= rows;
+                    }
+                    deferred_release_valid_reg[stream][release_slot]._next = 0;
+                    break;
+                }
+            }
             for (port = 0; port < READ_PORTS; ++port) {
                 if ((bool)release_valid_in()[port]) {
                     release_handle = (uint32_t)release_handle_in().bits(
@@ -635,14 +700,46 @@ public:
                             port * FRAME_LENGTH_BITS + FRAME_LENGTH_BITS - 1,
                             port * FRAME_LENGTH_BITS);
                         rows = released_rows(release_length);
-                        if ((release_handle >> 3) != release_row
-                            || rows == 0 || rows > used_rows) {
+                        if (rows == 0 || rows > used_rows) {
                             protocol_error_reg._next = 1;
                         }
-                        else {
+                        else if ((release_handle >> 3) == release_row) {
                             release_row = (release_row + rows)
                                 & (LOGICAL_ROWS - 1);
                             used_rows -= rows;
+                        }
+                        else {
+                            free_release_slot = RELEASE_SLOTS;
+                            for (release_slot = 0;
+                                release_slot < RELEASE_SLOTS; ++release_slot) {
+                                if ((bool)deferred_release_valid_reg[stream]
+                                        [release_slot]
+                                    && (uint32_t)deferred_release_handle_reg
+                                        [stream][release_slot]
+                                        == release_handle) {
+                                    protocol_error_reg._next = 1;
+                                }
+                                if (free_release_slot == RELEASE_SLOTS
+                                    && !(bool)deferred_release_valid_reg[stream]
+                                        [release_slot]
+                                    && ((claimed_release_slots >> release_slot)
+                                        & 1u) == 0) {
+                                    free_release_slot = release_slot;
+                                }
+                            }
+                            if (free_release_slot == RELEASE_SLOTS) {
+                                protocol_error_reg._next = 1;
+                            }
+                            else {
+                                claimed_release_slots |=
+                                    (uint64_t)1 << free_release_slot;
+                                deferred_release_valid_reg[stream]
+                                    [free_release_slot]._next = 1;
+                                deferred_release_handle_reg[stream]
+                                    [free_release_slot]._next = release_handle;
+                                deferred_release_length_reg[stream]
+                                    [free_release_slot]._next = release_length;
+                            }
                         }
                     }
                 }
@@ -817,6 +914,11 @@ public:
                 completion_handle_reg[stream][slot].strobe();
                 completion_length_reg[stream][slot].strobe();
             }
+            for (slot = 0; slot < RELEASE_SLOTS; ++slot) {
+                deferred_release_valid_reg[stream][slot].strobe();
+                deferred_release_handle_reg[stream][slot].strobe();
+                deferred_release_length_reg[stream][slot].strobe();
+            }
         }
         for (port = 0; port < READ_PORTS; ++port) {
             read_pipe_valid_reg[port].strobe();
@@ -847,6 +949,11 @@ public:
             for (slot = 0; slot < COMPLETION_FIFO_WORDS; ++slot) {
                 completion_handle_reg[stream][slot].strobe();
                 completion_length_reg[stream][slot].strobe();
+            }
+            for (slot = 0; slot < RELEASE_SLOTS; ++slot) {
+                deferred_release_valid_reg[stream][slot].strobe();
+                deferred_release_handle_reg[stream][slot].strobe();
+                deferred_release_length_reg[stream][slot].strobe();
             }
         }
         for (port = 0; port < READ_PORTS; ++port) {

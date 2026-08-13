@@ -34,8 +34,17 @@ using smartnic_demo::Canvas;
 
 constexpr uint64_t HOST_PACKET_BASE = 0x00100000;
 constexpr uint32_t HOST_PACKET_STRIDE = 2048;
-constexpr uint32_t BASE_FRAME_COUNT = 40;
-constexpr uint32_t TRAFFIC_REPEATS = 64;
+#ifndef DEMO_BASE_FRAME_COUNT
+#define DEMO_BASE_FRAME_COUNT 40
+#endif
+#ifndef DEMO_TRAFFIC_REPEATS
+#define DEMO_TRAFFIC_REPEATS 64
+#endif
+#ifndef DEMO_FRAME_BYTES
+#define DEMO_FRAME_BYTES 1516
+#endif
+constexpr uint32_t BASE_FRAME_COUNT = DEMO_BASE_FRAME_COUNT;
+constexpr uint32_t TRAFFIC_REPEATS = DEMO_TRAFFIC_REPEATS;
 constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_REPEATS;
 constexpr uint32_t HOST_SAMPLE_PERIOD = 10;
 constexpr uint32_t FRAMES_PER_CPU = FRAME_COUNT / CPUS_USED;
@@ -45,7 +54,7 @@ constexpr uint32_t HOST_FRAME_COUNT = HOST_FRAMES_PER_CPU * CPUS_USED;
 constexpr uint32_t VIDEO_DECIMATION = 8;
 constexpr uint32_t VIDEO_FPS = 140;
 constexpr uint64_t MAX_CPU_TICKS = 15000000;
-constexpr uint64_t PROGRESS_INTERVAL = 25000;
+constexpr uint64_t PROGRESS_INTERVAL = 5000;
 constexpr uint64_t BALANCER_BYTES = 8ull * 1024 * (NET_LANE_WIDTH / 8);
 constexpr uint64_t RX_RAM_BYTES = 8ull * RX_RAM_BANK_DEPTH * 2
     * (NET_LANE_WIDTH / 8);
@@ -118,6 +127,10 @@ class CaptureDemo
     uint32_t wire_end_completed = 0;
     uint32_t video_decimation_phase = 0;
     uint32_t host_consumer = 0;
+    uint64_t net_ram_beats = 0;
+    uint64_t l2_stream_beats = 0;
+    uint64_t cpu_line_beats = 0;
+    uint64_t l2_line_beats = 0;
     bool error = false;
     std::vector<uint8_t> firmware_image;
     std::unique_ptr<Visualizer> visualizer;
@@ -131,14 +144,14 @@ class CaptureDemo
         return wire_started ? end - wire_start_cycle : 0;
     }
 
-    uint32_t completed_packets()
+    uint32_t retired_packets()
     {
-        uint32_t completed = 0;
+        uint32_t retired = 0;
         for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
-            completed += (uint32_t)dut.processing.packet_dma[cluster]
-                .completed_count_out();
+            retired += (uint32_t)dut.processing
+                .descriptor_fetcher[cluster].retired_count_out();
         }
-        return completed;
+        return retired;
     }
 
     struct Edges
@@ -177,6 +190,12 @@ class CaptureDemo
     {
         Edges edges;
         if (visualizer) visualizer->observe_cpu_before(dut);
+        for (uint32_t port = 0; port < CPUS_USED; ++port) {
+            if (dut.processing.packet_dma[port].l2_line_valid_out()
+                && dut.processing.packet_dma[port].l2_line_ready_in()) {
+                ++cpu_line_beats;
+            }
+        }
         dut._work_cpu_clk(reset);
         dut._strobe_cpu_clk();
 
@@ -188,18 +207,23 @@ class CaptureDemo
                 wire_started = true;
                 wire_start_cycle = net_cycles;
             }
+            for (uint32_t port = 0; port < CPUS_USED; ++port) {
+                if (dut.smartnic.debug_net_read_response_fire(port)) {
+                    ++net_ram_beats;
+                }
+            }
             dut._work_net_clk(reset);
             dut._strobe_net_clk();
             if (wire_started && !wire_midpoint_seen
                 && (uint32_t)dut.traffic_emitted_beats_out()
                     >= (382u * TRAFFIC_REPEATS) / 2) {
                 wire_midpoint_seen = true;
-                wire_midpoint_completed = completed_packets();
+                wire_midpoint_completed = retired_packets();
             }
             if (wire_started && dut.traffic.done_out()
                 && wire_stop_cycle == 0) {
                 wire_stop_cycle = net_cycles + 1;
-                wire_end_completed = completed_packets();
+                wire_end_completed = retired_packets();
             }
             ++net_cycles;
             edges.net = true;
@@ -208,6 +232,14 @@ class CaptureDemo
         if (l2_phase >= CPU_CLOCK_HZ) {
             l2_phase -= CPU_CLOCK_HZ;
             if (visualizer) visualizer->observe_l2_before(dut);
+            for (uint32_t port = 0; port < CPUS_USED; ++port) {
+                if (dut.smartnic.l2_rx_valid_out()[port]
+                    && dut.smartnic.l2_rx_ready_in()[port]) ++l2_stream_beats;
+                if (dut.processing.cpu[port].dma_line_valid_in()
+                    && dut.processing.cpu[port].dma_line_ready_out()) {
+                    ++l2_line_beats;
+                }
+            }
             dut._work_l2_clk(reset);
             dut._strobe_l2_clk();
             edges.l2 = true;
@@ -352,14 +384,14 @@ class CaptureDemo
     {
         // High component nibbles and modest gain values produce vivid packet
         // bands against the neutral gray block backgrounds.
-        static constexpr std::array<uint16_t, BASE_FRAME_COUNT> patterns = {
+        static constexpr std::array<uint16_t, 32> patterns = {
             0x000f, 0x00f0, 0x0f00, 0x00ff, 0x0f0f, 0x0ff0, 0x0fff, 0x000c,
             0x00c0, 0x0c00, 0x00cc, 0x0c0c, 0x0cc0, 0x0ccc, 0x009f, 0x00f9,
             0x090f, 0x0f09, 0x09f0, 0x0f90, 0x1099, 0x1909, 0x1990, 0x1066,
             0x1606, 0x1660, 0x2066, 0x2606, 0x2660, 0x2048, 0x2480, 0x2804};
         std::vector<std::vector<uint8_t>> image;
         for (uint32_t index = 0; index < BASE_FRAME_COUNT; ++index) {
-            std::vector<uint8_t> frame(1516);
+            std::vector<uint8_t> frame(DEMO_FRAME_BYTES);
             const uint16_t pattern = patterns[index % patterns.size()];
             for (uint32_t byte = 0; byte < frame.size(); byte += 2) {
                 frame[byte] = (uint8_t)pattern;
@@ -469,14 +501,30 @@ class CaptureDemo
     {
         std::cerr << "400G demo progress: ticks=" << ticks
                   << " host=" << host_consumer << '/' << HOST_FRAME_COUNT
-                  << " ingress=" << completed_packets() << '/' << FRAME_COUNT;
+                  << " ingress=" << retired_packets() << '/' << FRAME_COUNT
+                  << " beats{ram=" << net_ram_beats
+                  << ",stream=" << l2_stream_beats
+                  << ",cpu=" << cpu_line_beats
+                  << ",l2=" << l2_line_beats << '}';
         for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
             std::cerr << " c" << cluster << "{desc="
                       << (uint32_t)dut.processing.descriptor_fetcher[cluster]
                           .descriptor_count_out()
                       << ",dma="
                       << (uint32_t)dut.processing.packet_dma[cluster]
-                          .completed_count_out() << '}';
+                          .completed_count_out()
+                      << ",load="
+                      << dut.processing.descriptor_fetcher[cluster]
+                          .packet_loaded_out()
+                      << ",cache="
+                      << (uint32_t)dut.processing.packet_dma[cluster]
+                          .cache_completed_count_out()
+                      << ",auto="
+                      << dut.processing.descriptor_fetcher[cluster]
+                          .auto_l2_out()
+                      << ",flags="
+                      << (uint32_t)dut.processing.packet_dma[cluster]
+                          .active_flags_out() << '}';
         }
         std::cerr << '\n';
     }
@@ -491,8 +539,11 @@ public:
         const auto image_frames = base_frames(frames);
         const auto host_frames = sampled_host_frames(frames);
         const auto beats = pack_traffic(image_frames);
-        visualizer = std::make_unique<Visualizer>(output, frames, beats,
-            firmware_image, TRAFFIC_REPEATS, VIDEO_FPS, background);
+        const bool record_video = output != "-";
+        if (record_video) {
+            visualizer = std::make_unique<Visualizer>(output, frames, beats,
+                firmware_image, TRAFFIC_REPEATS, VIDEO_FPS, background);
+        }
 
         // Include reset, ring programming, generator loading, wire burst and
         // host drain in the movie. A frame is emitted after every net-clock
@@ -516,7 +567,7 @@ public:
         report_progress();
         while (ticks < MAX_CPU_TICKS
             && (host_consumer != host_frames.size()
-                || completed_packets() != frames.size())
+                || retired_packets() != frames.size())
             && !error) {
             cycle();
             if (ticks >= next_poll) {
@@ -537,9 +588,9 @@ public:
             fail(std::format("capture timed out: {} of {} packets reached host",
                 host_consumer, host_frames.size()));
         }
-        if (completed_packets() != frames.size()) {
+        if (retired_packets() != frames.size()) {
             fail(std::format("processing drained {} of {} ingress packets",
-                completed_packets(), frames.size()));
+                retired_packets(), frames.size()));
         }
         if (!dut.traffic_done_out()) fail("traffic source did not drain");
         if ((uint32_t)dut.traffic_backpressure_cycles_out() != 0) {
@@ -561,7 +612,7 @@ public:
                 second_half_retired, FRAME_COUNT / 2));
         }
         if (!error) verify_packets(frames, host_frames.size());
-        visualizer->finish();
+        if (visualizer) visualizer->finish();
 
         std::print("400G sustained video: ingress_packets={} host_packets={} "
                    "beats={} wire_cycles={} absorption_cycles={} "
@@ -571,8 +622,9 @@ public:
             (uint32_t)dut.traffic_emitted_beats_out(), wire_elapsed_cycles(),
             ABSORPTION_NET_CYCLES, wire_midpoint_completed, wire_end_completed,
             ticks,
-            visualizer->frame_count(), error ? "FAILED" : "PASSED",
-            output.string());
+            visualizer ? visualizer->frame_count() : 0,
+            error ? "FAILED" : "PASSED",
+            record_video ? output.string() : std::string("disabled"));
         return !error;
     }
 };

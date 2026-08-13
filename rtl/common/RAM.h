@@ -12,7 +12,8 @@ template<size_t WIDTH, size_t DEPTH>
 class SmartNicRAM : public Module
 {
 public:
-    _PORT(u<clog2(DEPTH)>) addr_in;
+    _PORT(u<clog2(DEPTH)>) write_addr_in;
+    _PORT(u<clog2(DEPTH)>) read_addr_in;
     _PORT(logic<WIDTH>) data_in;
     _PORT(bool) wr_in;
     _PORT(bool) rd_in;
@@ -31,10 +32,10 @@ public:
             return;
         }
         if (wr_in()) {
-            buffer[addr_in()] = data_in();
+            buffer[write_addr_in()] = data_in();
         }
         if (rd_in()) {
-            q_out_reg._next = buffer[addr_in()];
+            q_out_reg._next = buffer[read_addr_in()];
         }
     }
 

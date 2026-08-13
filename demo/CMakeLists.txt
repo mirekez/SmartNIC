@@ -23,7 +23,10 @@ add_custom_target(smartnic_demo_firmware DEPENDS "${DEMO_CAPTURE_ELF}")
 add_executable(smartnic_400g_long_demo capture_demo.cpp)
 add_dependencies(smartnic_400g_long_demo smartnic_demo_firmware)
 target_compile_definitions(smartnic_400g_long_demo PRIVATE
-    ENABLE_800G=0 HOST_AXI4=0 DEMO_VIDEO=1 DEMO_TRANSPARENT_VIDEO=0)
+    ENABLE_800G=0 HOST_AXI4=0 DEMO_VIDEO=1 DEMO_TRANSPARENT_VIDEO=0
+    $<$<BOOL:${DEMO_SMOKE}>:DEMO_BASE_FRAME_COUNT=8>
+    $<$<BOOL:${DEMO_SMOKE}>:DEMO_TRAFFIC_REPEATS=1>
+    $<$<BOOL:${DEMO_SMOKE}>:DEMO_FRAME_BYTES=64>)
 target_include_directories(smartnic_400g_long_demo PRIVATE
     "${PROJECT_SOURCE_DIR}"
     "${PROJECT_SOURCE_DIR}/cpphdl/include"
