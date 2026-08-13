@@ -155,7 +155,7 @@ module TribeTest #(
 ,   input wire[4-1:0] axi_out__rid_in[4]
 ,   input wire debugen_in
 );
-    parameter  L2_TOTAL_SIZE = 64'h2000;
+    parameter  L2_TOTAL_SIZE = 64'h10000;
     parameter  L2_PORT_WIDTH = 64'h100;
     parameter  L2_LINE_SIZE = 64'h20;
     parameter  L2_WAYS = 64'h4;
@@ -260,27 +260,9 @@ module TribeTest #(
         ,           .dmem_read_out(cores__dmem_read_out[__i])
         ,           .dmem_addr_out(cores__dmem_addr_out[__i])
         ,           .imem_read_addr_out(cores__imem_read_addr_out[__i])
-        ,           .atomic_request_out(cores__atomic_request_out[__i])
-        ,           .atomic_data_request_out(cores__atomic_data_request_out[__i])
-        ,           .atomic_complete_out(cores__atomic_complete_out[__i])
-        ,           .atomic_grant_in(cores__atomic_grant_in[__i])
-        ,           .debug_core_out(cores__debug_core_out[__i])
-        ,           .debug_mmu_out(cores__debug_mmu_out[__i])
-        ,           .debug_cache_out(cores__debug_cache_out[__i])
-        ,           .debug_wb_out(cores__debug_wb_out[__i])
-        ,           .debug_csr_out(cores__debug_csr_out[__i])
-        ,           .debug_irq_out(cores__debug_irq_out[__i])
-        ,           .debug_regs_out(cores__debug_regs_out[__i])
-        ,           .debug_branch_out(cores__debug_branch_out[__i])
-        ,           .debug_decode_out(cores__debug_decode_out[__i])
         ,           .sbi_set_timer_out(cores__sbi_set_timer_out[__i])
         ,           .sbi_timer_lo_out(cores__sbi_timer_lo_out[__i])
         ,           .sbi_timer_hi_out(cores__sbi_timer_hi_out[__i])
-        ,           .sbi_send_ipi_out(cores__sbi_send_ipi_out[__i])
-        ,           .sbi_remote_fence_i_out(cores__sbi_remote_fence_i_out[__i])
-        ,           .sbi_remote_sfence_vma_out(cores__sbi_remote_sfence_vma_out[__i])
-        ,           .sbi_hart_mask_out(cores__sbi_hart_mask_out[__i])
-        ,           .sbi_hart_base_out(cores__sbi_hart_base_out[__i])
         ,           .debug_sbi_out(cores__debug_sbi_out[__i])
         ,           .reset_pc_in(cores__reset_pc_in[__i])
         ,           .boot_hartid_in(cores__boot_hartid_in[__i])
@@ -308,17 +290,30 @@ module TribeTest #(
         ,           .d_mem_out__cache_disable_out(cores__d_mem_out__cache_disable_out[__i])
         ,           .d_mem_out__read_data_in(cores__d_mem_out__read_data_in[__i])
         ,           .d_mem_out__wait_in(cores__d_mem_out__wait_in[__i])
-        ,           .clint_msip_in(cores__clint_msip_in[__i])
-        ,           .clint_mtip_in(cores__clint_mtip_in[__i])
-        ,           .time_lo_in(cores__time_lo_in[__i])
-        ,           .time_hi_in(cores__time_hi_in[__i])
-        ,           .external_irq_in(cores__external_irq_in[__i])
-        ,           .sbi_ipi_in(cores__sbi_ipi_in[__i])
-        ,           .remote_fence_i_in(cores__remote_fence_i_in[__i])
-        ,           .remote_sfence_vma_in(cores__remote_sfence_vma_in[__i])
         ,           .perf_out(cores__perf_out[__i])
         ,           .debugen_in(cores__debugen_in[__i])
         );
+    end
+    endgenerate
+    generate
+    for (__i=0; __i < CPU_CORES; __i = __i + 1) begin : disabled_tribe_features
+        assign cores__atomic_request_out[__i] = 1'b0;
+        assign cores__atomic_data_request_out[__i] = 1'b0;
+        assign cores__atomic_complete_out[__i] = 1'b0;
+        assign cores__debug_core_out[__i] = '0;
+        assign cores__debug_mmu_out[__i] = '0;
+        assign cores__debug_cache_out[__i] = '0;
+        assign cores__debug_wb_out[__i] = '0;
+        assign cores__debug_csr_out[__i] = '0;
+        assign cores__debug_irq_out[__i] = '0;
+        assign cores__debug_regs_out[__i] = '0;
+        assign cores__debug_branch_out[__i] = '0;
+        assign cores__debug_decode_out[__i] = '0;
+        assign cores__sbi_send_ipi_out[__i] = 1'b0;
+        assign cores__sbi_remote_fence_i_out[__i] = 1'b0;
+        assign cores__sbi_remote_sfence_vma_out[__i] = 1'b0;
+        assign cores__sbi_hart_mask_out[__i] = 32'b0;
+        assign cores__sbi_hart_base_out[__i] = 32'b0;
     end
     endgenerate
     wire i_mem_cdc__fast_in__read_in[CPU_CORES];

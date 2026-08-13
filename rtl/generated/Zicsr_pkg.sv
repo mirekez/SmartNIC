@@ -1,16 +1,5 @@
 package Zicsr_pkg;
 
-parameter FUNCT5_AMOADD = 'h0;
-parameter FUNCT5_AMOSWAP = 'h1;
-parameter FUNCT5_LR = 'h2;
-parameter FUNCT5_SC = 'h3;
-parameter FUNCT5_AMOXOR = 'h4;
-parameter FUNCT5_AMOOR = 'h8;
-parameter FUNCT5_AMOAND = 'hC;
-parameter FUNCT5_AMOMIN = 'h10;
-parameter FUNCT5_AMOMAX = 'h14;
-parameter FUNCT5_AMOMINU = 'h18;
-parameter FUNCT5_AMOMAXU = 'h1C;
 typedef struct packed {
     union packed {
         struct packed {

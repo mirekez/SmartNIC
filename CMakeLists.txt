@@ -135,6 +135,17 @@ set(CPPHDL_BUILD_TRIBE OFF CACHE BOOL "" FORCE)
 set(CPPHDL_BUILD_HDLCPP OFF CACHE BOOL "" FORCE)
 add_subdirectory("${CPPHDL_ROOT}" "${CMAKE_BINARY_DIR}/cpphdl" EXCLUDE_FROM_ALL)
 
+# Some Conda LLVM packages leave CLANG_INCLUDE_DIRS empty in ClangConfig.cmake
+# even though the development headers are installed in the prefix.  CppHDL is
+# a required RTL generator, so make that include path explicit for its target.
+if(TARGET cpphdl)
+    # Use an explicit compiler option as well: an older configured build can
+    # cache this prefix as an implicit include directory and CMake would then
+    # elide a normal target_include_directories() entry.
+    target_compile_options(cpphdl PRIVATE
+        "-I${CPPHDL_ROOT}/.conda/include")
+endif()
+
 include(CTest)
 add_subdirectory(rtl/network)
 add_subdirectory(rtl/processing)

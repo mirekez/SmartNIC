@@ -1,5 +1,10 @@
 # Out-of-tree CMake build products
 /build/
+/fpga/build/
+/fpga/open_switch.bit
+/.gen/
+/.srcs/
+/.Xil/
 
 # Dependencies prepared locally by the top-level CMake project
 /cpphdl

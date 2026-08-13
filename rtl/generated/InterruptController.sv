@@ -52,15 +52,6 @@ module InterruptController (
 
     always_comb begin : mip_comb_func  // mip_comb_func
         mip_comb=mip_sw_in & MIP_SOFTWARE_WRITABLE_MASK;
-        if (clint_msip_in) begin
-            mip_comb|='h1 <<< (((priv_in == PRIV_M)) ? (IRQ_MSIP) : (IRQ_SSIP));
-        end
-        if (clint_mtip_in) begin
-            mip_comb|='h1 <<< (((priv_in == PRIV_M)) ? (IRQ_MTIP) : (IRQ_STIP));
-        end
-        if (external_irq_in) begin
-            mip_comb|='h1 <<< (((priv_in == PRIV_M)) ? (IRQ_MEIP) : (IRQ_SEIP));
-        end
     end
 
     always_comb begin : enabled_pending_comb_func  // enabled_pending_comb_func
@@ -110,9 +101,6 @@ module InterruptController (
         logic[31:0] cause;
         cause=interrupt_cause_comb;
         interrupt_to_supervisor_comb=0;
-        if (((cause != 'h0) && (priv_in != PRIV_M)) && ((((mideleg_in >>> cause)) & 'h1))) begin
-            interrupt_to_supervisor_comb=1;
-        end
     end
 
     always_comb begin : interrupt_valid_comb_func  // interrupt_valid_comb_func
@@ -122,14 +110,6 @@ module InterruptController (
         cause=interrupt_cause_comb;
         to_s=interrupt_to_supervisor_comb;
         global_enable=0;
-        if (cause != 'h0) begin
-            if (to_s) begin
-                global_enable=(priv_in < PRIV_S) || ((mstatus_in & MSTATUS_SIE));
-            end
-            else begin
-                global_enable=(priv_in < PRIV_M) || ((mstatus_in & MSTATUS_MIE));
-            end
-        end
         interrupt_valid_comb=(cause != 'h0) && global_enable;
     end
 

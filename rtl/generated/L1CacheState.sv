@@ -63,7 +63,7 @@ module L1CacheState #(
     reg[3-1:0] state_reg;
     L1RequestState req_reg;
     reg tag_epoch_reg;
-    reg[64-1:0][8-1:0] tag_set_epoch_reg;
+    reg[32-1:0][8-1:0] tag_set_epoch_reg;
     L1RefillState refill_reg;
     reg[WAY_BITS-1:0] victim_reg;
     reg[SET_BITS-1:0] init_set_reg;
@@ -148,7 +148,7 @@ module L1CacheState #(
     logic[3-1:0] state_reg_tmp;
     L1RequestState req_reg_tmp;
     logic tag_epoch_reg_tmp;
-    logic[64-1:0][8-1:0] tag_set_epoch_reg_tmp;
+    logic[32-1:0][8-1:0] tag_set_epoch_reg_tmp;
     L1RefillState refill_reg_tmp;
     logic[WAY_BITS-1:0] victim_reg_tmp;
     logic[SET_BITS-1:0] init_set_reg_tmp;

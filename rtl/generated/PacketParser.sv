@@ -11,8 +11,7 @@ module PacketParser #(
     parameter LANE_WIDTH = 'h40
  )
  (
-    input wire net_clk
-,   input wire l2_clk
+    input wire clk
 ,   input wire reset
 ,   input wire[2-1:0] valid_in
 ,   input wire[INPUT_BITS-1:0] data_in
@@ -33,8 +32,8 @@ module PacketParser #(
     parameter  LANE_BYTES = LANE_WIDTH/'h8;
     parameter  INPUT_BITS = STREAMS*LANE_WIDTH;
     parameter  INPUT_BYTES = STREAMS*LANE_BYTES;
-    parameter  HEADER_BITS = 64'hC00;
-    parameter  HEADER_COUNT_BITS = 64'h9;
+    parameter  HEADER_BITS = 64'h600;
+    parameter  HEADER_COUNT_BITS = 64'h8;
     parameter  FRAME_LENGTH_BITS = 64'hE;
     parameter  OUTPUT_WORD_BITS = 64'h200;
     parameter  OUTPUT_BYTES = 64'h40;
@@ -42,8 +41,8 @@ module PacketParser #(
 
 
     // regs and combs
-    reg[3072-1:0] aligned_header_reg[2];
-    reg[9-1:0] header_count_reg[2];
+    reg[1536-1:0] aligned_header_reg[2];
+    reg[8-1:0] header_count_reg[2];
     reg[14-1:0] frame_length_reg[2];
     reg in_frame_reg[2];
     reg frame_raw_reg[2];
@@ -66,8 +65,8 @@ module PacketParser #(
     // members
 
     // tmp variables
-    logic[3072-1:0] aligned_header_reg_tmp[2];
-    logic[9-1:0] header_count_reg_tmp[2];
+    logic[1536-1:0] aligned_header_reg_tmp[2];
+    logic[8-1:0] header_count_reg_tmp[2];
     logic[14-1:0] frame_length_reg_tmp[2];
     logic in_frame_reg_tmp[2];
     logic frame_raw_reg_tmp[2];
@@ -83,28 +82,28 @@ module PacketParser #(
 
 
     function logic[7:0] get_byte (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] offset
     );
         return unsigned'(8'(bytes[offset*'h8 +:8]));
     endfunction
 
     function logic[15:0] get_be16 (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] offset
     );
         return unsigned'(16'((((unsigned'(16'(get_byte(bytes, offset))) <<< 'h8)) | unsigned'(16'(get_byte(bytes, (offset + 'h1)))))));
     endfunction
 
     function logic[31:0] get_be32 (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] offset
     );
         return ((((unsigned'(32'(get_byte(bytes, offset))) <<< 'h18)) | ((unsigned'(32'(get_byte(bytes, (offset + 'h1)))) <<< 'h10))) | ((unsigned'(32'(get_byte(bytes, (offset + 'h2)))) <<< 'h8))) | unsigned'(32'(get_byte(bytes, (offset + 'h3))));
     endfunction
 
     function logic[48-1:0] get_be48 (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] offset
     );
         logic[48-1:0] value;
@@ -117,7 +116,7 @@ module PacketParser #(
     endfunction
 
     function logic[128-1:0] get_be128 (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] offset
     );
         logic[128-1:0] value;
@@ -134,7 +133,7 @@ module PacketParser #(
 ,       input logic[31:0] bytes
 ,       input logic[31:0] length
     );
-        return (offset<=length && bytes<=(length - offset)) && (offset + bytes)<='h180;
+        return (offset<=length && bytes<=(length - offset)) && (offset + bytes)<='hC0;
     endfunction
 
     function logic[7:0] saturating_count (input logic[31:0] count);
@@ -152,7 +151,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserFields skip_ipv4_options (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input logic[31:0] offset
 ,       input logic[31:0] option_bytes
@@ -170,7 +169,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserFields skip_tcp_options (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input logic[31:0] offset
 ,       input logic[31:0] option_bytes
@@ -221,7 +220,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserFields parse_transport (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input logic[31:0] offset
 ,       input logic[31:0] protocol
@@ -253,7 +252,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserFields parse_ipv4 (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input logic[31:0] offset
 ,       input PacketParserFields fields
@@ -293,7 +292,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserCursor skip_ipv6_options (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input PacketParserCursor cursor
     );
@@ -305,7 +304,7 @@ module PacketParser #(
         skipped='h0;
         cursor.noninitial_fragment = unsigned'(1'h0);
         while (is_ipv6_extension(unsigned'(32'(cursor.selector)))) begin
-            if (headers>='h8) begin
+            if (headers>='h4) begin
                 cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
                 cursor.ok = unsigned'(1'h0);
                 return cursor;
@@ -331,7 +330,7 @@ module PacketParser #(
                     extension_bytes=((unsigned'(32'(get_byte(bytes, (unsigned'(32'(cursor.offset)) + 'h1)))) + 'h1))*'h8;
                 end
             end
-            if ((skipped + extension_bytes) > 'h100) begin
+            if ((skipped + extension_bytes) > 'h60) begin
                 cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
                 cursor.ok = unsigned'(1'h0);
                 return cursor;
@@ -350,7 +349,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserFields parse_ipv6 (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input logic[31:0] offset
 ,       input PacketParserFields fields
@@ -380,7 +379,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserCursor skip_vlan_headers (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input PacketParserCursor cursor
     );
@@ -408,7 +407,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserCursor skip_mpls_headers (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input PacketParserCursor cursor
     );
@@ -440,7 +439,7 @@ module PacketParser #(
     endfunction
 
     function PacketParserWord parse_frame (
-        input logic[3072-1:0] bytes
+        input logic[1536-1:0] bytes
 ,       input logic[31:0] length
 ,       input logic truncated
     );
@@ -706,7 +705,7 @@ module PacketParser #(
                         end
                         if (in_frame) begin
                             input_byte=unsigned'(8'(data_in[flat*'h8 +:8]));
-                            if (header_count < 'h180) begin
+                            if (header_count < 'hC0) begin
                                 for (_bit='h0;_bit < 'h8;_bit=_bit+1) begin
                                     aligned_header_reg_tmp[stream][(header_count*'h8) + _bit] = ((input_byte >>> _bit)) & 'h1;
                                 end
@@ -775,18 +774,7 @@ module PacketParser #(
     end
     endtask
 
-    task _work_net_clk (input logic reset);
-    begin: _work_net_clk
-        _work(reset);
-    end
-    endtask
-
-    task _work_l2_clk (input logic unused);
-    begin: _work_l2_clk
-    end
-    endtask
-
-    always_ff @(posedge net_clk) begin
+    always @(posedge clk) begin
         aligned_header_reg_tmp = aligned_header_reg;
         header_count_reg_tmp = header_count_reg;
         frame_length_reg_tmp = frame_length_reg;
@@ -802,7 +790,7 @@ module PacketParser #(
         fifo_count_reg_tmp = fifo_count_reg;
         protocol_error_reg_tmp = protocol_error_reg;
 
-        _work_net_clk(reset);
+        _work(reset);
 
         aligned_header_reg <= aligned_header_reg_tmp;
         header_count_reg <= header_count_reg_tmp;
@@ -818,12 +806,6 @@ module PacketParser #(
         fifo_tail_reg <= fifo_tail_reg_tmp;
         fifo_count_reg <= fifo_count_reg_tmp;
         protocol_error_reg <= protocol_error_reg_tmp;
-    end
-
-    always_ff @(posedge l2_clk) begin
-
-        _work_l2_clk(reset);
-
     end
 
 

@@ -92,7 +92,7 @@ module L1CacheResponse #(
     reg[3-1:0] L1CacheState___state_reg;
     L1RequestState L1CacheState___req_reg;
     reg L1CacheState___tag_epoch_reg;
-    reg[64-1:0][8-1:0] L1CacheState___tag_set_epoch_reg;
+    reg[32-1:0][8-1:0] L1CacheState___tag_set_epoch_reg;
     L1RefillState L1CacheState___refill_reg;
     reg[WAY_BITS-1:0] L1CacheState___victim_reg;
     reg[SET_BITS-1:0] L1CacheState___init_set_reg;
@@ -177,7 +177,7 @@ module L1CacheResponse #(
     logic[3-1:0] L1CacheState___state_reg_tmp;
     L1RequestState L1CacheState___req_reg_tmp;
     logic L1CacheState___tag_epoch_reg_tmp;
-    logic[64-1:0][8-1:0] L1CacheState___tag_set_epoch_reg_tmp;
+    logic[32-1:0][8-1:0] L1CacheState___tag_set_epoch_reg_tmp;
     L1RefillState L1CacheState___refill_reg_tmp;
     logic[WAY_BITS-1:0] L1CacheState___victim_reg_tmp;
     logic[SET_BITS-1:0] L1CacheState___init_set_reg_tmp;
