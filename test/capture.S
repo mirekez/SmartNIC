@@ -1,7 +1,7 @@
 /*
- * One capture worker runs on the single Tribe cluster.  Every descriptor is
- * released, but only packet 100, 200, ... is copied through the System RxQueue
- * to the host.
+ * One capture worker runs on the single Tribe cluster and drains every RxRAM
+ * packet. Packets 1..99 use PacketDMA's discard path; packet 100 streams
+ * directly into the System RxQueue without traversing coherent L2 memory.
  */
 
     .section .text.start, "ax", @progbits
@@ -12,21 +12,11 @@
     .equ FETCHER_CONTROL,     0x000
     .equ FETCHER_STATUS,      0x004
     .equ FETCHER_ACTION,      0x008
-    .equ FETCHER_PACKET_ADDR, 0x100
-    .equ FETCHER_PACKET_META, 0x104
-
-    .equ DMA_BASE,            0x40001000
-    .equ DMA_RX_HANDLE,       0x000
-    .equ DMA_LENGTH,          0x004
-    .equ DMA_DESTINATION,     0x008
-    .equ DMA_FLAGS,           0x00c
-    .equ DMA_COMMAND,         0x010
-    .equ DMA_COMPLETED,       0x018
-    .equ DMA_SOURCE,          0x01c
-
-    .equ DMA_CPU_SYSTEM,      1
-    .equ DMA_NETWORK_CPU,     3
-    .equ PACKET_BUFFER,       0x00010000
+    .equ FETCHER_AVAILABLE,   1
+    .equ FETCHER_DMA_READY,   8
+    .equ ACTION_NEXT,         1
+    .equ ACTION_DMA_DISCARD,  2
+    .equ ACTION_DMA_SYSTEM,   4
 
 _start:
     csrr    t0, mhartid
@@ -34,55 +24,29 @@ _start:
     bnez    t0, .Lpark
 
     li      s0, FETCHER_BASE
-    li      s1, DMA_BASE
-    li      s2, PACKET_BUFFER
     li      t0, 1
     sw      t0, FETCHER_CONTROL(s0)
     li      s4, 0
 
 .Lnext_descriptor:
     lw      t0, FETCHER_STATUS(s0)
-    andi    t0, t0, 1
-    beqz    t0, .Lnext_descriptor
+    andi    t0, t0, FETCHER_AVAILABLE | FETCHER_DMA_READY
+    li      t1, FETCHER_AVAILABLE | FETCHER_DMA_READY
+    bne     t0, t1, .Lnext_descriptor
 
     addi    s4, s4, 1
-    li      t0, 100
-    bne     s4, t0, .Lrelease_descriptor
+    li      t1, 100
+    bne     s4, t1, .Ldiscard
     li      s4, 0
+    li      t2, ACTION_NEXT | ACTION_DMA_SYSTEM
+    j       .Lissue
 
-    lw      a0, FETCHER_PACKET_ADDR(s0)
-    lw      a1, FETCHER_PACKET_META(s0)
-    slli    a1, a1, 16
-    srli    a1, a1, 16
+.Ldiscard:
+    li      t2, ACTION_NEXT | ACTION_DMA_DISCARD
 
-    /* RxRAM -> coherent L2 packet buffer. */
-    lw      s3, DMA_COMPLETED(s1)
-    sw      a0, DMA_RX_HANDLE(s1)
-    sw      a1, DMA_LENGTH(s1)
-    sw      s2, DMA_DESTINATION(s1)
-    li      t0, DMA_NETWORK_CPU
-    sw      t0, DMA_FLAGS(s1)
-    li      t0, 1
-    sw      t0, DMA_COMMAND(s1)
-.Lwait_network_cpu:
-    lw      t0, DMA_COMPLETED(s1)
-    beq     t0, s3, .Lwait_network_cpu
-
-    /* Coherent L2 packet buffer -> matching System RxQueue. */
-    mv      s3, t0
-    sw      a1, DMA_LENGTH(s1)
-    sw      s2, DMA_SOURCE(s1)
-    li      t0, DMA_CPU_SYSTEM
-    sw      t0, DMA_FLAGS(s1)
-    li      t0, 1
-    sw      t0, DMA_COMMAND(s1)
-.Lwait_cpu_system:
-    lw      t0, DMA_COMPLETED(s1)
-    beq     t0, s3, .Lwait_cpu_system
-
-.Lrelease_descriptor:
-    li      t0, 1
-    sw      t0, FETCHER_ACTION(s0)
+    /* Fetcher transfers descriptor handle/length directly into PacketDMA. */
+.Lissue:
+    sw      t2, FETCHER_ACTION(s0)
     j       .Lnext_descriptor
 
 .Lpark:

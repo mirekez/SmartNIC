@@ -29,7 +29,7 @@ long _system_clock = -1;
 namespace
 {
 
-using Fetcher = DescriptorFetcher<4, 32, 4, 256>;
+using Fetcher = DescriptorFetcher<4, 32, 4, 256, 16>;
 
 template<typename T, typename V>
 static void copy_to_verilator(T& target, const V& value)
@@ -58,6 +58,11 @@ class DescriptorFetcherTest
     u<3> descriptor_word = 0;
     bool descriptor_sop = false;
     bool descriptor_eop = false;
+    bool packet_command_ready = true;
+    uint32_t packet_commands = 0;
+    uint32_t packet_command_handle = 0;
+    uint32_t packet_command_length = 0;
+    bool packet_command_system = false;
     Axi4Driver<32, 4, 256> axi = {};
     bool error = false;
 
@@ -81,6 +86,7 @@ class DescriptorFetcherTest
         dut.descriptor_word_in = _ASSIGN(descriptor_word);
         dut.descriptor_sop_in = _ASSIGN(descriptor_sop);
         dut.descriptor_eop_in = _ASSIGN(descriptor_eop);
+        dut.packet_command_ready_in = _ASSIGN(packet_command_ready);
         dut.mmio = axi;
         dut.__inst_name = "descriptor_fetcher";
         dut._assign();
@@ -97,6 +103,7 @@ class DescriptorFetcherTest
         dut.descriptor_word_in = (uint8_t)(uint32_t)descriptor_word;
         dut.descriptor_sop_in = descriptor_sop;
         dut.descriptor_eop_in = descriptor_eop;
+        dut.packet_command_ready_in = packet_command_ready;
         dut.mmio___05Fawvalid_in = axi.aw.valid;
         dut.mmio___05Fawaddr_in = (uint32_t)axi.aw.addr;
         dut.mmio___05Fawid_in = (uint8_t)(uint32_t)axi.aw.id;
@@ -120,6 +127,21 @@ class DescriptorFetcherTest
     {
 #ifdef VERILATOR
         drive_verilator(reset, false);
+        if (dut.packet_command_valid_out) {
+            ++packet_commands;
+            packet_command_handle = dut.packet_command_handle_out;
+            packet_command_length = dut.packet_command_length_out;
+            packet_command_system = dut.packet_command_system_out;
+        }
+#else
+        if (dut.packet_command_valid_out()) {
+            ++packet_commands;
+            packet_command_handle = (uint32_t)dut.packet_command_handle_out();
+            packet_command_length = (uint32_t)dut.packet_command_length_out();
+            packet_command_system = dut.packet_command_system_out();
+        }
+#endif
+#ifdef VERILATOR
         drive_verilator(reset, true);
         drive_verilator(reset, false);
 #else
@@ -313,6 +335,9 @@ public:
         if ((status & Fetcher::STATUS_AVAILABLE) == 0 || ((status >> 8) & 0xff) != 2) {
             fail("status did not report two queued descriptors");
         }
+        if ((status & Fetcher::STATUS_DMA_READY) == 0) {
+            fail("status did not report descriptor DMA readiness");
+        }
         for (uint32_t word = 0; word < 40; ++word) {
             uint32_t got = read32(Fetcher::REG_DESCRIPTOR_BASE + word * 4);
             uint32_t expected = (uint32_t)first.bits(word * 32 + 31, word * 32);
@@ -332,11 +357,21 @@ public:
             fail("decoded descriptor field register mismatch");
         }
 
-        write32(Fetcher::REG_ACTION, Fetcher::ACTION_NEXT);
+        write32(Fetcher::REG_ACTION,
+            Fetcher::ACTION_NEXT | Fetcher::ACTION_DMA_DISCARD);
+        if (packet_commands != 1 || packet_command_handle != 0x5678
+            || packet_command_length != 1514 || packet_command_system) {
+            fail("discard action did not emit the first descriptor command");
+        }
         if (read32(Fetcher::REG_PACKET_ADDRESS) != 0x89abcdef) {
             fail("NEXT did not expose the following CPU-owned descriptor");
         }
-        write32(Fetcher::REG_ACTION, Fetcher::ACTION_NEXT);
+        write32(Fetcher::REG_ACTION,
+            Fetcher::ACTION_NEXT | Fetcher::ACTION_DMA_SYSTEM);
+        if (packet_commands != 2 || packet_command_handle != 0xcdef
+            || packet_command_length != 1514 || !packet_command_system) {
+            fail("System action did not emit the second descriptor command");
+        }
         if (available()) fail("skip/pop did not empty the queue");
         if (read32(Fetcher::REG_STATUS) & Fetcher::STATUS_PROTOCOL_ERROR) {
             fail("well-formed descriptor traffic set protocol error");
@@ -371,7 +406,7 @@ static bool build_verilator()
             / "cpphdl" / "tribe_cpu" / "common").string()};
     return VerilatorCompileInExactFolderFromGenerated(source.string(),
         "DescriptorFetcher_verilator", "DescriptorFetcher", generated,
-        {"DescriptorFetcher"}, includes, 4, 32, 4, 256);
+        {"DescriptorFetcher"}, includes, 4, 32, 4, 256, 16);
 #endif
 }
 

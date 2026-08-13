@@ -61,6 +61,11 @@ class PacketDmaTest
     bool rx_sop = false;
     bool rx_eop = false;
 
+    bool descriptor_command_valid = false;
+    u<16> descriptor_command_handle = 0;
+    u<14> descriptor_command_length = 0;
+    bool descriptor_command_system = false;
+
     bool system_rx_valid = false;
     logic<256> system_rx_data = 0;
     logic<32> system_rx_keep = 0;
@@ -98,6 +103,10 @@ class PacketDmaTest
 #ifndef VERILATOR
         dut.mmio = mmio;
         dut.l2_dma = l2;
+        dut.descriptor_command_valid_in = _ASSIGN(descriptor_command_valid);
+        dut.descriptor_command_handle_in = _ASSIGN(descriptor_command_handle);
+        dut.descriptor_command_length_in = _ASSIGN(descriptor_command_length);
+        dut.descriptor_command_system_in = _ASSIGN(descriptor_command_system);
         dut.rx_read_ready_in = _ASSIGN(rx_read_ready);
         dut.rx_valid_in = _ASSIGN(rx_valid);
         dut.rx_data_in = _ASSIGN(rx_data);
@@ -121,6 +130,11 @@ class PacketDmaTest
 #ifdef VERILATOR
         dut.clk = clock;
         dut.reset = reset;
+        dut.descriptor_command_valid_in = descriptor_command_valid;
+        dut.descriptor_command_handle_in = (uint32_t)descriptor_command_handle;
+        dut.descriptor_command_length_in =
+            (uint32_t)descriptor_command_length;
+        dut.descriptor_command_system_in = descriptor_command_system;
         dut.rx_read_ready_in = rx_read_ready;
         dut.rx_valid_in = rx_valid;
         copy_to_verilator(dut.rx_data_in, rx_data);
@@ -565,6 +579,15 @@ class PacketDmaTest
         return dut.busy_out();
 #endif
     }
+    bool command_ready()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.command_ready_out;
+#else
+        return dut.command_ready_out();
+#endif
+    }
     bool protocol_error()
     {
 #ifdef VERILATOR
@@ -582,14 +605,26 @@ class PacketDmaTest
     }
 
     void issue(uint32_t operation, uint32_t length, uint32_t source,
-        uint32_t destination, uint32_t handle = 0)
+        uint32_t destination, uint32_t handle = 0,
+        uint32_t extra_flags = Dma::FLAG_CACHE_ALLOCATE)
     {
         write32(Dma::REG_RX_HANDLE, handle);
         write32(Dma::REG_LENGTH, length);
         write32(Dma::REG_SOURCE, source);
         write32(Dma::REG_DESTINATION, destination);
-        write32(Dma::REG_FLAGS, operation | Dma::FLAG_CACHE_ALLOCATE);
+        write32(Dma::REG_FLAGS, operation | extra_flags);
         write32(Dma::REG_COMMAND, Dma::COMMAND_PUSH);
+    }
+
+    void issue_descriptor(uint32_t handle, uint32_t length, bool system)
+    {
+        if (!command_ready()) fail("descriptor command queue was not ready");
+        descriptor_command_handle = handle;
+        descriptor_command_length = length;
+        descriptor_command_system = system;
+        descriptor_command_valid = true;
+        cycle();
+        descriptor_command_valid = false;
     }
 
     void send_input(const std::vector<uint8_t>& packet, bool network)
@@ -685,6 +720,70 @@ public:
         check_memory(network_destination, network_input,
             "network-to-CPU payload mismatch");
 
+        // Hardware descriptor command: unselected ingress is drained without
+        // consuming coherent L2 bandwidth or changing the packet buffer.
+        auto discarded_input = make_packet(73);
+        issue_descriptor(handle + 1, discarded_input.size(), false);
+        for (uint32_t timeout = 0;
+            timeout < 100 && !read_command_valid(); ++timeout) {
+            cycle();
+        }
+        if (!read_command_valid()) fail("descriptor discard never issued RxRAM read");
+        else if (read_handle() != handle + 1
+            || read_length() != discarded_input.size()) {
+            fail("descriptor discard RxRAM command mismatch");
+        }
+        rx_read_ready = true;
+        cycle();
+        rx_read_ready = false;
+        send_input(discarded_input, true);
+        check_memory(network_destination, network_input,
+            "descriptor discard modified coherent memory");
+
+        // Hardware descriptor command: selected ingress streams directly to
+        // the System queue and observes downstream backpressure.
+        auto direct_system_input = make_packet(91);
+        system_output.clear();
+        system_output_sop = false;
+        system_output_eop = false;
+        system_tx_ready = false;
+        issue_descriptor(handle + 2, direct_system_input.size(), true);
+        for (uint32_t timeout = 0;
+            timeout < 100 && !read_command_valid(); ++timeout) {
+            cycle();
+        }
+        if (!read_command_valid()) {
+            fail("descriptor network-to-system never issued RxRAM read");
+        }
+        rx_read_ready = true;
+        cycle();
+        rx_read_ready = false;
+        if (rx_ready()) fail("direct System path ignored output backpressure");
+        // Advance the native model's per-cycle port cache while ready is low,
+        // then release backpressure in a fresh combinational cycle.
+        cycle();
+        system_tx_ready = true;
+        send_input(direct_system_input, true);
+        if (system_output != direct_system_input) {
+            std::print(stderr,
+                "direct System size mismatch: expected={} received={}\n",
+                direct_system_input.size(), system_output.size());
+            const size_t compared = std::min(
+                direct_system_input.size(), system_output.size());
+            for (size_t byte = 0; byte < compared; ++byte) {
+                if (system_output[byte] != direct_system_input[byte]) {
+                    std::print(stderr,
+                        "first direct System mismatch at byte {}: expected={:#04x} received={:#04x}\n",
+                        byte, direct_system_input[byte], system_output[byte]);
+                    break;
+                }
+            }
+            fail("descriptor network-to-system payload mismatch");
+        }
+        if (!system_output_sop || !system_output_eop) {
+            fail("descriptor network-to-system framing mismatch");
+        }
+
         // System TxQueue -> coherent CPU memory.
         const uint32_t system_destination = 0x800;
         auto system_input = make_packet(95);
@@ -721,7 +820,7 @@ public:
             fail("CPU-to-network framing mismatch");
         }
 
-        if (read32(Dma::REG_COMPLETED) != 4) fail("completion count mismatch");
+        if (read32(Dma::REG_COMPLETED) != 6) fail("completion count mismatch");
         if (read32(Dma::REG_LAST_OPERATION) != DMA_CPU_NETWORK) {
             fail("last operation register mismatch");
         }

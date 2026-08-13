@@ -53,12 +53,12 @@ module MMU_TLB #(
 
 
     // regs and combs
-    reg[8-1:0] valid_reg;
-    reg[8-1:0][32-1:0] vpn_reg;
-    reg[8-1:0][32-1:0] ppn_reg;
-    reg[8-1:0][8-1:0] flags_reg;
-    reg[8-1:0] level_reg;
-    reg[8-1:0][32-1:0] satp_tag_reg;
+    reg[ENTRIES-1:0] valid_reg;
+    reg[ENTRIES-1:0][32-1:0] vpn_reg;
+    reg[ENTRIES-1:0][32-1:0] ppn_reg;
+    reg[ENTRIES-1:0][8-1:0] flags_reg;
+    reg[ENTRIES-1:0] level_reg;
+    reg[ENTRIES-1:0][32-1:0] satp_tag_reg;
     reg[$clog2(ENTRIES)-1:0] victim_reg;
     reg[2-1:0] state_reg;
     reg[32-1:0] req_vaddr_reg;
@@ -111,12 +111,12 @@ module MMU_TLB #(
     // members
 
     // tmp variables
-    logic[8-1:0] valid_reg_tmp;
-    logic[8-1:0][32-1:0] vpn_reg_tmp;
-    logic[8-1:0][32-1:0] ppn_reg_tmp;
-    logic[8-1:0][8-1:0] flags_reg_tmp;
-    logic[8-1:0] level_reg_tmp;
-    logic[8-1:0][32-1:0] satp_tag_reg_tmp;
+    logic[ENTRIES-1:0] valid_reg_tmp;
+    logic[ENTRIES-1:0][32-1:0] vpn_reg_tmp;
+    logic[ENTRIES-1:0][32-1:0] ppn_reg_tmp;
+    logic[ENTRIES-1:0][8-1:0] flags_reg_tmp;
+    logic[ENTRIES-1:0] level_reg_tmp;
+    logic[ENTRIES-1:0][32-1:0] satp_tag_reg_tmp;
     logic[$clog2(ENTRIES)-1:0] victim_reg_tmp;
     logic[2-1:0] state_reg_tmp;
     logic[32-1:0] req_vaddr_reg_tmp;

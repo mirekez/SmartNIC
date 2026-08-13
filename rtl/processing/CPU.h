@@ -95,6 +95,13 @@ public:
         tribe.mem_region_size_in[2] = _ASSIGN((uint32_t)0);
         tribe.mem_region_size_in[3] = _ASSIGN((uint32_t)IO_BYTES);
         tribe.debugen_in = false;
+        // PacketDMA enters through coherent AXI port zero.  The optional
+        // whole-line injection sideband is unused by this wrapper and must be
+        // tied off so native simulation cannot sample unassigned ports.
+        tribe.dma_line_valid_in = _ASSIGN(false);
+        tribe.dma_line_addr_in = _ASSIGN((u<32>)0);
+        tribe.dma_line_data_in = _ASSIGN((logic<CACHE_LINE_SIZE * 8>)0);
+        tribe.dma_line_keep_in = _ASSIGN((logic<CACHE_LINE_SIZE>)0);
 
 #if defined(ENABLE_ZICSR) && defined(ENABLE_ISR)
         tribe.time_lo_in = _ASSIGN((uint32_t)0);

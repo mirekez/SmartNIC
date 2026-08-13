@@ -37,30 +37,6 @@ import TribeBranchDebug_pkg::*;
 import TribeDecodeDebug_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
-import Axi4WriteAddressReady_pkg::*;
-import Axi4WriteDataReady_pkg::*;
-import Axi4WriteResponse4_pkg::*;
-import Axi4ReadAddressReady_pkg::*;
-import Axi4ReadData4_256_pkg::*;
-import Axi4Responder4_256_pkg::*;
-import Axi4WriteAddress32_4_pkg::*;
-import Axi4WriteData256_pkg::*;
-import Axi4WriteResponseReady_pkg::*;
-import Axi4ReadAddress32_4_pkg::*;
-import Axi4ReadDataReady_pkg::*;
-import Axi4Driver32_4_256_pkg::*;
-import CacheRequest_pkg::*;
-import L2ActiveRequestComb_pkg::*;
-import L2CacheFsmState_pkg::*;
-import L2RequestGeometryComb_pkg::*;
-import L2EvictCandidateComb_pkg::*;
-import L2HitLookupComb_pkg::*;
-import L2WordPairComb_pkg::*;
-import L2CpuWaitComb_pkg::*;
-import L2IoWritePayloadComb_pkg::*;
-import L2AxiRouteComb_pkg::*;
-import L2AxiRequestNoveltyComb_pkg::*;
-import CacheResponse_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 
@@ -153,6 +129,11 @@ module TribeTest #(
 ,   input wire[256-1:0] axi_out__rdata_in[4]
 ,   input wire axi_out__rlast_in[4]
 ,   input wire[4-1:0] axi_out__rid_in[4]
+,   input wire dma_line_valid_in
+,   input wire[32-1:0] dma_line_addr_in
+,   input wire[256-1:0] dma_line_data_in
+,   input wire[32-1:0] dma_line_keep_in
+,   output wire dma_line_ready_out
 ,   input wire debugen_in
 );
     parameter  L2_TOTAL_SIZE = 64'h10000;
@@ -260,9 +241,27 @@ module TribeTest #(
         ,           .dmem_read_out(cores__dmem_read_out[__i])
         ,           .dmem_addr_out(cores__dmem_addr_out[__i])
         ,           .imem_read_addr_out(cores__imem_read_addr_out[__i])
+        ,           .atomic_request_out(cores__atomic_request_out[__i])
+        ,           .atomic_data_request_out(cores__atomic_data_request_out[__i])
+        ,           .atomic_complete_out(cores__atomic_complete_out[__i])
+        ,           .atomic_grant_in(cores__atomic_grant_in[__i])
+        ,           .debug_core_out(cores__debug_core_out[__i])
+        ,           .debug_mmu_out(cores__debug_mmu_out[__i])
+        ,           .debug_cache_out(cores__debug_cache_out[__i])
+        ,           .debug_wb_out(cores__debug_wb_out[__i])
+        ,           .debug_csr_out(cores__debug_csr_out[__i])
+        ,           .debug_irq_out(cores__debug_irq_out[__i])
+        ,           .debug_regs_out(cores__debug_regs_out[__i])
+        ,           .debug_branch_out(cores__debug_branch_out[__i])
+        ,           .debug_decode_out(cores__debug_decode_out[__i])
         ,           .sbi_set_timer_out(cores__sbi_set_timer_out[__i])
         ,           .sbi_timer_lo_out(cores__sbi_timer_lo_out[__i])
         ,           .sbi_timer_hi_out(cores__sbi_timer_hi_out[__i])
+        ,           .sbi_send_ipi_out(cores__sbi_send_ipi_out[__i])
+        ,           .sbi_remote_fence_i_out(cores__sbi_remote_fence_i_out[__i])
+        ,           .sbi_remote_sfence_vma_out(cores__sbi_remote_sfence_vma_out[__i])
+        ,           .sbi_hart_mask_out(cores__sbi_hart_mask_out[__i])
+        ,           .sbi_hart_base_out(cores__sbi_hart_base_out[__i])
         ,           .debug_sbi_out(cores__debug_sbi_out[__i])
         ,           .reset_pc_in(cores__reset_pc_in[__i])
         ,           .boot_hartid_in(cores__boot_hartid_in[__i])
@@ -290,30 +289,17 @@ module TribeTest #(
         ,           .d_mem_out__cache_disable_out(cores__d_mem_out__cache_disable_out[__i])
         ,           .d_mem_out__read_data_in(cores__d_mem_out__read_data_in[__i])
         ,           .d_mem_out__wait_in(cores__d_mem_out__wait_in[__i])
+        ,           .clint_msip_in(cores__clint_msip_in[__i])
+        ,           .clint_mtip_in(cores__clint_mtip_in[__i])
+        ,           .time_lo_in(cores__time_lo_in[__i])
+        ,           .time_hi_in(cores__time_hi_in[__i])
+        ,           .external_irq_in(cores__external_irq_in[__i])
+        ,           .sbi_ipi_in(cores__sbi_ipi_in[__i])
+        ,           .remote_fence_i_in(cores__remote_fence_i_in[__i])
+        ,           .remote_sfence_vma_in(cores__remote_sfence_vma_in[__i])
         ,           .perf_out(cores__perf_out[__i])
         ,           .debugen_in(cores__debugen_in[__i])
         );
-    end
-    endgenerate
-    generate
-    for (__i=0; __i < CPU_CORES; __i = __i + 1) begin : disabled_tribe_features
-        assign cores__atomic_request_out[__i] = 1'b0;
-        assign cores__atomic_data_request_out[__i] = 1'b0;
-        assign cores__atomic_complete_out[__i] = 1'b0;
-        assign cores__debug_core_out[__i] = '0;
-        assign cores__debug_mmu_out[__i] = '0;
-        assign cores__debug_cache_out[__i] = '0;
-        assign cores__debug_wb_out[__i] = '0;
-        assign cores__debug_csr_out[__i] = '0;
-        assign cores__debug_irq_out[__i] = '0;
-        assign cores__debug_regs_out[__i] = '0;
-        assign cores__debug_branch_out[__i] = '0;
-        assign cores__debug_decode_out[__i] = '0;
-        assign cores__sbi_send_ipi_out[__i] = 1'b0;
-        assign cores__sbi_remote_fence_i_out[__i] = 1'b0;
-        assign cores__sbi_remote_sfence_vma_out[__i] = 1'b0;
-        assign cores__sbi_hart_mask_out[__i] = 32'b0;
-        assign cores__sbi_hart_base_out[__i] = 32'b0;
     end
     endgenerate
     wire i_mem_cdc__fast_in__read_in[CPU_CORES];
@@ -464,6 +450,11 @@ module TribeTest #(
     wire[L2_PORT_WIDTH-1:0] l2cache__axi_out__rdata_in[L2_PORT_COUNT];
     wire l2cache__axi_out__rlast_in[L2_PORT_COUNT];
     wire[4-1:0] l2cache__axi_out__rid_in[L2_PORT_COUNT];
+    wire l2cache__dma_line_valid_in;
+    wire[L2_ADDRESS_BITS-1:0] l2cache__dma_line_addr_in;
+    wire[L2_LINE_SIZE*'h8-1:0] l2cache__dma_line_data_in;
+    wire[L2_LINE_SIZE-1:0] l2cache__dma_line_keep_in;
+    wire l2cache__dma_line_ready_out;
     wire l2cache__debugen_in;
     L2Cache #(
         L2_TOTAL_SIZE
@@ -540,6 +531,11 @@ module TribeTest #(
 ,       .axi_out__rdata_in(l2cache__axi_out__rdata_in)
 ,       .axi_out__rlast_in(l2cache__axi_out__rlast_in)
 ,       .axi_out__rid_in(l2cache__axi_out__rid_in)
+,       .dma_line_valid_in(l2cache__dma_line_valid_in)
+,       .dma_line_addr_in(l2cache__dma_line_addr_in)
+,       .dma_line_data_in(l2cache__dma_line_data_in)
+,       .dma_line_keep_in(l2cache__dma_line_keep_in)
+,       .dma_line_ready_out(l2cache__dma_line_ready_out)
 ,       .debugen_in(l2cache__debugen_in)
     );
     wire axi_in_cdc__fast_in__awvalid_in[4];
@@ -933,6 +929,11 @@ module TribeTest #(
         assign l2cache__mem_region_uncached_in['h2] = 0;
         assign l2cache__mem_region_uncached_in['h3] = 1;
         assign l2cache__debugen_in=debugen_in;
+        assign l2cache__dma_line_valid_in = dma_line_valid_in;
+        assign l2cache__dma_line_addr_in = dma_line_addr_in;
+        assign l2cache__dma_line_data_in = dma_line_data_in;
+        assign l2cache__dma_line_keep_in = dma_line_keep_in;
+        assign dma_line_ready_out = l2cache__dma_line_ready_out;
         for (gi='h0;gi < CPU_CORES;gi=gi+1) begin
             assign cores__debugen_in[gi]=debugen_in;
             assign cores__reset_pc_in[gi] = reset_pc_in;
@@ -940,8 +941,8 @@ module TribeTest #(
             assign cores__boot_dtb_addr_in[gi] = boot_dtb_addr_in;
             assign cores__boot_priv_in[gi] = boot_priv_in;
             assign cores__external_cache_invalidate_in[gi] = external_cache_invalidate_in || peer_invalidate_comb[gi].full;
-            assign cores__peer_cache_invalidate_in[gi] = unsigned'(1'(peer_invalidate_comb[gi].valid));
-            assign cores__peer_cache_invalidate_addr_in[gi] = unsigned'(32'(peer_invalidate_comb[gi].addr));
+            assign cores__peer_cache_invalidate_in[gi] = peer_invalidate_comb[gi].valid || ((dma_line_valid_in && dma_line_ready_out));
+            assign cores__peer_cache_invalidate_addr_in[gi] = ((dma_line_valid_in && dma_line_ready_out)) ? (unsigned'(32'(dma_line_addr_in))) : (unsigned'(32'(peer_invalidate_comb[gi].addr)));
             assign cores__memory_base_in[gi] = memory_base_in;
             assign cores__memory_size_in[gi] = memory_size_in;
             for (gregion='h0;gregion < 'h4;gregion=gregion+1) begin
@@ -953,11 +954,11 @@ module TribeTest #(
             assign cores__sbi_ipi_in[gi] = sbi_ipi_targets_comb[gi];
             assign cores__remote_fence_i_in[gi] = sbi_fence_i_targets_comb[gi];
             assign cores__remote_sfence_vma_in[gi] = sbi_sfence_targets_comb[gi];
+            assign cores__time_lo_in[gi] = time_lo_in;
+            assign cores__time_hi_in[gi] = time_hi_in;
             assign sbi_set_timer_per_core_out[gi] = cores__sbi_set_timer_out[gi];
             assign sbi_timer_lo_per_core_out[gi] = cores__sbi_timer_lo_out[gi];
             assign sbi_timer_hi_per_core_out[gi] = cores__sbi_timer_hi_out[gi];
-            assign cores__time_lo_in[gi] = time_lo_in;
-            assign cores__time_hi_in[gi] = time_hi_in;
             assign cores__atomic_grant_in[gi] = atomic_grant_comb[gi];
             assign cores__i_mem_out__read_data_in[gi] = i_mem_cdc__fast_in__read_data_out[gi];
             assign cores__i_mem_out__wait_in[gi] = i_mem_cdc__fast_in__wait_out[gi];

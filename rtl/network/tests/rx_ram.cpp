@@ -633,9 +633,9 @@ int main(int argc, char** argv)
     }
     ok = ok && RxRAMTest<64, 1>().run();
 #ifndef VERILATOR
-    // Exercise both ends of the configurable N<8 read-port range in native
-    // simulation; the four-port configurations above also run as RTL.
-    ok = ok && RxRAMTest<64, 1>().run();
+    // Exercise both ends of the configurable one/two read-port range in native
+    // simulation.  The one-port FPGA configuration above also runs as RTL.
+    ok = ok && RxRAMTest<64, 2>().run();
 #endif
     return ok ? 0 : 1;
 }

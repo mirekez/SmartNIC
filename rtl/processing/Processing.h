@@ -30,7 +30,8 @@ public:
         "Kintex-7 downgrade uses one Tribe cluster");
 
     CPU cpu[CPU_COUNT];
-    DescriptorFetcher<> descriptor_fetcher[CPU_COUNT];
+    DescriptorFetcher<4, 32, 4, 256, HANDLE_BITS>
+        descriptor_fetcher[CPU_COUNT];
     PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS> packet_dma[CPU_COUNT];
 
     // Aggregate descriptor stream from SmartNIC on the shared clock.
@@ -296,6 +297,16 @@ public:
             descriptor_fetcher[index].descriptor_word_in = descriptor_word_in;
             descriptor_fetcher[index].descriptor_sop_in = descriptor_sop_in;
             descriptor_fetcher[index].descriptor_eop_in = descriptor_eop_in;
+            descriptor_fetcher[index].packet_command_ready_in =
+                packet_dma[index].command_ready_out;
+            packet_dma[index].descriptor_command_valid_in =
+                descriptor_fetcher[index].packet_command_valid_out;
+            packet_dma[index].descriptor_command_handle_in =
+                descriptor_fetcher[index].packet_command_handle_out;
+            packet_dma[index].descriptor_command_length_in =
+                descriptor_fetcher[index].packet_command_length_out;
+            packet_dma[index].descriptor_command_system_in =
+                descriptor_fetcher[index].packet_command_system_out;
 
             // CPU uncached IOMEM is split into descriptor and DMA windows.
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(iomem_mux[index].slave_in,
@@ -410,6 +421,16 @@ public:
                 cpu[index].dma_in);
             AXI4_MASTER_FROM_MASTER(ddr[index], cpu[index].memory);
             AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory, ddr[index]);
+            descriptor_fetcher[index].packet_command_ready_in =
+                packet_dma[index].command_ready_out;
+            packet_dma[index].descriptor_command_valid_in =
+                descriptor_fetcher[index].packet_command_valid_out;
+            packet_dma[index].descriptor_command_handle_in =
+                descriptor_fetcher[index].packet_command_handle_out;
+            packet_dma[index].descriptor_command_length_in =
+                descriptor_fetcher[index].packet_command_length_out;
+            packet_dma[index].descriptor_command_system_in =
+                descriptor_fetcher[index].packet_command_system_out;
         }
     }
 
