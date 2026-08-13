@@ -92,6 +92,10 @@ module PacketDMA #(
 ,   input wire network_tx_ready_in
 ,   output wire busy_out
 ,   output wire command_ready_out
+,   input wire descriptor_command_valid_in
+,   input wire[HANDLE_BITS-1:0] descriptor_command_handle_in
+,   input wire[FRAME_LENGTH_BITS-1:0] descriptor_command_length_in
+,   input wire descriptor_command_system_in
 ,   output wire[32-1:0] completed_count_out
 ,   output wire[2-1:0] last_operation_out
 ,   output wire protocol_error_out
@@ -103,6 +107,8 @@ module PacketDMA #(
     parameter  COMMAND_PUSH = 'h1;
     parameter  FLAG_OPERATION_MASK = 'h3;
     parameter  FLAG_CACHE_ALLOCATE = 'h4;
+    parameter  FLAG_NETWORK_DISCARD = 'h8;
+    parameter  FLAG_NETWORK_SYSTEM = 'h10;
     parameter  STATUS_BUSY = 'h1;
     parameter  STATUS_CMD_READY = 'h2;
     parameter  STATUS_ERROR = 'h4;
@@ -120,6 +126,7 @@ module PacketDMA #(
     reg[8-1:0] stage_flags_reg;
     reg[8-1:0] state_reg;
     reg[2-1:0] operation_reg;
+    reg[8-1:0] active_flags_reg;
     reg[AXI_ADDR_WIDTH-1:0] source_reg;
     reg[AXI_ADDR_WIDTH-1:0] destination_reg;
     reg[FRAME_LENGTH_BITS-1:0] remaining_reg;
@@ -157,6 +164,7 @@ module PacketDMA #(
     logic[8-1:0] stage_flags_reg_tmp;
     logic[8-1:0] state_reg_tmp;
     logic[2-1:0] operation_reg_tmp;
+    logic[8-1:0] active_flags_reg_tmp;
     logic[AXI_ADDR_WIDTH-1:0] source_reg_tmp;
     logic[AXI_ADDR_WIDTH-1:0] destination_reg_tmp;
     logic[FRAME_LENGTH_BITS-1:0] remaining_reg_tmp;
@@ -288,6 +296,27 @@ module PacketDMA #(
         return count;
     endfunction
 
+    function logic[31:0] input_bytes (input logic[32-1:0] keep);
+        logic[31:0] count;
+        logic[31:0] index;
+        logic gap;
+        count = 'h0;
+        gap = 0;
+        for (index='h0;index < AXI_BYTES;index=index+1) begin
+            if (keep[index]) begin
+                if (gap) begin
+                    protocol_error_reg_tmp = unsigned'(1'(1));
+                    protocol_error_reason_reg_tmp = PacketDmaError_pkg::PACKET_DMA_ERROR_KEEP_GAP;
+                end
+                count=count+1;
+            end
+            else begin
+                gap=1;
+            end
+        end
+        return count;
+    endfunction
+
     function logic output_ready ();
         if (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_CPU_SYSTEM) begin
             return system_tx_ready_in;
@@ -320,17 +349,17 @@ module PacketDMA #(
         assign rx_read_valid_out = unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_ISSUE_NETWORK_READ;
         assign rx_read_handle_out = current_handle_comb;
         assign rx_read_length_out = current_length_comb;
-        assign rx_ready_out = (unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_WAIT_INPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU);
+        assign rx_ready_out = ((unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_WAIT_INPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU)) && (((((unsigned'(32'(active_flags_reg)) & FLAG_NETWORK_SYSTEM)) == 'h0) || system_tx_ready_in));
         assign system_rx_ready_out = (unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_WAIT_INPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_SYSTEM_CPU);
-        assign system_tx_valid_out = (unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_SEND_OUTPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_CPU_SYSTEM);
+        assign system_tx_valid_out = (((unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_SEND_OUTPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_CPU_SYSTEM))) || (((((unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_WAIT_INPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU)) && (((unsigned'(32'(active_flags_reg)) & FLAG_NETWORK_SYSTEM)) != 'h0)) && rx_valid_in));
         assign network_tx_valid_out = (unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_SEND_OUTPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_CPU_NETWORK);
-        assign system_tx_data_out = beat_data_reg;
+        assign system_tx_data_out = ((((unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_WAIT_INPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU)) && (((unsigned'(32'(active_flags_reg)) & FLAG_NETWORK_SYSTEM)) != 'h0))) ? (rx_data_in) : (beat_data_reg);
         assign network_tx_data_out = beat_data_reg;
-        assign system_tx_keep_out = beat_keep_reg;
+        assign system_tx_keep_out = ((((unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_WAIT_INPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU)) && (((unsigned'(32'(active_flags_reg)) & FLAG_NETWORK_SYSTEM)) != 'h0))) ? (rx_keep_in) : (beat_keep_reg);
         assign network_tx_keep_out = beat_keep_reg;
-        assign system_tx_sop_out = beat_sop_reg;
+        assign system_tx_sop_out = ((((unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_WAIT_INPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU)) && (((unsigned'(32'(active_flags_reg)) & FLAG_NETWORK_SYSTEM)) != 'h0))) ? (rx_sop_in) : (beat_sop_reg);
         assign network_tx_sop_out = beat_sop_reg;
-        assign system_tx_eop_out = beat_eop_reg;
+        assign system_tx_eop_out = ((((unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_WAIT_INPUT) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU)) && (((unsigned'(32'(active_flags_reg)) & FLAG_NETWORK_SYSTEM)) != 'h0))) ? (rx_eop_in) : (beat_eop_reg);
         assign network_tx_eop_out = beat_eop_reg;
         assign busy_out = (unsigned'(32'(state_reg)) != PacketDmaState_pkg::PACKET_DMA_IDLE) || (unsigned'(32'(command_count_reg)) != 'h0);
         assign command_ready_out = unsigned'(32'(command_count_reg)) < CMD_DEPTH;
@@ -349,6 +378,7 @@ module PacketDMA #(
         logic[31:0] bytes;
         logic push;
         logic pop;
+        logic descriptor_push;
         logic input_valid;
         logic input_sop;
         logic input_eop;
@@ -359,6 +389,7 @@ module PacketDMA #(
         count=unsigned'(32'(command_count_reg));
         push=0;
         pop=0;
+        descriptor_push=0;
         command = current_command();
         if (mmio__awvalid_in && mmio__awready_out) begin
             write_addr_reg_tmp = mmio__awaddr_in;
@@ -401,7 +432,7 @@ module PacketDMA #(
                                             push=0;
                                         end
                                         else begin
-                                            if (((unsigned'(32'(stage_flags_reg)) & ~((FLAG_OPERATION_MASK | FLAG_CACHE_ALLOCATE)))) != 'h0) begin
+                                            if (((((unsigned'(32'(stage_flags_reg)) & ~((((FLAG_OPERATION_MASK | FLAG_CACHE_ALLOCATE) | FLAG_NETWORK_DISCARD) | FLAG_NETWORK_SYSTEM)))) != 'h0) || (((((unsigned'(32'(stage_flags_reg)) & ((FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM)))) != 'h0) && (((unsigned'(32'(stage_flags_reg)) & FLAG_OPERATION_MASK)) != PacketDmaOperation_pkg::DMA_NETWORK_CPU)))) || (((((unsigned'(32'(stage_flags_reg)) & FLAG_NETWORK_DISCARD)) != 'h0) && (((unsigned'(32'(stage_flags_reg)) & FLAG_NETWORK_SYSTEM)) != 'h0)))) begin
                                                 protocol_error_reg_tmp = unsigned'(1'(1));
                                                 protocol_error_reason_reg_tmp = PacketDmaError_pkg::PACKET_DMA_ERROR_FLAGS;
                                                 push=0;
@@ -438,13 +469,24 @@ module PacketDMA #(
         if (read_valid_reg && mmio__rready_in) begin
             read_valid_reg_tmp = unsigned'(1'(0));
         end
-        if (push) begin
+        if ((descriptor_command_valid_in && (count < CMD_DEPTH)) && !push) begin
             staged = 0;
-            staged.handle = stage_handle_reg;
-            staged.length = stage_length_reg;
-            staged.source = stage_source_reg;
-            staged.destination = stage_destination_reg;
-            staged.flags = stage_flags_reg;
+            staged.handle = descriptor_command_handle_in;
+            staged.length = descriptor_command_length_in;
+            staged.destination = unsigned'(32'h0);
+            staged.flags = unsigned'(8'(PacketDmaOperation_pkg::DMA_NETWORK_CPU | ((descriptor_command_system_in) ? (FLAG_NETWORK_SYSTEM) : (FLAG_NETWORK_DISCARD))));
+            push=1;
+            descriptor_push=1;
+        end
+        if (push) begin
+            if (!descriptor_push) begin
+                staged = 0;
+                staged.handle = stage_handle_reg;
+                staged.length = stage_length_reg;
+                staged.source = stage_source_reg;
+                staged.destination = stage_destination_reg;
+                staged.flags = stage_flags_reg;
+            end
             command_reg_tmp[unsigned'(32'(command_tail_reg))] = staged;
             command_tail_reg_tmp = ((unsigned'(32'(command_tail_reg)) + 'h1)) & ((CMD_DEPTH - 'h1));
             count=count+1;
@@ -454,6 +496,7 @@ module PacketDMA #(
                 command = staged;
             end
             operation_reg_tmp = unsigned'(32'(command.flags)) & FLAG_OPERATION_MASK;
+            active_flags_reg_tmp = command.flags;
             source_reg_tmp = command.source;
             destination_reg_tmp = command.destination;
             remaining_reg_tmp = command.length;
@@ -481,17 +524,50 @@ module PacketDMA #(
                     input_keep = (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU) ? (rx_keep_in) : (system_rx_keep_in);
                     input_sop=(unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU) ? (rx_sop_in) : (system_rx_sop_in);
                     input_eop=(unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU) ? (rx_eop_in) : (system_rx_eop_in);
-                    if (input_valid) begin
-                        beat_data_reg_tmp = input_data;
-                        beat_keep_reg_tmp = input_keep;
-                        beat_sop_reg_tmp = unsigned'(1'(input_sop));
-                        beat_eop_reg_tmp = unsigned'(1'(input_eop));
-                        if (first_beat_reg != input_sop) begin
-                            protocol_error_reg_tmp = unsigned'(1'(1));
-                            protocol_error_reason_reg_tmp = PacketDmaError_pkg::PACKET_DMA_ERROR_SOP;
+                    if ((unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_NETWORK_CPU) && (((unsigned'(32'(active_flags_reg)) & ((FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM)))) != 'h0)) begin
+                        if (input_valid && (((((unsigned'(32'(active_flags_reg)) & FLAG_NETWORK_SYSTEM)) == 'h0) || system_tx_ready_in))) begin
+                            bytes=input_bytes(input_keep);
+                            if (first_beat_reg != input_sop) begin
+                                protocol_error_reg_tmp = unsigned'(1'(1));
+                                protocol_error_reason_reg_tmp = PacketDmaError_pkg::PACKET_DMA_ERROR_SOP;
+                            end
+                            if ((bytes == 'h0) || (bytes > unsigned'(32'(remaining_reg)))) begin
+                                protocol_error_reg_tmp = unsigned'(1'(1));
+                                protocol_error_reason_reg_tmp = PacketDmaError_pkg::PACKET_DMA_ERROR_BEAT_LENGTH;
+                            end
+                            if (input_eop) begin
+                                if (bytes != unsigned'(32'(remaining_reg))) begin
+                                    protocol_error_reg_tmp = unsigned'(1'(1));
+                                    protocol_error_reason_reg_tmp = PacketDmaError_pkg::PACKET_DMA_ERROR_EOP_LENGTH;
+                                end
+                                completed_reg_tmp = completed_reg + 'h1;
+                                last_operation_reg_tmp = operation_reg;
+                                state_reg_tmp = unsigned'(8'(PacketDmaState_pkg::PACKET_DMA_IDLE));
+                                pop=count != 'h0;
+                            end
+                            else begin
+                                if ((bytes != AXI_BYTES) || bytes>=unsigned'(32'(remaining_reg))) begin
+                                    protocol_error_reg_tmp = unsigned'(1'(1));
+                                    protocol_error_reason_reg_tmp = PacketDmaError_pkg::PACKET_DMA_ERROR_NON_EOP_LENGTH;
+                                end
+                                remaining_reg_tmp = remaining_reg - bytes;
+                                first_beat_reg_tmp = unsigned'(1'(0));
+                            end
                         end
-                        first_beat_reg_tmp = unsigned'(1'(0));
-                        state_reg_tmp = unsigned'(8'(PacketDmaState_pkg::PACKET_DMA_WRITE_ADDRESS));
+                    end
+                    else begin
+                        if (input_valid) begin
+                            beat_data_reg_tmp = input_data;
+                            beat_keep_reg_tmp = input_keep;
+                            beat_sop_reg_tmp = unsigned'(1'(input_sop));
+                            beat_eop_reg_tmp = unsigned'(1'(input_eop));
+                            if (first_beat_reg != input_sop) begin
+                                protocol_error_reg_tmp = unsigned'(1'(1));
+                                protocol_error_reason_reg_tmp = PacketDmaError_pkg::PACKET_DMA_ERROR_SOP;
+                            end
+                            first_beat_reg_tmp = unsigned'(1'(0));
+                            state_reg_tmp = unsigned'(8'(PacketDmaState_pkg::PACKET_DMA_WRITE_ADDRESS));
+                        end
                     end
                 end
                 else begin
@@ -580,6 +656,7 @@ module PacketDMA #(
             stage_flags_reg_tmp = '0;
             state_reg_tmp = '0;
             operation_reg_tmp = '0;
+            active_flags_reg_tmp = '0;
             source_reg_tmp = '0;
             destination_reg_tmp = '0;
             remaining_reg_tmp = '0;
@@ -623,6 +700,7 @@ module PacketDMA #(
         stage_flags_reg_tmp = stage_flags_reg;
         state_reg_tmp = state_reg;
         operation_reg_tmp = operation_reg;
+        active_flags_reg_tmp = active_flags_reg;
         source_reg_tmp = source_reg;
         destination_reg_tmp = destination_reg;
         remaining_reg_tmp = remaining_reg;
@@ -656,6 +734,7 @@ module PacketDMA #(
         stage_flags_reg <= stage_flags_reg_tmp;
         state_reg <= state_reg_tmp;
         operation_reg <= operation_reg_tmp;
+        active_flags_reg <= active_flags_reg_tmp;
         source_reg <= source_reg_tmp;
         destination_reg <= destination_reg_tmp;
         remaining_reg <= remaining_reg_tmp;

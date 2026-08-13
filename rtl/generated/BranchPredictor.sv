@@ -30,10 +30,10 @@ module BranchPredictor #(
 
 
     // regs and combs
-    reg[16-1:0][2-1:0] counter_reg;
-    reg[16-1:0][32-1:0] target_reg;
-    reg[16-1:0][32-1:0] tag_reg;
-    reg[16-1:0] valid_reg;
+    reg[ENTRIES-1:0][COUNTER_BITS-1:0] counter_reg;
+    reg[ENTRIES-1:0][32-1:0] target_reg;
+    reg[ENTRIES-1:0][32-1:0] tag_reg;
+    reg[ENTRIES-1:0] valid_reg;
     logic[INDEX_BITS-1:0] lookup_index_comb;
 ;
     logic lookup_hit_comb;
@@ -48,10 +48,10 @@ module BranchPredictor #(
     // members
 
     // tmp variables
-    logic[16-1:0][2-1:0] counter_reg_tmp;
-    logic[16-1:0][32-1:0] target_reg_tmp;
-    logic[16-1:0][32-1:0] tag_reg_tmp;
-    logic[16-1:0] valid_reg_tmp;
+    logic[ENTRIES-1:0][COUNTER_BITS-1:0] counter_reg_tmp;
+    logic[ENTRIES-1:0][32-1:0] target_reg_tmp;
+    logic[ENTRIES-1:0][32-1:0] tag_reg_tmp;
+    logic[ENTRIES-1:0] valid_reg_tmp;
 
 
     task _work (input logic reset);

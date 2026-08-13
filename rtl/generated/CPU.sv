@@ -37,30 +37,6 @@ import TribeBranchDebug_pkg::*;
 import TribeDecodeDebug_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
-import Axi4WriteAddressReady_pkg::*;
-import Axi4WriteDataReady_pkg::*;
-import Axi4WriteResponse4_pkg::*;
-import Axi4ReadAddressReady_pkg::*;
-import Axi4ReadData4_256_pkg::*;
-import Axi4Responder4_256_pkg::*;
-import Axi4WriteAddress32_4_pkg::*;
-import Axi4WriteData256_pkg::*;
-import Axi4WriteResponseReady_pkg::*;
-import Axi4ReadAddress32_4_pkg::*;
-import Axi4ReadDataReady_pkg::*;
-import Axi4Driver32_4_256_pkg::*;
-import CacheRequest_pkg::*;
-import L2ActiveRequestComb_pkg::*;
-import L2CacheFsmState_pkg::*;
-import L2RequestGeometryComb_pkg::*;
-import L2EvictCandidateComb_pkg::*;
-import L2HitLookupComb_pkg::*;
-import L2WordPairComb_pkg::*;
-import L2CpuWaitComb_pkg::*;
-import L2IoWritePayloadComb_pkg::*;
-import L2AxiRouteComb_pkg::*;
-import L2AxiRequestNoveltyComb_pkg::*;
-import CacheResponse_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 
@@ -156,15 +132,6 @@ module CPU (
 
 
     // regs and combs
-    TribeCoreDebug debug_core_type_dependency;
-    TribeMmuDebug debug_mmu_type_dependency;
-    TribeCacheDebug debug_cache_type_dependency;
-    TribeWritebackDebug debug_wb_type_dependency;
-    TribeCsrDebug debug_csr_type_dependency;
-    TribeIrqDebug debug_irq_type_dependency;
-    TribeRegsDebug debug_regs_type_dependency;
-    TribeBranchDebug debug_branch_type_dependency;
-    TribeDecodeDebug debug_decode_type_dependency;
     TribeSbiDebug debug_sbi_type_dependency;
     TribePerf debug_perf_type_dependency;
 
@@ -250,6 +217,11 @@ module CPU (
     wire[256-1:0] tribe__axi_out__rdata_in[4];
     wire tribe__axi_out__rlast_in[4];
     wire[4-1:0] tribe__axi_out__rid_in[4];
+    wire tribe__dma_line_valid_in;
+    wire[32-1:0] tribe__dma_line_addr_in;
+    wire[256-1:0] tribe__dma_line_data_in;
+    wire[32-1:0] tribe__dma_line_keep_in;
+    wire tribe__dma_line_ready_out;
     wire tribe__debugen_in;
     TribeTest #(
         4
@@ -338,6 +310,11 @@ module CPU (
 ,       .axi_out__rdata_in(tribe__axi_out__rdata_in)
 ,       .axi_out__rlast_in(tribe__axi_out__rlast_in)
 ,       .axi_out__rid_in(tribe__axi_out__rid_in)
+,       .dma_line_valid_in(tribe__dma_line_valid_in)
+,       .dma_line_addr_in(tribe__dma_line_addr_in)
+,       .dma_line_data_in(tribe__dma_line_data_in)
+,       .dma_line_keep_in(tribe__dma_line_keep_in)
+,       .dma_line_ready_out(tribe__dma_line_ready_out)
 ,       .debugen_in(tribe__debugen_in)
     );
 
@@ -359,6 +336,10 @@ module CPU (
         assign tribe__mem_region_size_in['h2] = unsigned'(32'('h0));
         assign tribe__mem_region_size_in['h3] = unsigned'(32'(IO_BYTES));
         assign tribe__debugen_in=0;
+        assign tribe__dma_line_valid_in = 0;
+        assign tribe__dma_line_addr_in = unsigned'(32'(unsigned'(32'h0)));
+        assign tribe__dma_line_data_in = 'h0;
+        assign tribe__dma_line_keep_in = 'h0;
         assign tribe__time_lo_in = unsigned'(32'('h0));
         assign tribe__time_hi_in = unsigned'(32'('h0));
         for (gcore='h0;gcore < CORES;gcore=gcore+1) begin

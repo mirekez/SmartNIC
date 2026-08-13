@@ -37,30 +37,6 @@ import TribeBranchDebug_pkg::*;
 import TribeDecodeDebug_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
-import Axi4WriteAddressReady_pkg::*;
-import Axi4WriteDataReady_pkg::*;
-import Axi4WriteResponse4_pkg::*;
-import Axi4ReadAddressReady_pkg::*;
-import Axi4ReadData4_256_pkg::*;
-import Axi4Responder4_256_pkg::*;
-import Axi4WriteAddress32_4_pkg::*;
-import Axi4WriteData256_pkg::*;
-import Axi4WriteResponseReady_pkg::*;
-import Axi4ReadAddress32_4_pkg::*;
-import Axi4ReadDataReady_pkg::*;
-import Axi4Driver32_4_256_pkg::*;
-import CacheRequest_pkg::*;
-import L2ActiveRequestComb_pkg::*;
-import L2CacheFsmState_pkg::*;
-import L2RequestGeometryComb_pkg::*;
-import L2EvictCandidateComb_pkg::*;
-import L2HitLookupComb_pkg::*;
-import L2WordPairComb_pkg::*;
-import L2CpuWaitComb_pkg::*;
-import L2IoWritePayloadComb_pkg::*;
-import L2AxiRouteComb_pkg::*;
-import L2AxiRequestNoveltyComb_pkg::*;
-import CacheResponse_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 import DescriptorFetcher_Register_pkg::*;
@@ -328,6 +304,11 @@ module Processing #(
     wire descriptor_fetcher__descriptor_sop_in[CPU_COUNT];
     wire descriptor_fetcher__descriptor_eop_in[CPU_COUNT];
     wire descriptor_fetcher__descriptor_ready_out[CPU_COUNT];
+    wire descriptor_fetcher__packet_command_ready_in[CPU_COUNT];
+    wire descriptor_fetcher__packet_command_valid_out[CPU_COUNT];
+    wire[HANDLE_BITS-1:0] descriptor_fetcher__packet_command_handle_out[CPU_COUNT];
+    wire[14-1:0] descriptor_fetcher__packet_command_length_out[CPU_COUNT];
+    wire descriptor_fetcher__packet_command_system_out[CPU_COUNT];
     wire descriptor_fetcher__mmio__awvalid_in[CPU_COUNT];
     wire descriptor_fetcher__mmio__awready_out[CPU_COUNT];
     wire[32-1:0] descriptor_fetcher__mmio__awaddr_in[CPU_COUNT];
@@ -350,16 +331,17 @@ module Processing #(
     wire descriptor_fetcher__mmio__rlast_out[CPU_COUNT];
     wire[4-1:0] descriptor_fetcher__mmio__rid_out[CPU_COUNT];
     wire descriptor_fetcher__descriptor_available_out[CPU_COUNT];
-    wire[$clog2(4 + 'h1)-1:0] descriptor_fetcher__descriptor_count_out[CPU_COUNT];
+    wire[$clog2('h4 + 'h1)-1:0] descriptor_fetcher__descriptor_count_out[CPU_COUNT];
     wire descriptor_fetcher__prefetch_enabled_out[CPU_COUNT];
     wire descriptor_fetcher__protocol_error_out[CPU_COUNT];
     generate
     for (__i=0; __i < CPU_COUNT; __i = __i + 1) begin
         DescriptorFetcher #(
-        4
-,       32
-,       4
-,       256
+        'h4
+,       'h20
+,       'h4
+,       'h100
+,       HANDLE_BITS
         ) descriptor_fetcher (
             .clk(clk)
         ,           .l2_clock(l2_clock)
@@ -370,6 +352,11 @@ module Processing #(
         ,           .descriptor_sop_in(descriptor_fetcher__descriptor_sop_in[__i])
         ,           .descriptor_eop_in(descriptor_fetcher__descriptor_eop_in[__i])
         ,           .descriptor_ready_out(descriptor_fetcher__descriptor_ready_out[__i])
+        ,           .packet_command_ready_in(descriptor_fetcher__packet_command_ready_in[__i])
+        ,           .packet_command_valid_out(descriptor_fetcher__packet_command_valid_out[__i])
+        ,           .packet_command_handle_out(descriptor_fetcher__packet_command_handle_out[__i])
+        ,           .packet_command_length_out(descriptor_fetcher__packet_command_length_out[__i])
+        ,           .packet_command_system_out(descriptor_fetcher__packet_command_system_out[__i])
         ,           .mmio__awvalid_in(descriptor_fetcher__mmio__awvalid_in[__i])
         ,           .mmio__awready_out(descriptor_fetcher__mmio__awready_out[__i])
         ,           .mmio__awaddr_in(descriptor_fetcher__mmio__awaddr_in[__i])
@@ -441,8 +428,8 @@ module Processing #(
     wire packet_dma__l2_dma__rlast_in[CPU_COUNT];
     wire[4-1:0] packet_dma__l2_dma__rid_in[CPU_COUNT];
     wire packet_dma__rx_read_valid_out[CPU_COUNT];
-    wire[16-1:0] packet_dma__rx_read_handle_out[CPU_COUNT];
-    wire[14-1:0] packet_dma__rx_read_length_out[CPU_COUNT];
+    wire[HANDLE_BITS-1:0] packet_dma__rx_read_handle_out[CPU_COUNT];
+    wire[FRAME_LENGTH_BITS-1:0] packet_dma__rx_read_length_out[CPU_COUNT];
     wire packet_dma__rx_read_ready_in[CPU_COUNT];
     wire packet_dma__rx_valid_in[CPU_COUNT];
     wire[256-1:0] packet_dma__rx_data_in[CPU_COUNT];
@@ -470,6 +457,10 @@ module Processing #(
     wire packet_dma__network_tx_ready_in[CPU_COUNT];
     wire packet_dma__busy_out[CPU_COUNT];
     wire packet_dma__command_ready_out[CPU_COUNT];
+    wire packet_dma__descriptor_command_valid_in[CPU_COUNT];
+    wire[HANDLE_BITS-1:0] packet_dma__descriptor_command_handle_in[CPU_COUNT];
+    wire[FRAME_LENGTH_BITS-1:0] packet_dma__descriptor_command_length_in[CPU_COUNT];
+    wire packet_dma__descriptor_command_system_in[CPU_COUNT];
     wire[32-1:0] packet_dma__completed_count_out[CPU_COUNT];
     wire[2-1:0] packet_dma__last_operation_out[CPU_COUNT];
     wire packet_dma__protocol_error_out[CPU_COUNT];
@@ -477,8 +468,8 @@ module Processing #(
     generate
     for (__i=0; __i < CPU_COUNT; __i = __i + 1) begin
         PacketDMA #(
-        16
-,       14
+        HANDLE_BITS
+,       FRAME_LENGTH_BITS
 ,       8
 ,       32
 ,       4
@@ -559,6 +550,10 @@ module Processing #(
         ,           .network_tx_ready_in(packet_dma__network_tx_ready_in[__i])
         ,           .busy_out(packet_dma__busy_out[__i])
         ,           .command_ready_out(packet_dma__command_ready_out[__i])
+        ,           .descriptor_command_valid_in(packet_dma__descriptor_command_valid_in[__i])
+        ,           .descriptor_command_handle_in(packet_dma__descriptor_command_handle_in[__i])
+        ,           .descriptor_command_length_in(packet_dma__descriptor_command_length_in[__i])
+        ,           .descriptor_command_system_in(packet_dma__descriptor_command_system_in[__i])
         ,           .completed_count_out(packet_dma__completed_count_out[__i])
         ,           .last_operation_out(packet_dma__last_operation_out[__i])
         ,           .protocol_error_out(packet_dma__protocol_error_out[__i])
@@ -871,6 +866,11 @@ module Processing #(
             assign descriptor_fetcher__descriptor_word_in[gindex] = descriptor_word_in;
             assign descriptor_fetcher__descriptor_sop_in[gindex] = descriptor_sop_in;
             assign descriptor_fetcher__descriptor_eop_in[gindex] = descriptor_eop_in;
+            assign descriptor_fetcher__packet_command_ready_in[gindex] = packet_dma__command_ready_out[gindex];
+            assign packet_dma__descriptor_command_valid_in[gindex] = descriptor_fetcher__packet_command_valid_out[gindex];
+            assign packet_dma__descriptor_command_handle_in[gindex] = descriptor_fetcher__packet_command_handle_out[gindex];
+            assign packet_dma__descriptor_command_length_in[gindex] = descriptor_fetcher__packet_command_length_out[gindex];
+            assign packet_dma__descriptor_command_system_in[gindex] = descriptor_fetcher__packet_command_system_out[gindex];
             assign iomem_mux__slave_in__awvalid_in[gindex] = cpu__iomem__awvalid_out[gindex];
             assign iomem_mux__slave_in__awaddr_in[gindex] = cpu__iomem__awaddr_out[gindex];
             assign iomem_mux__slave_in__awid_in[gindex] = cpu__iomem__awid_out[gindex];
@@ -1108,6 +1108,11 @@ module Processing #(
             assign cpu__memory__rdata_in[gindex] = ddr__rdata_in[gindex];
             assign cpu__memory__rlast_in[gindex] = ddr__rlast_in[gindex];
             assign cpu__memory__rid_in[gindex] = ddr__rid_in[gindex];
+            assign descriptor_fetcher__packet_command_ready_in[gindex] = packet_dma__command_ready_out[gindex];
+            assign packet_dma__descriptor_command_valid_in[gindex] = descriptor_fetcher__packet_command_valid_out[gindex];
+            assign packet_dma__descriptor_command_handle_in[gindex] = descriptor_fetcher__packet_command_handle_out[gindex];
+            assign packet_dma__descriptor_command_length_in[gindex] = descriptor_fetcher__packet_command_length_out[gindex];
+            assign packet_dma__descriptor_command_system_in[gindex] = descriptor_fetcher__packet_command_system_out[gindex];
         end
     endgenerate
 

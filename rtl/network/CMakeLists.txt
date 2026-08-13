@@ -263,6 +263,39 @@ if(BUILD_TESTING)
     add_test(NAME network_output_merger COMMAND output_merger_tests)
     add_test(NAME network_basic COMMAND network_basic_tests)
     add_test(NAME smartnic_integration COMMAND smartnic_test)
+    # Elaborate the exact checked-in FPGA Network composition.  The normal
+    # tests convert fresh, internally consistent RTL into the build tree, so
+    # they cannot catch stale/manual interface regressions between the FPGA
+    # parser shim, RxFifo, Fifo, and Network sources used by Vivado.
+    add_test(NAME network_fpga_rtl_lint
+        COMMAND "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator"
+            --lint-only
+            -Wno-fatal
+            -Wno-TIMESCALEMOD
+            -Wno-WIDTHEXPAND
+            -Wno-WIDTHTRUNC
+            --top-module Network
+            -I${PROJECT_SOURCE_DIR}/rtl/generated
+            "${PROJECT_SOURCE_DIR}/rtl/generated/Predef_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserFields_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserWord_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserCursor_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserFlags_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/RxRAMWritePair_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/RxDescriptor_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/RxDescriptorWord_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/RxDescriptorFlags_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/SmartNicMemory.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/Fifo.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/SmartNicRAM.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/InputBalancer.sv"
+            "${PROJECT_SOURCE_DIR}/fpga/rtl/PacketParser_fpga.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/RxRAM.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/RxFifo.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/TxFifo.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/OutputMerger.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/Network.sv"
+    )
     set_tests_properties(network_input_balancer PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         LABELS "network;cpphdl;verilator"
@@ -304,5 +337,10 @@ if(BUILD_TESTING)
         TIMEOUT 1200
         ENVIRONMENT
             "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
+    )
+    set_tests_properties(network_fpga_rtl_lint PROPERTIES
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        LABELS "network;fpga;verilator;regression"
+        TIMEOUT 120
     )
 endif()

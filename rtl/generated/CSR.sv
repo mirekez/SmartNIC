@@ -14,6 +14,7 @@ module CSR (
 ,   input State state_in
 ,   input State trap_check_state_in
 ,   input wire[2-1:0] reset_priv_in
+,   input wire[31:0] hartid_in
 ,   input wire interrupt_valid_in
 ,   input wire[31:0] interrupt_cause_in
 ,   input wire interrupt_to_supervisor_in
@@ -40,7 +41,7 @@ module CSR (
 ,   output wire[31:0] satp_out
 ,   output wire[2-1:0] priv_out
 );
-    parameter  MISA_RV32IMC = 'h40001104;
+    parameter  MISA_RV32IMC = 'h40001105;
     parameter  PRIV_U = 'h0;
     parameter  PRIV_S = 'h1;
     parameter  PRIV_M = 'h3;
@@ -86,6 +87,7 @@ module CSR (
     reg[32-1:0] stval_reg;
     reg[32-1:0] sip_reg;
     reg[32-1:0] scounteren_reg;
+    reg[32-1:0] satp_reg;
     reg[32-1:0] dcsr_reg;
     reg[32-1:0] dpc_reg;
     reg[32-1:0] dscratch0_reg;
@@ -132,6 +134,7 @@ module CSR (
     logic[32-1:0] stval_reg_tmp;
     logic[32-1:0] sip_reg_tmp;
     logic[32-1:0] scounteren_reg_tmp;
+    logic[32-1:0] satp_reg_tmp;
     logic[32-1:0] dcsr_reg_tmp;
     logic[32-1:0] dpc_reg_tmp;
     logic[32-1:0] dscratch0_reg_tmp;
@@ -206,7 +209,7 @@ module CSR (
             return ((((sip_reg & XIP_SOFTWARE_WRITABLE_MASK)) | irq_pending_bits_in)) & XIP_VISIBLE_MASK;
         end
         if (addr == 'h180) begin
-            return 'h0;
+            return satp_reg;
         end
         if (addr == 'h300) begin
             return mstatus_reg;
@@ -266,7 +269,7 @@ module CSR (
             return 'h0;
         end
         if (addr == 'hF14) begin
-            return 'h0;
+            return hartid_in;
         end
         if (addr == 'hF15) begin
             return 'h0;
@@ -294,6 +297,9 @@ module CSR (
     end
 
     function logic[31:0] trap_cause_code ();
+        if (interrupt_valid_in) begin
+            return interrupt_cause_in;
+        end
         if (state_in.sys_op == Sys_pkg::ECALL) begin
             if (priv_reg == PRIV_U) begin
                 return 'h8;
@@ -351,6 +357,9 @@ module CSR (
     endfunction
 
     function logic trap_to_supervisor (input logic[31:0] cause);
+        if (interrupt_valid_in) begin
+            return interrupt_to_supervisor_in;
+        end
         return (priv_reg != PRIV_M) && ((((medeleg_reg >>> cause)) & 'h1));
     endfunction
 
@@ -360,6 +369,9 @@ module CSR (
         cause=trap_cause_code();
         tvec=(trap_to_supervisor(cause)) ? (unsigned'(32'(stvec_reg))) : (unsigned'(32'(mtvec_reg)));
         trap_vector_comb=tvec & ~'h3;
+        if (interrupt_valid_in && ((((tvec & 'h3)) == 'h1))) begin
+            trap_vector_comb=((tvec & ~'h3)) + (cause*'h4);
+        end
     end
 
     always_comb begin : epc_comb_func  // epc_comb_func
@@ -425,6 +437,9 @@ module CSR (
         if (st.sys_op == Sys_pkg::SRET) begin
             return priv_reg < PRIV_S;
         end
+        if (st.sys_op == Sys_pkg::SFENCE_VMA) begin
+            return priv_reg < PRIV_S;
+        end
         if (st.csr_op == Csr_pkg::CNONE) begin
             return 0;
         end
@@ -483,7 +498,7 @@ module CSR (
     endfunction
 
     function logic sync_trap ();
-        return state_in.valid && ((((((state_in.sys_op == Sys_pkg::ECALL) || (state_in.sys_op == Sys_pkg::EBREAK)) || (state_in.sys_op == Sys_pkg::TRAP)) || (state_in.trap_op != Trap_pkg::TNONE)) || state_causes_illegal_trap(state_in)));
+        return state_in.valid && ((((((interrupt_valid_in || (state_in.sys_op == Sys_pkg::ECALL)) || (state_in.sys_op == Sys_pkg::EBREAK)) || (state_in.sys_op == Sys_pkg::TRAP)) || (state_in.trap_op != Trap_pkg::TNONE)) || state_causes_illegal_trap(state_in)));
     endfunction
 
     function logic csr_writes ();
@@ -526,6 +541,9 @@ module CSR (
         end
         'h144: begin
             sip_reg_tmp = unsigned'(32'(value & XIP_SOFTWARE_WRITABLE_MASK));
+        end
+        'h180: begin
+            satp_reg_tmp = unsigned'(32'(value & 'h803FFFFF));
         end
         'h300: begin
             mstatus_reg_tmp = unsigned'(32'(sanitize_mstatus(value)));
@@ -621,6 +639,7 @@ module CSR (
         if (sync_trap()) begin
             cause=trap_cause_code();
             is_interrupt=0;
+            is_interrupt=interrupt_valid_in;
             tval=((!is_interrupt && (((((cause == 'h2) || (cause == 'hC)) || (cause == 'hD)) || (cause == 'hF))))) ? (state_in.imm) : ('h0);
             to_s=trap_to_supervisor(cause);
             if (to_s) begin
@@ -694,6 +713,7 @@ module CSR (
             stval_reg_tmp = '0;
             sip_reg_tmp = '0;
             scounteren_reg_tmp = '0;
+            satp_reg_tmp = '0;
             dcsr_reg_tmp = '0;
             dpc_reg_tmp = '0;
             dscratch0_reg_tmp = '0;
@@ -737,6 +757,7 @@ module CSR (
         stval_reg_tmp = stval_reg;
         sip_reg_tmp = sip_reg;
         scounteren_reg_tmp = scounteren_reg;
+        satp_reg_tmp = satp_reg;
         dcsr_reg_tmp = dcsr_reg;
         dpc_reg_tmp = dpc_reg;
         dscratch0_reg_tmp = dscratch0_reg;
@@ -770,6 +791,7 @@ module CSR (
         stval_reg <= stval_reg_tmp;
         sip_reg <= sip_reg_tmp;
         scounteren_reg <= scounteren_reg_tmp;
+        satp_reg <= satp_reg_tmp;
         dcsr_reg <= dcsr_reg_tmp;
         dpc_reg <= dpc_reg_tmp;
         dscratch0_reg <= dscratch0_reg_tmp;
@@ -817,7 +839,7 @@ module CSR (
 
     assign mip_sw_out = software_pending_comb;
 
-    assign satp_out = unsigned'(32'('h0));
+    assign satp_out = satp_reg;
 
     assign priv_out = priv_reg;
 

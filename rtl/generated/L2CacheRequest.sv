@@ -88,6 +88,11 @@ module L2CacheRequest #(
 ,   input wire[PORT_BITWIDTH-1:0] axi_out__rdata_in[MEM_PORTS]
 ,   input wire axi_out__rlast_in[MEM_PORTS]
 ,   input wire[4-1:0] axi_out__rid_in[MEM_PORTS]
+,   input wire dma_line_valid_in
+,   input wire[ADDR_BITS-1:0] dma_line_addr_in
+,   input wire[CACHE_LINE_SIZE*'h8-1:0] dma_line_data_in
+,   input wire[CACHE_LINE_SIZE-1:0] dma_line_keep_in
+,   output wire dma_line_ready_out
 ,   input wire debugen_in
 );
     parameter  LINE_WORDS = CACHE_LINE_SIZE/'h4;
@@ -116,8 +121,10 @@ module L2CacheRequest #(
 ;
     L2RequestGeometryComb request_geometry_comb;
 ;
-    reg[4-1:0][8-1:0] L2CacheState___data_ram[(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))*DATA_BANKS];
-    reg[(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))-1:0][8-1:0] L2CacheState___tag_ram[(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))*WAYS];
+    (* ram_style = "block" *)
+    reg[4-1:0][8-1:0] L2CacheState___data_ram[DATA_BANKS][((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS)];
+    (* ram_style = "block" *)
+    reg[(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))-1:0][8-1:0] L2CacheState___tag_ram[WAYS][((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS)];
     reg[DATA_BANKS-1:0][32-1:0] L2CacheState___data_q_reg;
     reg[DATA_BANKS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] L2CacheState___tag_q_reg;
     reg[5-1:0] L2CacheState___state_reg;
@@ -133,9 +140,9 @@ module L2CacheRequest #(
     reg[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___evict_beat_reg;
     reg[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] L2CacheState___evict_tag_reg;
     reg[CACHE_LINE_SIZE*'h8-1:0] L2CacheState___evict_line_reg;
-    Axi4WriteAddress32_4[8-1:0] L2CacheState___slave_aw_reg;
-    Axi4WriteAddress32_4[8-1:0] L2CacheState___slave_aw_seen_reg;
-    Axi4ReadAddress32_4[8-1:0] L2CacheState___slave_ar_seen_reg;
+    Axi4WriteAddressADDR_BITS_4[8-1:0] L2CacheState___slave_aw_reg;
+    Axi4WriteAddressADDR_BITS_4[8-1:0] L2CacheState___slave_aw_seen_reg;
+    Axi4ReadAddressADDR_BITS_4[8-1:0] L2CacheState___slave_ar_seen_reg;
 
     // members
 
@@ -155,9 +162,9 @@ module L2CacheRequest #(
     logic[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___evict_beat_reg_tmp;
     logic[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] L2CacheState___evict_tag_reg_tmp;
     logic[CACHE_LINE_SIZE*'h8-1:0] L2CacheState___evict_line_reg_tmp;
-    Axi4WriteAddress32_4[8-1:0] L2CacheState___slave_aw_reg_tmp;
-    Axi4WriteAddress32_4[8-1:0] L2CacheState___slave_aw_seen_reg_tmp;
-    Axi4ReadAddress32_4[8-1:0] L2CacheState___slave_ar_seen_reg_tmp;
+    Axi4WriteAddressADDR_BITS_4[8-1:0] L2CacheState___slave_aw_reg_tmp;
+    Axi4WriteAddressADDR_BITS_4[8-1:0] L2CacheState___slave_aw_seen_reg_tmp;
+    Axi4ReadAddressADDR_BITS_4[8-1:0] L2CacheState___slave_ar_seen_reg_tmp;
 
 
     always_comb begin : slave_request_novelty_comb_func  // slave_request_novelty_comb_func
