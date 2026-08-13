@@ -30,6 +30,9 @@ exact byte length when EOP is accepted.
 - A logical word is one input-stream beat: 20 bytes for 400G builds and 40
   bytes for 800G builds.
 - Consecutive logical words alternate between the two sub-banks.
+- Storage is circular per ingress stream. Rows become reusable only after the
+  final packet read response crosses into the processing-side CDC; unread
+  packet data cannot be overwritten.
 - A packet handle is aligned to a two-word interleave block. Its low three bits
   identify the home stream; the remaining bits identify the first logical row.
 - The address of packet word `i` is `((handle >> 3) + i)`. Its physical bank is

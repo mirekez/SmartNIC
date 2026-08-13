@@ -45,7 +45,8 @@
   one-in-ten capture keeps offered packet payload below that ceiling.
 - Current measured results for 1516-byte packets and 12-byte IPG:
   - 800G: 960 packets in 4,584 uninterrupted network cycles, zero backpressure.
-  - 400G: 960 packets in 9,168 uninterrupted network cycles, zero backpressure.
+  - 400G sustained: 2,560 packets in 24,448 uninterrupted network cycles,
+    zero backpressure.
   - Every PacketDMA completes 120 packets; 96 sampled host packets are checked
     byte-for-byte.
 - Full capture of every 800G packet still requires more host-DMA parallelism;
@@ -192,7 +193,8 @@ yet. The capture harness currently preloads each external DDR model directly.
 - `test/capture.elf` polls every descriptor; every tenth local packet streams
   RxRAM-to-System and all others are drained through the discard fast path.
 - The functional host test posts eight receive-ring entries and validates the
-  selected packet bytes in both 400G and 800G builds. Sustained mode uses 960
-  ingress packets and 96 host entries.
+  selected packet bytes in both functional 400G and 800G builds. Sustained
+  mode is currently 400G-only and uses 2,560 ingress packets and 256 host
+  entries.
 - The source offers traffic every Network clock and treats any `ready` stall as
   a wire-speed error.

@@ -294,6 +294,127 @@ public:
         if (!empty_value() || packet_count_value() != 0) fail("clear failed");
         if (protocol_error_value()) fail("well-formed traffic set protocol error");
 
+        // Test 4: cross the data FIFO's physical wrap boundary repeatedly.
+        // A 300-byte packet occupies ten beats, so forty sequential packets
+        // exercise different data- and length-FIFO pointer wrap periods.
+        for (uint32_t packet_index = 0; packet_index < 40; ++packet_index) {
+            std::vector<uint8_t> packet(300);
+            for (uint32_t byte = 0; byte < packet.size(); ++byte) {
+                packet[byte] = (uint8_t)(packet_index * 17 + byte);
+            }
+            send_packet(packet);
+            if (packet_length_value() != packet.size()) {
+                fail("length changed across data FIFO wrap");
+            }
+            if (receive_packet() != packet) {
+                fail("packet changed across data FIFO wrap");
+            }
+        }
+        if (!empty_value() || packet_count_value() != 0) {
+            fail("wrapped queue did not drain completely");
+        }
+        if (protocol_error_value()) fail("wrapped traffic set protocol error");
+
+        // Test 5: fill and drain concurrently across the full boundary.  This
+        // models the System queue while eight processing DMAs contend with a
+        // slower host DMA and catches data/length FIFO pointer divergence.
+        static constexpr uint32_t STREAM_PACKET_COUNT = 80;
+        std::vector<std::vector<uint8_t>> stream_packets;
+        stream_packets.reserve(STREAM_PACKET_COUNT);
+        for (uint32_t packet_index = 0; packet_index < STREAM_PACKET_COUNT;
+            ++packet_index) {
+            std::vector<uint8_t> packet(300);
+            for (uint32_t byte = 0; byte < packet.size(); ++byte) {
+                packet[byte] = (uint8_t)(packet_index * 29 + byte * 3);
+            }
+            stream_packets.push_back(std::move(packet));
+        }
+        uint32_t write_packet = 0;
+        size_t write_offset = 0;
+        uint32_t read_packet = 0;
+        size_t read_offset = 0;
+        for (uint32_t timeout = 0;
+            timeout < 200000 && read_packet < STREAM_PACKET_COUNT; ++timeout) {
+            if (write_packet < STREAM_PACKET_COUNT) {
+                const auto& packet = stream_packets[write_packet];
+                const size_t bytes = std::min<size_t>(32,
+                    packet.size() - write_offset);
+                write_data = 0;
+                write_keep = 0;
+                for (size_t byte = 0; byte < bytes; ++byte) {
+                    write_data.bits(byte * 8 + 7, byte * 8) =
+                        packet[write_offset + byte];
+                    write_keep[byte] = 1;
+                }
+                write_valid = true;
+                write_sop = write_offset == 0;
+                write_eop = write_offset + bytes == packet.size();
+            }
+            else {
+                write_valid = false;
+                write_sop = false;
+                write_eop = false;
+            }
+            // Drain at roughly one beat in eight until the producer finishes,
+            // then run without stalls so the test completes quickly.
+            read_ready = write_packet == STREAM_PACKET_COUNT
+                || (random() & 7u) == 0;
+            const bool write_fire = write_valid && write_ready_value();
+            const bool read_fire = read_valid_value() && read_ready;
+            if (read_fire) {
+                const auto& packet = stream_packets[read_packet];
+                const size_t bytes = std::min<size_t>(32,
+                    packet.size() - read_offset);
+                if (packet_length_value() != packet.size()) {
+                    fail("front length diverged during concurrent wrap");
+                }
+                if (read_sop_value() != (read_offset == 0)
+                    || read_eop_value() != (read_offset + bytes == packet.size())) {
+                    fail("boundary diverged during concurrent wrap");
+                }
+                const logic<256> data = read_data_value();
+                const logic<32> keep = read_keep_value();
+                for (size_t byte = 0; byte < 32; ++byte) {
+                    const bool expected_keep = byte < bytes;
+                    if ((bool)keep[byte] != expected_keep
+                        || (expected_keep
+                            && (uint8_t)data.bits(byte * 8 + 7, byte * 8)
+                                != packet[read_offset + byte])) {
+                        fail("data diverged during concurrent wrap");
+                        break;
+                    }
+                }
+            }
+            cycle();
+            if (write_fire) {
+                write_offset += std::min<size_t>(32,
+                    stream_packets[write_packet].size() - write_offset);
+                if (write_offset == stream_packets[write_packet].size()) {
+                    ++write_packet;
+                    write_offset = 0;
+                }
+            }
+            if (read_fire) {
+                read_offset += std::min<size_t>(32,
+                    stream_packets[read_packet].size() - read_offset);
+                if (read_offset == stream_packets[read_packet].size()) {
+                    ++read_packet;
+                    read_offset = 0;
+                }
+            }
+        }
+        write_valid = false;
+        read_ready = false;
+        if (read_packet != STREAM_PACKET_COUNT) {
+            fail("concurrent wrap traffic timed out");
+        }
+        if (!empty_value() || packet_count_value() != 0) {
+            fail("concurrently wrapped queue did not drain completely");
+        }
+        if (protocol_error_value()) {
+            fail("concurrent wrap traffic set protocol error");
+        }
+
         std::print("{} {} test {}\n",
 #ifdef VERILATOR
             "Verilator",

@@ -1,0 +1,5 @@
+output/*.avi
+output/*.csv
+output/*.ppm
+output/*.bmp
+output/*.png

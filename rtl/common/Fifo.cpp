@@ -137,6 +137,7 @@ public:
         bool mem_write;
         bool output_read;
         uint32_t count;
+        u<clog2(FIFO_DEPTH)> next_write;
 
         mem._work(reset);
         if (reset) {
@@ -164,7 +165,12 @@ public:
             else if (output_read) {
                 read_valid_reg._next = 0;
             }
-            if (mem_write && !mem_read && wp_reg + 1 == rp_reg) {
+            // Truncate the increment to the physical pointer width before the
+            // full comparison.  A host-language integer expression would
+            // otherwise compare DEPTH against zero at the wrap boundary and
+            // permit an overwrite of unread data.
+            next_write = wp_reg + 1;
+            if (mem_write && !mem_read && next_write == rp_reg) {
                 full_reg._next = 1;
             }
             if (mem_read && !mem_write) {
@@ -186,7 +192,8 @@ public:
             if (mem_read) {
                 rp_reg._next = rp_reg + 1;
             }
-            if (mem_write && !mem_read && wp_reg + 1 == rp_reg) {
+            next_write = wp_reg + 1;
+            if (mem_write && !mem_read && next_write == rp_reg) {
                 full_reg._next = 1;
             }
             if (mem_read && !mem_write) {

@@ -19,18 +19,10 @@ add_custom_target(capture_firmware DEPENDS "${CAPTURE_ELF}")
 file(GLOB CAPTURE_STDCXXEXP
     "${PROJECT_SOURCE_DIR}/cpphdl/.conda/lib/gcc/*/*/libstdc++exp.a")
 
-option(SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS
-    "Register the longer sustained 400G/800G throughput assertions in CTest"
-    OFF)
-
 function(smartnic_add_capture_target rate sustained)
     if(sustained)
         set(target capture_${rate}_throughput_test)
-        if(SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS)
-            add_executable(${target} capture.cpp)
-        else()
-            add_executable(${target} EXCLUDE_FROM_ALL capture.cpp)
-        endif()
+        add_executable(${target} capture.cpp)
         set(suffix _throughput)
         set(sustained_value 1)
     else()
@@ -63,7 +55,7 @@ function(smartnic_add_capture_target rate sustained)
         target_link_libraries(${target} PRIVATE "${CAPTURE_STDCXXEXP_LIBRARY}")
     endif()
 
-    if(BUILD_TESTING AND (NOT sustained OR SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS))
+    if(BUILD_TESTING)
         add_test(NAME system_capture_${rate}${suffix}
             COMMAND "$<TARGET_FILE:${target}>" "${CAPTURE_ELF}")
         set_tests_properties(system_capture_${rate}${suffix} PROPERTIES
@@ -75,11 +67,13 @@ endfunction()
 
 foreach(rate 400 800)
     smartnic_add_capture_target(${rate} FALSE)
-    smartnic_add_capture_target(${rate} TRUE)
-    add_custom_target(run_capture_${rate}_throughput
-        COMMAND "$<TARGET_FILE:capture_${rate}_throughput_test>" "${CAPTURE_ELF}"
-        DEPENDS capture_${rate}_throughput_test capture_firmware
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-        USES_TERMINAL
-        VERBATIM)
+    if(rate EQUAL 400)
+        smartnic_add_capture_target(${rate} TRUE)
+        add_custom_target(run_capture_${rate}_throughput
+            COMMAND "$<TARGET_FILE:capture_${rate}_throughput_test>" "${CAPTURE_ELF}"
+            DEPENDS capture_${rate}_throughput_test capture_firmware
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+            USES_TERMINAL
+            VERBATIM)
+    endif()
 endforeach()

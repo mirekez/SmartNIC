@@ -84,6 +84,9 @@ public:
     // NETWORK_SYSTEM streams a selected packet directly to its System queue.
     static constexpr uint32_t FLAG_NETWORK_DISCARD = 1u << 3;
     static constexpr uint32_t FLAG_NETWORK_SYSTEM = 1u << 4;
+    // Internal-only marker: the descriptor fast path already submitted this
+    // packet's RxRAM read while enqueuing the DMA command.
+    static constexpr uint32_t FLAG_NETWORK_PREFETCHED = 1u << 5;
     static constexpr uint32_t STATUS_BUSY = 1u << 0;
     static constexpr uint32_t STATUS_CMD_READY = 1u << 1;
     static constexpr uint32_t STATUS_ERROR = 1u << 2;
@@ -138,6 +141,7 @@ public:
 
     _PORT(bool) busy_out;
     _PORT(bool) command_ready_out;
+    _PORT(bool) descriptor_command_ready_out;
     _PORT(bool) descriptor_command_valid_in;
     _PORT(u<HANDLE_BITS>) descriptor_command_handle_in;
     _PORT(u<FRAME_LENGTH_BITS>) descriptor_command_length_in;
@@ -339,9 +343,16 @@ public:
         l2_dma.rready_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_READ_DATA);
 
         rx_read_valid_out = _ASSIGN((uint32_t)state_reg
-            == PACKET_DMA_ISSUE_NETWORK_READ);
-        rx_read_handle_out = _ASSIGN_COMB(current_handle_comb_func());
-        rx_read_length_out = _ASSIGN_COMB(current_length_comb_func());
+                == PACKET_DMA_ISSUE_NETWORK_READ
+            || (descriptor_command_valid_in()
+                && (uint32_t)command_count_reg < CMD_DEPTH
+                && (uint32_t)state_reg != PACKET_DMA_ISSUE_NETWORK_READ));
+        rx_read_handle_out = _ASSIGN((uint32_t)state_reg
+                == PACKET_DMA_ISSUE_NETWORK_READ
+            ? current_handle_comb_func() : descriptor_command_handle_in());
+        rx_read_length_out = _ASSIGN((uint32_t)state_reg
+                == PACKET_DMA_ISSUE_NETWORK_READ
+            ? current_length_comb_func() : descriptor_command_length_in());
         rx_ready_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
             && (uint32_t)operation_reg == DMA_NETWORK_CPU
             && (((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) == 0
@@ -386,6 +397,10 @@ public:
         busy_out = _ASSIGN((uint32_t)state_reg != PACKET_DMA_IDLE
             || (uint32_t)command_count_reg != 0);
         command_ready_out = _ASSIGN((uint32_t)command_count_reg < CMD_DEPTH);
+        descriptor_command_ready_out = _ASSIGN(
+            (uint32_t)command_count_reg < CMD_DEPTH
+            && rx_read_ready_in()
+            && (uint32_t)state_reg != PACKET_DMA_ISSUE_NETWORK_READ);
         completed_count_out = _ASSIGN_REG(completed_reg);
         last_operation_out = _ASSIGN_REG(last_operation_reg);
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
@@ -503,7 +518,8 @@ public:
             staged.destination = 0;
             staged.flags = DMA_NETWORK_CPU
                 | (descriptor_command_system_in()
-                    ? FLAG_NETWORK_SYSTEM : FLAG_NETWORK_DISCARD);
+                    ? FLAG_NETWORK_SYSTEM : FLAG_NETWORK_DISCARD)
+                | FLAG_NETWORK_PREFETCHED;
             push = true;
             descriptor_push = true;
         }
@@ -532,7 +548,9 @@ public:
             remaining_reg._next = command.length;
             first_beat_reg._next = true;
             if (((uint32_t)command.flags & FLAG_OPERATION_MASK) == DMA_NETWORK_CPU) {
-                state_reg._next = PACKET_DMA_ISSUE_NETWORK_READ;
+                state_reg._next = ((uint32_t)command.flags
+                        & FLAG_NETWORK_PREFETCHED) != 0
+                    ? PACKET_DMA_WAIT_INPUT : PACKET_DMA_ISSUE_NETWORK_READ;
             }
             else if (((uint32_t)command.flags & FLAG_OPERATION_MASK)
                 == DMA_SYSTEM_CPU) {
