@@ -102,6 +102,10 @@ class PacketDmaTest
         dut.descriptor_command_handle_in = _ASSIGN((u<16>)0);
         dut.descriptor_command_length_in = _ASSIGN((u<14>)0);
         dut.descriptor_command_system_in = _ASSIGN(false);
+        dut.descriptor_command_cache_in = _ASSIGN(false);
+        dut.descriptor_command_destination_in = _ASSIGN((uint32_t)0);
+        dut.l2_line_ready_in = _ASSIGN(true);
+        dut.l2_commit_valid_in = _ASSIGN(false);
         dut.rx_read_ready_in = _ASSIGN(rx_read_ready);
         dut.rx_valid_in = _ASSIGN(rx_valid);
         dut.rx_data_in = _ASSIGN(rx_data);
@@ -129,6 +133,10 @@ class PacketDmaTest
         dut.descriptor_command_handle_in = 0;
         dut.descriptor_command_length_in = 0;
         dut.descriptor_command_system_in = false;
+        dut.descriptor_command_cache_in = false;
+        dut.descriptor_command_destination_in = 0;
+        dut.l2_line_ready_in = true;
+        dut.l2_commit_valid_in = false;
         dut.rx_read_ready_in = rx_read_ready;
         dut.rx_valid_in = rx_valid;
         copy_to_verilator(dut.rx_data_in, rx_data);
@@ -591,7 +599,7 @@ class PacketDmaTest
 
     void issue(uint32_t operation, uint32_t length, uint32_t source,
         uint32_t destination, uint32_t handle = 0,
-        uint32_t extra_flags = Dma::FLAG_CACHE_ALLOCATE)
+        uint32_t extra_flags = 0)
     {
         write32(Dma::REG_RX_HANDLE, handle);
         write32(Dma::REG_LENGTH, length);

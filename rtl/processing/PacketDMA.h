@@ -87,6 +87,10 @@ public:
     // Internal-only marker: the descriptor fast path already submitted this
     // packet's RxRAM read while enqueuing the DMA command.
     static constexpr uint32_t FLAG_NETWORK_PREFETCHED = 1u << 5;
+    // CPU-to-System reads may use the packet-line staging mirror filled in
+    // parallel with coherent L2 allocation.  This is a second read datapath,
+    // so host sampling cannot stall wire-rate network ingress.
+    static constexpr uint32_t FLAG_PACKET_STAGING = 1u << 6;
     static constexpr uint32_t STATUS_BUSY = 1u << 0;
     static constexpr uint32_t STATUS_CMD_READY = 1u << 1;
     static constexpr uint32_t STATUS_ERROR = 1u << 2;
@@ -102,6 +106,17 @@ public:
 
     Axi4If<AXI_ADDR_WIDTH, AXI_ID_WIDTH, AXI_DATA_WIDTH> mmio;
     Axi4MasterIf<AXI_ADDR_WIDTH, AXI_ID_WIDTH, AXI_DATA_WIDTH> l2_dma;
+
+    // Burst-free cache-line allocation stream. Processing crosses this stream
+    // into the L2 clock domain and returns one commit token per packet.
+    _PORT(bool) l2_line_valid_out;
+    _PORT(u<AXI_ADDR_WIDTH>) l2_line_addr_out;
+    _PORT(logic<AXI_DATA_WIDTH>) l2_line_data_out;
+    _PORT(logic<AXI_BYTES>) l2_line_keep_out;
+    _PORT(bool) l2_line_eop_out;
+    _PORT(bool) l2_line_ready_in;
+    _PORT(bool) l2_commit_valid_in;
+    _PORT(bool) l2_commit_ready_out;
 
     // Network/RxRAM command and response path (DMA_NETWORK_CPU).
     _PORT(bool) rx_read_valid_out;
@@ -146,10 +161,14 @@ public:
     _PORT(u<HANDLE_BITS>) descriptor_command_handle_in;
     _PORT(u<FRAME_LENGTH_BITS>) descriptor_command_length_in;
     _PORT(bool) descriptor_command_system_in;
+    _PORT(bool) descriptor_command_cache_in;
+    _PORT(u32) descriptor_command_destination_in;
     _PORT(u<32>) completed_count_out;
+    _PORT(u<32>) cache_completed_count_out;
     _PORT(u<2>) last_operation_out;
     _PORT(bool) protocol_error_out;
     _PORT(u<4>) protocol_error_reason_out;
+    _PORT(uint8_t) active_flags_out;
 
 private:
     reg<Command> command_reg[CMD_DEPTH];
@@ -175,9 +194,21 @@ private:
     reg<u1> beat_eop_reg;
     reg<u1> first_beat_reg;
     reg<u<32>> completed_reg;
+    reg<u<32>> cache_completed_reg;
     reg<u<2>> last_operation_reg;
     reg<u1> protocol_error_reg;
     reg<u<4>> protocol_error_reason_reg;
+
+    static constexpr uint32_t PACKET_STAGING_BASE = 0x00010000;
+    static constexpr uint32_t PACKET_STAGING_BYTES = 4 * 2048;
+    static constexpr uint32_t PACKET_STAGING_LINES =
+        PACKET_STAGING_BYTES / AXI_BYTES;
+    memory<logic<AXI_DATA_WIDTH>, 1, PACKET_STAGING_LINES>
+        packet_staging_mem;
+    reg<u1> staging_active_reg;
+    reg<u<AXI_ADDR_WIDTH>> staging_source_reg;
+    reg<u<FRAME_LENGTH_BITS>> staging_remaining_reg;
+    reg<u1> staging_first_reg;
 
     reg<u<AXI_ADDR_WIDTH>> write_addr_reg;
     reg<u<AXI_ID_WIDTH>> write_id_reg;
@@ -190,6 +221,33 @@ private:
     u<HANDLE_BITS> current_handle_comb;
     u<FRAME_LENGTH_BITS> current_length_comb;
     logic<AXI_BYTES> output_keep_comb;
+
+    logic<AXI_DATA_WIDTH> staging_data_comb;
+    logic<AXI_BYTES> staging_keep_comb;
+
+    bool staging_address_valid(uint32_t address)
+    {
+        return address >= PACKET_STAGING_BASE
+            && address < PACKET_STAGING_BASE + PACKET_STAGING_BYTES;
+    }
+
+    logic<AXI_DATA_WIDTH>& staging_data_comb_func()
+    {
+        uint32_t index = ((uint32_t)staging_source_reg
+            - PACKET_STAGING_BASE) / AXI_BYTES;
+        staging_data_comb = packet_staging_mem[index];
+        return staging_data_comb;
+    }
+
+    logic<AXI_BYTES>& staging_keep_comb_func()
+    {
+        uint32_t byte;
+        staging_keep_comb = 0;
+        for (byte = 0; byte < AXI_BYTES; ++byte) {
+            staging_keep_comb[byte] = byte < (uint32_t)staging_remaining_reg;
+        }
+        return staging_keep_comb;
+    }
 
     Command current_command()
     {
@@ -342,6 +400,22 @@ public:
         l2_dma.arid_out = _ASSIGN((u<AXI_ID_WIDTH>)0);
         l2_dma.rready_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_READ_DATA);
 
+        l2_line_valid_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
+            && ((uint32_t)active_flags_reg & FLAG_CACHE_ALLOCATE) != 0
+            && ((uint32_t)operation_reg == DMA_NETWORK_CPU
+                ? rx_valid_in() : system_rx_valid_in()));
+        l2_line_addr_out = _ASSIGN_REG(destination_reg);
+        l2_line_data_out = _ASSIGN((uint32_t)operation_reg == DMA_NETWORK_CPU
+            ? rx_data_in() : system_rx_data_in());
+        l2_line_keep_out = _ASSIGN((uint32_t)operation_reg == DMA_NETWORK_CPU
+            ? rx_keep_in() : system_rx_keep_in());
+        l2_line_eop_out = _ASSIGN((uint32_t)operation_reg == DMA_NETWORK_CPU
+            ? rx_eop_in() : system_rx_eop_in());
+        // Cache-line order is preserved by the CDC FIFOs, so accepting commit
+        // tokens independently lets the next packet enter the line pipeline
+        // without a round-trip clock-domain bubble after every EOP.
+        l2_commit_ready_out = _ASSIGN(true);
+
         rx_read_valid_out = _ASSIGN((uint32_t)state_reg
                 == PACKET_DMA_ISSUE_NETWORK_READ
             || (descriptor_command_valid_in()
@@ -355,39 +429,48 @@ public:
             ? current_length_comb_func() : descriptor_command_length_in());
         rx_ready_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
             && (uint32_t)operation_reg == DMA_NETWORK_CPU
+            && (((uint32_t)active_flags_reg & FLAG_CACHE_ALLOCATE) == 0
+                || l2_line_ready_in())
             && (((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) == 0
                 || system_tx_ready_in()));
         system_rx_ready_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
-            && (uint32_t)operation_reg == DMA_SYSTEM_CPU);
+            && (uint32_t)operation_reg == DMA_SYSTEM_CPU
+            && (((uint32_t)active_flags_reg & FLAG_CACHE_ALLOCATE) == 0
+                || l2_line_ready_in()));
 
         system_tx_valid_out = _ASSIGN(((uint32_t)state_reg
                 == PACKET_DMA_SEND_OUTPUT
                 && (uint32_t)operation_reg == DMA_CPU_SYSTEM)
+            || (bool)staging_active_reg
             || ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0
                 && rx_valid_in()));
         network_tx_valid_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_SEND_OUTPUT
             && (uint32_t)operation_reg == DMA_CPU_NETWORK);
-        system_tx_data_out = _ASSIGN(
+        system_tx_data_out = _ASSIGN((bool)staging_active_reg
+            ? staging_data_comb_func() :
             ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
             ? rx_data_in() : (logic<AXI_DATA_WIDTH>)beat_data_reg);
         network_tx_data_out = _ASSIGN_REG(beat_data_reg);
-        system_tx_keep_out = _ASSIGN(
+        system_tx_keep_out = _ASSIGN((bool)staging_active_reg
+            ? staging_keep_comb_func() :
             ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
             ? rx_keep_in() : (logic<AXI_BYTES>)beat_keep_reg);
         network_tx_keep_out = _ASSIGN_REG(beat_keep_reg);
-        system_tx_sop_out = _ASSIGN(
+        system_tx_sop_out = _ASSIGN((bool)staging_active_reg
+            ? (bool)staging_first_reg :
             ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
             ? rx_sop_in() : (bool)beat_sop_reg);
         network_tx_sop_out = _ASSIGN_REG(beat_sop_reg);
-        system_tx_eop_out = _ASSIGN(
+        system_tx_eop_out = _ASSIGN((bool)staging_active_reg
+            ? (uint32_t)staging_remaining_reg <= AXI_BYTES :
             ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
@@ -402,9 +485,11 @@ public:
             && rx_read_ready_in()
             && (uint32_t)state_reg != PACKET_DMA_ISSUE_NETWORK_READ);
         completed_count_out = _ASSIGN_REG(completed_reg);
+        cache_completed_count_out = _ASSIGN_REG(cache_completed_reg);
         last_operation_out = _ASSIGN_REG(last_operation_reg);
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
         protocol_error_reason_out = _ASSIGN_REG(protocol_error_reason_reg);
+        active_flags_out = _ASSIGN_REG(active_flags_reg);
     }
 
     void _work(bool reset)
@@ -417,6 +502,7 @@ public:
         bool push;
         bool pop;
         bool descriptor_push;
+        bool normal_completion;
         bool input_valid;
         bool input_sop;
         bool input_eop;
@@ -429,6 +515,7 @@ public:
         push = false;
         pop = false;
         descriptor_push = false;
+        normal_completion = false;
         command = current_command();
 
         if (mmio.awvalid_in() && mmio.awready_out()) {
@@ -466,13 +553,17 @@ public:
                 }
                 else if (((uint32_t)stage_flags_reg
                         & ~(FLAG_OPERATION_MASK | FLAG_CACHE_ALLOCATE
-                            | FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM)) != 0
+                            | FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM
+                            | FLAG_PACKET_STAGING)) != 0
                     || (((uint32_t)stage_flags_reg
                             & (FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM)) != 0
                         && ((uint32_t)stage_flags_reg & FLAG_OPERATION_MASK)
                             != DMA_NETWORK_CPU)
                     || (((uint32_t)stage_flags_reg & FLAG_NETWORK_DISCARD) != 0
-                        && ((uint32_t)stage_flags_reg & FLAG_NETWORK_SYSTEM) != 0)) {
+                        && ((uint32_t)stage_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
+                    || (((uint32_t)stage_flags_reg & FLAG_PACKET_STAGING) != 0
+                        && ((uint32_t)stage_flags_reg & FLAG_OPERATION_MASK)
+                            != DMA_CPU_SYSTEM)) {
                     protocol_error_reg._next = true;
                     protocol_error_reason_reg._next = PACKET_DMA_ERROR_FLAGS;
                     push = false;
@@ -515,10 +606,12 @@ public:
             staged = {};
             staged.handle = descriptor_command_handle_in();
             staged.length = descriptor_command_length_in();
-            staged.destination = 0;
+            staged.destination = descriptor_command_destination_in();
             staged.flags = DMA_NETWORK_CPU
-                | (descriptor_command_system_in()
-                    ? FLAG_NETWORK_SYSTEM : FLAG_NETWORK_DISCARD)
+                | (descriptor_command_cache_in() ? FLAG_CACHE_ALLOCATE : 0)
+                | (descriptor_command_cache_in() ? 0 :
+                    (descriptor_command_system_in() ?
+                        FLAG_NETWORK_SYSTEM : FLAG_NETWORK_DISCARD))
                 | FLAG_NETWORK_PREFETCHED;
             push = true;
             descriptor_push = true;
@@ -555,6 +648,28 @@ public:
             else if (((uint32_t)command.flags & FLAG_OPERATION_MASK)
                 == DMA_SYSTEM_CPU) {
                 state_reg._next = PACKET_DMA_WAIT_INPUT;
+            }
+            else if (((uint32_t)command.flags & FLAG_OPERATION_MASK)
+                    == DMA_CPU_SYSTEM
+                && ((uint32_t)command.flags & FLAG_PACKET_STAGING) != 0) {
+                if (!(bool)staging_active_reg
+                    && staging_address_valid((uint32_t)command.source)) {
+                    staging_active_reg._next = true;
+                    staging_source_reg._next = command.source;
+                    staging_remaining_reg._next = command.length;
+                    staging_first_reg._next = true;
+                    // The staging reader has its own datapath.  Remove the
+                    // command now so NETWORK_CPU allocation can continue.
+                    state_reg._next = PACKET_DMA_IDLE;
+                    pop = count != 0;
+                }
+                else if (!staging_address_valid((uint32_t)command.source)) {
+                    protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next =
+                        PACKET_DMA_ERROR_SOURCE_ALIGNMENT;
+                    state_reg._next = PACKET_DMA_IDLE;
+                    pop = count != 0;
+                }
             }
             else {
                 state_reg._next = PACKET_DMA_READ_ADDRESS;
@@ -597,7 +712,7 @@ public:
                             protocol_error_reason_reg._next =
                                 PACKET_DMA_ERROR_EOP_LENGTH;
                         }
-                        completed_reg._next = completed_reg + 1;
+                        normal_completion = true;
                         last_operation_reg._next = operation_reg;
                         state_reg._next = PACKET_DMA_IDLE;
                         pop = count != 0;
@@ -614,7 +729,45 @@ public:
                     }
                 }
             }
-            else if (input_valid) {
+            else if (input_valid
+                && (((uint32_t)active_flags_reg & FLAG_CACHE_ALLOCATE) == 0
+                    || l2_line_ready_in())) {
+                if (((uint32_t)active_flags_reg & FLAG_CACHE_ALLOCATE) != 0) {
+                    bytes = input_bytes(input_keep);
+                    if ((bool)first_beat_reg != input_sop) {
+                        protocol_error_reg._next = true;
+                        protocol_error_reason_reg._next = PACKET_DMA_ERROR_SOP;
+                    }
+                    if (bytes == 0 || bytes > (uint32_t)remaining_reg) {
+                        protocol_error_reg._next = true;
+                        protocol_error_reason_reg._next =
+                            PACKET_DMA_ERROR_BEAT_LENGTH;
+                    }
+                    if (input_eop) {
+                        if (bytes != (uint32_t)remaining_reg) {
+                            protocol_error_reg._next = true;
+                            protocol_error_reason_reg._next =
+                                PACKET_DMA_ERROR_EOP_LENGTH;
+                        }
+                        // EOP is ordered in the CPU-to-L2 FIFO.  Release this
+                        // command now; its reverse commit token marks the
+                        // packet loaded for software after L2 installation.
+                        state_reg._next = PACKET_DMA_IDLE;
+                        pop = count != 0;
+                    }
+                    else {
+                        if (bytes != AXI_BYTES
+                            || bytes >= (uint32_t)remaining_reg) {
+                            protocol_error_reg._next = true;
+                            protocol_error_reason_reg._next =
+                                PACKET_DMA_ERROR_NON_EOP_LENGTH;
+                        }
+                        destination_reg._next = destination_reg + AXI_BYTES;
+                        remaining_reg._next = remaining_reg - bytes;
+                        first_beat_reg._next = false;
+                    }
+                }
+                else {
                 beat_data_reg._next = input_data;
                 beat_keep_reg._next = input_keep;
                 beat_sop_reg._next = input_sop;
@@ -625,6 +778,7 @@ public:
                 }
                 first_beat_reg._next = false;
                 state_reg._next = PACKET_DMA_WRITE_ADDRESS;
+                }
             }
         }
         else if ((uint32_t)state_reg == PACKET_DMA_WRITE_ADDRESS
@@ -647,7 +801,7 @@ public:
                     protocol_error_reg._next = true;
                     protocol_error_reason_reg._next = PACKET_DMA_ERROR_EOP_LENGTH;
                 }
-                completed_reg._next = completed_reg + 1;
+                normal_completion = true;
                 last_operation_reg._next = operation_reg;
                 state_reg._next = PACKET_DMA_IDLE;
                 pop = count != 0;
@@ -678,7 +832,7 @@ public:
         else if ((uint32_t)state_reg == PACKET_DMA_SEND_OUTPUT
             && output_ready()) {
             if ((uint32_t)remaining_reg <= AXI_BYTES) {
-                completed_reg._next = completed_reg + 1;
+                normal_completion = true;
                 last_operation_reg._next = operation_reg;
                 state_reg._next = PACKET_DMA_IDLE;
                 pop = count != 0;
@@ -689,6 +843,42 @@ public:
                 first_beat_reg._next = false;
                 state_reg._next = PACKET_DMA_READ_ADDRESS;
             }
+        }
+
+        // Mirror accepted coherent packet lines into a dedicated single-cycle
+        // read store.  L2 remains authoritative; this mirror only prevents a
+        // sampled host copy from occupying the L2 request FSM for 48 beats.
+        if (l2_line_valid_out() && l2_line_ready_in()
+            && staging_address_valid((uint32_t)l2_line_addr_out())) {
+            packet_staging_mem[((uint32_t)l2_line_addr_out()
+                - PACKET_STAGING_BASE) / AXI_BYTES] = l2_line_data_out();
+        }
+        if (staging_active_reg && system_tx_ready_in()) {
+            if ((uint32_t)staging_remaining_reg <= AXI_BYTES) {
+                staging_active_reg._next = false;
+                normal_completion = true;
+                last_operation_reg._next = DMA_CPU_SYSTEM;
+            }
+            else {
+                staging_source_reg._next = staging_source_reg + AXI_BYTES;
+                staging_remaining_reg._next =
+                    staging_remaining_reg - AXI_BYTES;
+                staging_first_reg._next = false;
+            }
+        }
+
+        // The cache commit stream is independent of the active command: the
+        // line FIFO preserves packet order, and every EOP produces one token.
+        // Count simultaneous regular and cache completions without losing an
+        // increment to multiple nonblocking assignments of completed_reg.
+        if (l2_commit_valid_in()) {
+            cache_completed_reg._next = cache_completed_reg + 1;
+            if (!normal_completion) last_operation_reg._next = DMA_NETWORK_CPU;
+        }
+        if (normal_completion || l2_commit_valid_in()) {
+            completed_reg._next = completed_reg
+                + (normal_completion ? 1 : 0)
+                + (l2_commit_valid_in() ? 1 : 0);
         }
 
         if (pop) {
@@ -719,9 +909,14 @@ public:
             beat_eop_reg.clr();
             first_beat_reg.clr();
             completed_reg.clr();
+            cache_completed_reg.clr();
             last_operation_reg.clr();
             protocol_error_reg.clr();
             protocol_error_reason_reg.clr();
+            staging_active_reg.clr();
+            staging_source_reg.clr();
+            staging_remaining_reg.clr();
+            staging_first_reg.clr();
             write_addr_reg.clr();
             write_id_reg.clr();
             write_addr_valid_reg.clr();
@@ -737,6 +932,7 @@ public:
     {
         uint32_t slot;
         for (slot = 0; slot < CMD_DEPTH; ++slot) command_reg[slot].strobe();
+        packet_staging_mem.apply();
         command_head_reg.strobe();
         command_tail_reg.strobe();
         command_count_reg.strobe();
@@ -757,9 +953,14 @@ public:
         beat_eop_reg.strobe();
         first_beat_reg.strobe();
         completed_reg.strobe();
+        cache_completed_reg.strobe();
         last_operation_reg.strobe();
         protocol_error_reg.strobe();
         protocol_error_reason_reg.strobe();
+        staging_active_reg.strobe();
+        staging_source_reg.strobe();
+        staging_remaining_reg.strobe();
+        staging_first_reg.strobe();
         write_addr_reg.strobe();
         write_id_reg.strobe();
         write_addr_valid_reg.strobe();

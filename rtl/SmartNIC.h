@@ -430,6 +430,13 @@ private:
 
 public:
 #ifndef SYNTHESIS
+    bool debug_net_read_response_fire(uint32_t port)
+    {
+        return network.read_valid_out()[port]
+            && network.read_ready_in()[port];
+    }
+
+
     bool debug_network_balancer_error()
     {
         return network.debug_balancer_error();

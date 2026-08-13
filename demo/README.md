@@ -63,9 +63,9 @@ ffmpeg -i demo/output/smartnic_400g_long.avi -c:v libx264 -crf 18 -pix_fmt yuv42
 - Eight beveled CPU backgrounds are arranged in two columns of four. Each
   smaller I$ rectangle is above its cluster's larger D$ rectangle and
   contains bytes from the actual loaded ELF.
-- Demo firmware uses the sustained-test fast path: every descriptor is retired,
-  one local packet in ten goes directly to System, and the others are discarded
-  after the RxRAM read/release path.
+- Demo firmware copies every packet from RxRAM into the CPU cluster's coherent
+  L2 packet buffer. Every tenth packet is read across its first 40 bytes through
+  L1 D-cache and is then transferred from L2 to the System RxQueue and host.
 - The capture workload is RX-only, so TX FIFO and TX Queue normally remain empty.
 
 The generator fills complete packets, including the Ethernet-header positions,

@@ -13,12 +13,17 @@
 #define MULTICORE
 #endif
 
-// SmartNIC packet workers use the lean RV32IM+Zicsr profile. Atomics,
-// interrupts and virtual memory are intentionally excluded from every Tribe
-// cluster instantiated through this wrapper, independent of cpphdl defaults.
+// Import Tribe's defaults here, then override the SmartNIC CPU profile before
+// any Tribe RTL is parsed.  Keeping these overrides in this wrapper leaves the
+// cpphdl/tribe_cpu project configuration untouched.
+#include "../../cpphdl/tribe_cpu/Config.h"
+
 #ifdef ENABLE_RV32IA
 #undef ENABLE_RV32IA
 #endif
+// ENABLE_ZICSR and ENABLE_TRAPS stay enabled: Tribe's CSR implementation uses
+// the privilege state supplied by the trap block.  Disabling only TRAPS would
+// require changes to the shared cpphdl/tribe_cpu sources.
 #ifdef ENABLE_ISR
 #undef ENABLE_ISR
 #endif
@@ -61,6 +66,13 @@ public:
 
     // Coherent, write-allocating ingress used by the packet DMA.
     Axi4If<32, ID_WIDTH, DATA_WIDTH> dma_in;
+    // One-line-per-L2-clock coherent allocation path used by PacketDMA after
+    // the Processing clock-domain FIFO.
+    _PORT(bool) dma_line_valid_in;
+    _PORT(u32) dma_line_addr_in;
+    _PORT(logic<DATA_WIDTH>) dma_line_data_in;
+    _PORT(logic<DATA_WIDTH / 8>) dma_line_keep_in;
+    _PORT(bool) dma_line_ready_out;
     // Downstream ports.  IOMEM is uncached in Tribe's L2 region table.
     // Interface member names are neutral because their fields already carry
     // explicit master directions; a second `_out` suffix would be inverted by
@@ -129,6 +141,11 @@ public:
         tribe.mem_region_size_in[2] = _ASSIGN((uint32_t)0);
         tribe.mem_region_size_in[3] = _ASSIGN((uint32_t)IO_BYTES);
         tribe.debugen_in = false;
+        tribe.dma_line_valid_in = dma_line_valid_in;
+        tribe.dma_line_addr_in = dma_line_addr_in;
+        tribe.dma_line_data_in = dma_line_data_in;
+        tribe.dma_line_keep_in = dma_line_keep_in;
+        dma_line_ready_out = tribe.dma_line_ready_out;
 
 #if defined(ENABLE_ZICSR) && defined(ENABLE_ISR)
         tribe.time_lo_in = _ASSIGN((uint32_t)0);
@@ -197,6 +214,7 @@ public:
         // after elaborating the child so function_ref copies are never empty
         // in native C++ simulation.
         AXI4_RESPONDER_FROM(dma_in, tribe.axi_in[0]);
+        dma_line_ready_out = tribe.dma_line_ready_out;
         AXI4_MASTER_FROM_TARGET_IF(memory, tribe.axi_out[0]);
         iomem.awvalid_out = tribe.axi_out[3].awvalid_in;
         iomem.awid_out = tribe.axi_out[3].awid_in;

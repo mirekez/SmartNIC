@@ -83,8 +83,6 @@ class Visualizer
     std::array<std::vector<bool>, CLUSTERS> l1_data_valid;
     std::array<uint32_t, CLUSTERS> l1_instruction_address{};
     std::array<uint32_t, CLUSTERS> l1_data_address{};
-    std::array<bool, CLUSTERS> l1_touch_completed{};
-    std::array<uint32_t, CLUSTERS> last_dma_completed{};
     bool loaded_snapshot_written = false;
     bool mid_snapshot_written = false;
     bool queue_snapshot_written = false;
@@ -425,29 +423,33 @@ public:
     {
         ++cpu_cycles;
         for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
-            auto& dma = dut.processing.packet_dma[cluster].l2_dma;
-            const uint32_t completed = (uint32_t)dut.processing
-                .packet_dma[cluster].completed_count_out();
-            if (completed != last_dma_completed[cluster]) {
-                last_dma_completed[cluster] = completed;
-                // Operations alternate NETWORK_CPU then CPU_SYSTEM. An even
-                // completion is reachable only after the ten CPU prefix loads.
-                if (completed != 0 && (completed & 1u) == 0) {
-                    for (uint32_t byte = 0; byte < 64; ++byte) {
-                        l1_data[cluster][byte] = l2_data[cluster][byte];
-                        l1_data_valid[cluster][byte] = l2_valid[cluster][byte];
+            auto& packet_dma = dut.processing.packet_dma[cluster];
+            if (packet_dma.l2_line_valid_out()
+                && packet_dma.l2_line_ready_in()) {
+                const uint32_t address =
+                    (uint32_t)packet_dma.l2_line_addr_out();
+                if (!l2_previous_write_valid[cluster]
+                    || address != l2_previous_write_address[cluster] + 32u) {
+                    l2_packet_base[cluster] = address;
+                    std::fill(l2_data[cluster].begin(), l2_data[cluster].end(), 0);
+                    std::fill(l2_valid[cluster].begin(), l2_valid[cluster].end(),
+                        false);
+                }
+                l2_write_address[cluster] = address;
+                l2_previous_write_address[cluster] = address;
+                l2_previous_write_valid[cluster] = true;
+                for (uint32_t byte = 0; byte < 32; ++byte) {
+                    const uint32_t offset = address - l2_packet_base[cluster];
+                    if (packet_dma.l2_line_keep_out()[byte]
+                        && offset + byte < L2_VIEW_BYTES) {
+                        l2_data[cluster][offset + byte] =
+                            (uint8_t)packet_dma.l2_line_data_out().bits(
+                                byte * 8 + 7, byte * 8);
+                        l2_valid[cluster][offset + byte] = true;
                     }
-                    l1_data_address[cluster] = 36;
-                    l1_touch_completed[cluster] = true;
                 }
             }
-            if (l1_touch_completed[cluster] && completed != 0
-                && (completed & 1u) == 0) {
-                for (uint32_t byte = 0; byte < 64; ++byte) {
-                    l1_data[cluster][byte] = l2_data[cluster][byte];
-                    l1_data_valid[cluster][byte] = l2_valid[cluster][byte];
-                }
-            }
+            auto& dma = dut.processing.packet_dma[cluster].l2_dma;
             if (dma.awvalid_out() && dma.awready_in()) {
                 const uint32_t address = (uint32_t)dma.awaddr_out();
                 if (!l2_previous_write_valid[cluster]
@@ -456,7 +458,6 @@ public:
                     std::fill(l2_data[cluster].begin(), l2_data[cluster].end(), 0);
                     std::fill(l2_valid[cluster].begin(), l2_valid[cluster].end(),
                         false);
-                    l1_touch_completed[cluster] = false;
                 }
                 l2_write_address[cluster] = address;
                 l2_previous_write_address[cluster] = address;
@@ -537,6 +538,13 @@ public:
                 && dut.processing.rx_read_ready_in()[cluster]
                 && !rx_fifo[cluster].empty()) {
                 rx_fifo[cluster].pop_front();
+                const uint32_t handle = (uint32_t)dut.processing
+                    .rx_read_handle_out().bits(cluster * DUT::HANDLE_BITS
+                        + DUT::HANDLE_BITS - 1,
+                        cluster * DUT::HANDLE_BITS);
+                const uint32_t stream = handle & 7u;
+                if (!rx_ram[stream].empty()) rx_ram[stream].erase(
+                    rx_ram[stream].begin());
             }
             if (dut.system.l2_rx_valid_in()[cluster]
                 && dut.system.l2_rx_ready_out()[cluster]) {

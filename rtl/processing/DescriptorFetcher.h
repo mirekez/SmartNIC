@@ -35,6 +35,7 @@ public:
         REG_DESCRIPTOR_BASE = 0x020,
         REG_PACKET_ADDRESS = 0x100,
         REG_PACKET_META = 0x104,
+        REG_PACKET_BUFFER = 0x140,
         REG_DESTINATION_MAC_LO = 0x108,
         REG_DESTINATION_MAC_HI = 0x10c,
         REG_SOURCE_MAC_LO = 0x110,
@@ -52,6 +53,7 @@ public:
     };
 
     static constexpr uint32_t CONTROL_ENABLE = 1u << 0;
+    static constexpr uint32_t CONTROL_AUTO_L2 = 1u << 1;
     static constexpr uint32_t ACTION_NEXT = 1u << 0;
     static constexpr uint32_t ACTION_DMA_DISCARD = 1u << 1;
     static constexpr uint32_t ACTION_DMA_SYSTEM = 1u << 2;
@@ -59,6 +61,9 @@ public:
     static constexpr uint32_t STATUS_PREFETCH_ENABLED = 1u << 1;
     static constexpr uint32_t STATUS_PROTOCOL_ERROR = 1u << 2;
     static constexpr uint32_t STATUS_DMA_READY = 1u << 3;
+    static constexpr uint32_t STATUS_LOADED = 1u << 4;
+    static constexpr uint32_t PACKET_BUFFER_BASE = 0x00010000;
+    static constexpr uint32_t PACKET_BUFFER_STRIDE = 2048;
 
     _PORT(bool) descriptor_valid_in;
     _PORT(logic<DESCRIPTOR_WORD_BITS>) descriptor_data_in;
@@ -74,6 +79,9 @@ public:
     _PORT(u<HANDLE_BITS>) packet_command_handle_out;
     _PORT(u<14>) packet_command_length_out;
     _PORT(bool) packet_command_system_out;
+    _PORT(bool) packet_command_cache_out;
+    _PORT(uint32_t) packet_command_destination_out;
+    _PORT(u32) packet_cache_completed_in;
 
     Axi4If<AXI_ADDR_WIDTH, AXI_ID_WIDTH, AXI_DATA_WIDTH> mmio;
 
@@ -81,6 +89,9 @@ public:
     _PORT(u<COUNT_BITS>) descriptor_count_out;
     _PORT(bool) prefetch_enabled_out;
     _PORT(bool) protocol_error_out;
+    _PORT(bool) packet_loaded_out;
+    _PORT(bool) auto_l2_out;
+    _PORT(u<32>) retired_count_out;
 
 private:
     reg<logic<DESCRIPTOR_BITS>> queue_reg[DEPTH];
@@ -91,11 +102,18 @@ private:
     reg<u<3>> assembly_word_reg;
     reg<u1> assembly_active_reg;
     reg<u1> enabled_reg;
+    reg<u1> auto_l2_reg;
     reg<u1> protocol_error_reg;
     reg<u1> packet_command_valid_reg;
     reg<u<HANDLE_BITS>> packet_command_handle_reg;
     reg<u<14>> packet_command_length_reg;
     reg<u1> packet_command_system_reg;
+    reg<u1> packet_command_cache_reg;
+    reg<u32> packet_command_destination_reg;
+    reg<u<PTR_BITS>> load_head_reg;
+    reg<u32> cache_completed_seen_reg;
+    reg<u1> loaded_reg[DEPTH];
+    reg<u<32>> retired_count_reg;
 
     reg<u<AXI_ADDR_WIDTH>> write_addr_reg;
     reg<u<AXI_ID_WIDTH>> write_id_reg;
@@ -132,17 +150,31 @@ private:
         return value;
     }
 
+    uint32_t supplied_descriptor_bits32(logic<DESCRIPTOR_BITS> descriptor,
+        uint32_t bit_offset)
+    {
+        uint32_t bit;
+        uint32_t value = 0;
+        for (bit = 0; bit < 32; ++bit) {
+            if (descriptor[bit_offset + bit]) value |= 1u << bit;
+        }
+        return value;
+    }
+
     uint32_t register_value(uint32_t address)
     {
         uint32_t body_word;
         if (address == REG_CONTROL) {
-            return (bool)enabled_reg ? CONTROL_ENABLE : 0;
+            return ((bool)enabled_reg ? CONTROL_ENABLE : 0)
+                | ((bool)auto_l2_reg ? CONTROL_AUTO_L2 : 0);
         }
         if (address == REG_STATUS) {
             return ((uint32_t)count_reg != 0 ? STATUS_AVAILABLE : 0)
                 | ((bool)enabled_reg ? STATUS_PREFETCH_ENABLED : 0)
                 | ((bool)protocol_error_reg ? STATUS_PROTOCOL_ERROR : 0)
                 | (packet_command_ready_in() ? STATUS_DMA_READY : 0)
+                | (((uint32_t)count_reg != 0
+                    && loaded_reg[(uint32_t)head_reg]) ? STATUS_LOADED : 0)
                 | ((uint32_t)count_reg << 8);
         }
         if (address >= REG_DESCRIPTOR_BASE
@@ -153,6 +185,10 @@ private:
         }
         if (address == REG_PACKET_ADDRESS) return descriptor_bits32(0);
         if (address == REG_PACKET_META) return descriptor_bits32(32);
+        if (address == REG_PACKET_BUFFER) {
+            return PACKET_BUFFER_BASE
+                + (uint32_t)head_reg * PACKET_BUFFER_STRIDE;
+        }
         if (address == REG_DESTINATION_MAC_LO) return descriptor_bits32(256);
         if (address == REG_DESTINATION_MAC_HI) return descriptor_bits32(288) & 0xffffu;
         if (address == REG_SOURCE_MAC_LO) return descriptor_bits32(304);
@@ -211,10 +247,17 @@ public:
         descriptor_count_out = _ASSIGN_REG(count_reg);
         prefetch_enabled_out = _ASSIGN_REG(enabled_reg);
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
+        packet_loaded_out = _ASSIGN((uint32_t)count_reg != 0
+            && loaded_reg[(uint32_t)head_reg]);
+        auto_l2_out = _ASSIGN_REG(auto_l2_reg);
+        retired_count_out = _ASSIGN_REG(retired_count_reg);
         packet_command_valid_out = _ASSIGN_REG(packet_command_valid_reg);
         packet_command_handle_out = _ASSIGN_REG(packet_command_handle_reg);
         packet_command_length_out = _ASSIGN_REG(packet_command_length_reg);
         packet_command_system_out = _ASSIGN_REG(packet_command_system_reg);
+        packet_command_cache_out = _ASSIGN_REG(packet_command_cache_reg);
+        packet_command_destination_out =
+            _ASSIGN_REG(packet_command_destination_reg);
 
         mmio.awready_out = _ASSIGN(!write_addr_valid_reg
             && !write_response_valid_reg);
@@ -244,7 +287,9 @@ public:
         count = (uint32_t)count_reg;
         pop = false;
         input_fire = descriptor_valid_in() && descriptor_ready_out();
-        packet_command_valid_reg._next = false;
+        if (packet_command_valid_reg && packet_command_ready_in()) {
+            packet_command_valid_reg._next = false;
+        }
 
         if (mmio.awvalid_in() && mmio.awready_out()) {
             write_addr_reg._next = mmio.awaddr_in();
@@ -256,6 +301,7 @@ public:
             value = write_value();
             if (address == REG_CONTROL) {
                 enabled_reg._next = (value & CONTROL_ENABLE) != 0;
+                auto_l2_reg._next = (value & CONTROL_AUTO_L2) != 0;
             }
             else if (address == REG_ACTION && (value & ACTION_NEXT) != 0) {
                 if ((value & (ACTION_DMA_DISCARD | ACTION_DMA_SYSTEM)) == 0) {
@@ -268,6 +314,8 @@ public:
                     packet_command_length_reg._next = descriptor_bits32(32);
                     packet_command_system_reg._next =
                         (value & ACTION_DMA_SYSTEM) != 0;
+                    packet_command_cache_reg._next = false;
+                    packet_command_destination_reg._next = 0;
                     packet_command_valid_reg._next = true;
                     pop = true;
                 }
@@ -290,8 +338,10 @@ public:
         }
 
         if (pop) {
+            loaded_reg[(uint32_t)head_reg]._next = false;
             head_reg._next = ((uint32_t)head_reg + 1) & (DEPTH - 1);
             --count;
+            retired_count_reg._next = retired_count_reg + 1;
         }
 
         if (input_fire) {
@@ -327,6 +377,18 @@ public:
                     protocol_error_reg._next = true;
                 }
                 queue_reg[(uint32_t)tail_reg]._next = assembly;
+                loaded_reg[(uint32_t)tail_reg]._next = false;
+                if (auto_l2_reg) {
+                    packet_command_handle_reg._next =
+                        supplied_descriptor_bits32(assembly, 0);
+                    packet_command_length_reg._next =
+                        supplied_descriptor_bits32(assembly, 32);
+                    packet_command_system_reg._next = false;
+                    packet_command_cache_reg._next = true;
+                    packet_command_destination_reg._next = PACKET_BUFFER_BASE
+                        + (uint32_t)tail_reg * PACKET_BUFFER_STRIDE;
+                    packet_command_valid_reg._next = true;
+                }
                 tail_reg._next = ((uint32_t)tail_reg + 1) & (DEPTH - 1);
                 ++count;
                 assembly_active_reg._next = false;
@@ -335,6 +397,16 @@ public:
             else {
                 assembly_word_reg._next = descriptor_word_in() + 1;
             }
+        }
+        // Apply cache completion after enqueue initialization. A full-rate
+        // pipeline can enqueue the next descriptor in the same core clock in
+        // which the previous cache allocation completes; completion must win
+        // if both address the same circular slot.
+        if ((uint32_t)packet_cache_completed_in()
+            != (uint32_t)cache_completed_seen_reg) {
+            loaded_reg[(uint32_t)load_head_reg]._next = true;
+            load_head_reg._next = ((uint32_t)load_head_reg + 1) & (DEPTH - 1);
+            cache_completed_seen_reg._next = packet_cache_completed_in();
         }
         count_reg._next = count;
 
@@ -346,11 +418,17 @@ public:
             assembly_word_reg.clr();
             assembly_active_reg.clr();
             enabled_reg.clr();
+            auto_l2_reg.clr();
             protocol_error_reg.clr();
             packet_command_valid_reg.clr();
             packet_command_handle_reg.clr();
             packet_command_length_reg.clr();
             packet_command_system_reg.clr();
+            packet_command_cache_reg.clr();
+            packet_command_destination_reg.clr();
+            load_head_reg.clr();
+            cache_completed_seen_reg.clr();
+            retired_count_reg.clr();
             write_addr_reg.clr();
             write_id_reg.clr();
             write_addr_valid_reg.clr();
@@ -358,7 +436,10 @@ public:
             read_id_reg.clr();
             read_data_reg.clr();
             read_valid_reg.clr();
-            for (slot = 0; slot < DEPTH; ++slot) queue_reg[slot].clr();
+            for (slot = 0; slot < DEPTH; ++slot) {
+                queue_reg[slot].clr();
+                loaded_reg[slot].clr();
+            }
         }
     }
 
@@ -373,11 +454,17 @@ public:
         assembly_word_reg.strobe();
         assembly_active_reg.strobe();
         enabled_reg.strobe();
+        auto_l2_reg.strobe();
         protocol_error_reg.strobe();
         packet_command_valid_reg.strobe();
         packet_command_handle_reg.strobe();
         packet_command_length_reg.strobe();
         packet_command_system_reg.strobe();
+        packet_command_cache_reg.strobe();
+        packet_command_destination_reg.strobe();
+        load_head_reg.strobe();
+        cache_completed_seen_reg.strobe();
+        retired_count_reg.strobe();
         write_addr_reg.strobe();
         write_id_reg.strobe();
         write_addr_valid_reg.strobe();
@@ -385,6 +472,7 @@ public:
         read_id_reg.strobe();
         read_data_reg.strobe();
         read_valid_reg.strobe();
+        for (slot = 0; slot < DEPTH; ++slot) loaded_reg[slot].strobe();
     }
 };
 
