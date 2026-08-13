@@ -23,7 +23,7 @@ module AsyncFifoL2ToSystem #(
 
 
     // regs and combs
-    reg[1-1:0][WIDTH-1:0] data_mem[DEPTH];
+    reg[WIDTH-1:0] data_mem[DEPTH];
     reg[PTR_BITS-1:0] write_bin_reg;
     reg[PTR_BITS-1:0] write_gray_reg;
     reg[PTR_BITS-1:0] read_gray_write1_reg;

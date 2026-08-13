@@ -13,6 +13,12 @@
 #define MULTICORE
 #endif
 
+// The upstream Tribe defaults target a much larger system.  Load its feature
+// header once, then apply the Kintex-7 SmartNIC geometry before Tribe itself is
+// parsed.  Four jumbo frames plus cache working reserve fit in the 64 KiB L2;
+// the private L1s stay deliberately small. The packet-processing firmware
+// does not need atomics, interrupt routing, or address translation.
+#include "../../cpphdl/tribe_cpu/Config.h"
 #include "../../cpphdl/tribe_cpu/TribeTestModule.h"
 #include "../common/Axi4Master.h"
 
@@ -66,16 +72,7 @@ public:
 
 private:
     // Direct type references make the converter import the packages required
-    // by TribeTest's debug/performance child ports into CPU.sv.
-    TribeCoreDebug debug_core_type_dependency;
-    TribeMmuDebug debug_mmu_type_dependency;
-    TribeCacheDebug debug_cache_type_dependency;
-    TribeWritebackDebug debug_wb_type_dependency;
-    TribeCsrDebug debug_csr_type_dependency;
-    TribeIrqDebug debug_irq_type_dependency;
-    TribeRegsDebug debug_regs_type_dependency;
-    TribeBranchDebug debug_branch_type_dependency;
-    TribeDecodeDebug debug_decode_type_dependency;
+    // by TribeTest's remaining performance/debug child ports into CPU.sv.
     TribeSbiDebug debug_sbi_type_dependency;
     TribePerf debug_perf_type_dependency;
 

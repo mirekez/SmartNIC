@@ -13,7 +13,12 @@ using namespace cpphdl;
 #define TX_FIFO_FOR_EACH_BANK(M) M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
 
 template<size_t LANE_WIDTH = 64, size_t FIFO_WORDS = 2048>
+#ifdef SMARTNIC_TWO_CLOCKS
+class [[clang::annotate("CPPHDL_REPLACEMENT_FILE=TxFifoReplacement.sv;")]]
+TxFifo : public Module
+#else
 class TxFifo : public Module
+#endif
 {
 public:
     static constexpr size_t WINDOW_WORDS = 8;

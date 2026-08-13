@@ -24,9 +24,17 @@ option(SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS
     OFF)
 
 function(smartnic_add_capture_target sustained)
+    set(cdc_available TRUE)
+    foreach(required_header
+            "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common/Axi4Cdc.h"
+            "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/cache/L1MemCdc.h")
+        if(NOT EXISTS "${required_header}")
+            set(cdc_available FALSE)
+        endif()
+    endforeach()
     if(sustained)
         set(target capture_20g_throughput_test)
-        if(SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS)
+        if(SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS AND cdc_available)
             add_executable(${target} capture.cpp)
         else()
             add_executable(${target} EXCLUDE_FROM_ALL capture.cpp)
@@ -35,7 +43,11 @@ function(smartnic_add_capture_target sustained)
         set(sustained_value 1)
     else()
         set(target capture_20g_test)
-        add_executable(${target} capture.cpp)
+        if(cdc_available)
+            add_executable(${target} capture.cpp)
+        else()
+            add_executable(${target} EXCLUDE_FROM_ALL capture.cpp)
+        endif()
         set(suffix "")
         set(sustained_value 0)
     endif()
@@ -58,7 +70,8 @@ function(smartnic_add_capture_target sustained)
         target_link_libraries(${target} PRIVATE "${CAPTURE_STDCXXEXP_LIBRARY}")
     endif()
 
-    if(BUILD_TESTING AND (NOT sustained OR SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS))
+    if(BUILD_TESTING AND cdc_available
+            AND (NOT sustained OR SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS))
         add_test(NAME system_capture_20g${suffix}
             COMMAND "$<TARGET_FILE:${target}>" "${CAPTURE_ELF}")
         set_tests_properties(system_capture_20g${suffix} PROPERTIES

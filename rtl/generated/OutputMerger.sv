@@ -417,8 +417,8 @@ module OutputMerger #(
                         merge_result_comb[RESULT_SOP + output_byte] = word_sop && (byte_index == 'h0);
                         any_data=1;
                         last_byte=1;
-                        for (remaining=byte_index + 'h1;remaining < LANE_BYTES;remaining=remaining+1) begin
-                            if (word_keep[remaining]) begin
+                        for (remaining='h0;remaining < LANE_BYTES;remaining=remaining+1) begin
+                            if (remaining > byte_index && word_keep[remaining]) begin
                                 last_byte=0;
                             end
                         end

@@ -26,7 +26,12 @@ extern long _system_clock;
     M(1, 0) M(1, 1) M(1, 2) M(1, 3) M(1, 4) M(1, 5) M(1, 6) M(1, 7)
 
 template<size_t LANE_WIDTH = 64>
+#ifdef SMARTNIC_TWO_CLOCKS
+class [[clang::annotate("CPPHDL_REPLACEMENT_FILE=InputBalancerReplacement.sv;")]]
+InputBalancer : public Module
+#else
 class InputBalancer : public Module
+#endif
 {
 public:
     static constexpr size_t LANES = 2;
@@ -355,6 +360,15 @@ public:
         bool pack_boundary[LANES];
         bool appended[LANES];
         bool reserved[LANES];
+#define INPUT_BALANCER_DECLARE_WRITE(output_number, bank_number) \
+        bool write_valid_##output_number##_##bank_number; \
+        uint32_t write_row_##output_number##_##bank_number; \
+        logic<MAX_LANE_WIDTH> write_data_##output_number##_##bank_number; \
+        logic<MAX_LANE_BYTES> write_keep_##output_number##_##bank_number; \
+        logic<MAX_LANE_BYTES> write_sop_##output_number##_##bank_number; \
+        logic<MAX_LANE_BYTES> write_eop_##output_number##_##bank_number;
+        INPUT_BALANCER_FOR_EACH_BANK(INPUT_BALANCER_DECLARE_WRITE)
+#undef INPUT_BALANCER_DECLARE_WRITE
         bool in_frame;
         bool found;
         bool keep;
@@ -387,6 +401,16 @@ public:
             protocol_error_reg._next = 0;
             return;
         }
+
+#define INPUT_BALANCER_CLEAR_WRITE(output_number, bank_number) \
+        write_valid_##output_number##_##bank_number = false; \
+        write_row_##output_number##_##bank_number = 0; \
+        write_data_##output_number##_##bank_number = 0; \
+        write_keep_##output_number##_##bank_number = 0; \
+        write_sop_##output_number##_##bank_number = 0; \
+        write_eop_##output_number##_##bank_number = 0;
+        INPUT_BALANCER_FOR_EACH_BANK(INPUT_BALANCER_CLEAR_WRITE)
+#undef INPUT_BALANCER_CLEAR_WRITE
 
         for (output = 0; output < LANES; ++output) {
             head[output] = (uint32_t)head_reg[output];
@@ -473,15 +497,17 @@ public:
                         logical = (tail[dest] + pushes[dest]) & (FIFO_WORDS - 1);
                         bank = logical & (FIFO_BANKS - 1);
                         row = logical >> 3;
-#define INPUT_BALANCER_WRITE_DEST(output_number, bank_number) \
+#define INPUT_BALANCER_STAGE_DEST(output_number, bank_number) \
                         if (dest == output_number && bank == bank_number) { \
-                            data_##output_number##_##bank_number[row] = pack_data_reg[dest]._next; \
-                            keep_##output_number##_##bank_number[row] = pack_keep_reg[dest]._next; \
-                            sop_##output_number##_##bank_number[row] = pack_sop_reg[dest]._next; \
-                            eop_##output_number##_##bank_number[row] = pack_eop_reg[dest]._next; \
+                            write_valid_##output_number##_##bank_number = true; \
+                            write_row_##output_number##_##bank_number = row; \
+                            write_data_##output_number##_##bank_number = pack_data_reg[dest]._next; \
+                            write_keep_##output_number##_##bank_number = pack_keep_reg[dest]._next; \
+                            write_sop_##output_number##_##bank_number = pack_sop_reg[dest]._next; \
+                            write_eop_##output_number##_##bank_number = pack_eop_reg[dest]._next; \
                         }
-                        INPUT_BALANCER_FOR_EACH_BANK(INPUT_BALANCER_WRITE_DEST)
-#undef INPUT_BALANCER_WRITE_DEST
+                        INPUT_BALANCER_FOR_EACH_BANK(INPUT_BALANCER_STAGE_DEST)
+#undef INPUT_BALANCER_STAGE_DEST
                         ++pushes[dest];
                         pack_data_reg[dest]._next = 0;
                         pack_keep_reg[dest]._next = 0;
@@ -510,15 +536,17 @@ public:
                     logical = (tail[output] + pushes[output]) & (FIFO_WORDS - 1);
                     bank = logical & (FIFO_BANKS - 1);
                     row = logical >> 3;
-#define INPUT_BALANCER_WRITE_OUTPUT(output_number, bank_number) \
+#define INPUT_BALANCER_STAGE_OUTPUT(output_number, bank_number) \
                     if (output == output_number && bank == bank_number) { \
-                        data_##output_number##_##bank_number[row] = pack_data_reg[output]._next; \
-                        keep_##output_number##_##bank_number[row] = pack_keep_reg[output]._next; \
-                        sop_##output_number##_##bank_number[row] = pack_sop_reg[output]._next; \
-                        eop_##output_number##_##bank_number[row] = pack_eop_reg[output]._next; \
+                        write_valid_##output_number##_##bank_number = true; \
+                        write_row_##output_number##_##bank_number = row; \
+                        write_data_##output_number##_##bank_number = pack_data_reg[output]._next; \
+                        write_keep_##output_number##_##bank_number = pack_keep_reg[output]._next; \
+                        write_sop_##output_number##_##bank_number = pack_sop_reg[output]._next; \
+                        write_eop_##output_number##_##bank_number = pack_eop_reg[output]._next; \
                     }
-                    INPUT_BALANCER_FOR_EACH_BANK(INPUT_BALANCER_WRITE_OUTPUT)
-#undef INPUT_BALANCER_WRITE_OUTPUT
+                    INPUT_BALANCER_FOR_EACH_BANK(INPUT_BALANCER_STAGE_OUTPUT)
+#undef INPUT_BALANCER_STAGE_OUTPUT
                     ++pushes[output];
                     pack_data_reg[output]._next = 0;
                     pack_keep_reg[output]._next = 0;
@@ -548,6 +576,22 @@ public:
             pack_boundary_reg[output]._next = pack_boundary[output];
             pack_age_reg[output]._next = u<AGE_BITS>(pack_age[output]);
         }
+
+        // Funnel every physical bank through one procedural write site so
+        // Vivado can infer async-read distributed RAM instead of registers.
+#define INPUT_BALANCER_COMMIT_BANK(output_number, bank_number) \
+        if (write_valid_##output_number##_##bank_number) { \
+            data_##output_number##_##bank_number[write_row_##output_number##_##bank_number] = \
+                write_data_##output_number##_##bank_number; \
+            keep_##output_number##_##bank_number[write_row_##output_number##_##bank_number] = \
+                write_keep_##output_number##_##bank_number; \
+            sop_##output_number##_##bank_number[write_row_##output_number##_##bank_number] = \
+                write_sop_##output_number##_##bank_number; \
+            eop_##output_number##_##bank_number[write_row_##output_number##_##bank_number] = \
+                write_eop_##output_number##_##bank_number; \
+        }
+        INPUT_BALANCER_FOR_EACH_BANK(INPUT_BALANCER_COMMIT_BANK)
+#undef INPUT_BALANCER_COMMIT_BANK
 
         rr_reg._next = u<3>(rr);
         frame_dest_reg._next = u<3>(dest);

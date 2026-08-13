@@ -26,6 +26,27 @@ import L2AxiRouteComb_pkg::*;
 import L2AxiRequestNoveltyComb_pkg::*;
 import CacheResponse_pkg::*;
 
+module L2CacheRamBank #(
+    parameter WIDTH = 32,
+    parameter DEPTH = 512
+) (
+    input  wire                    clk,
+    input  wire[$clog2(DEPTH)-1:0] addr,
+    input  wire                    wr,
+    input  wire                    rd,
+    input  wire[WIDTH-1:0]         data_in,
+    output reg [WIDTH-1:0]         data_out
+);
+    (* ram_style = "block" *) reg [WIDTH-1:0] ram [0:DEPTH-1];
+
+    always_ff @(posedge clk) begin
+        if (wr)
+            ram[addr] <= data_in;
+        if (rd)
+            data_out <= ram[addr];
+    end
+endmodule
+
 
 module L2Cache #(
     parameter CACHE_SIZE = 'h4000
@@ -159,10 +180,14 @@ module L2Cache #(
 ;
     L2RequestGeometryComb L2CacheRequest___request_geometry_comb;
 ;
-    reg[4-1:0][8-1:0] L2CacheState___data_ram[(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))*DATA_BANKS];
-    reg[(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))-1:0][8-1:0] L2CacheState___tag_ram[(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))*WAYS];
-    reg[DATA_BANKS-1:0][32-1:0] L2CacheState___data_q_reg;
-    reg[DATA_BANKS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] L2CacheState___tag_q_reg;
+    wire[DATA_BANKS-1:0][32-1:0] L2CacheState___data_q_reg;
+    wire[DATA_BANKS-1:0][TAG_RAM_BITS-1:0] L2CacheState___tag_q_reg;
+    logic[SET_BITS-1:0] l2_bank_addr;
+    logic l2_bank_read;
+    logic data_bank_write[DATA_BANKS];
+    logic[31:0] data_bank_data[DATA_BANKS];
+    logic tag_bank_wr[WAYS];
+    logic[TAG_RAM_BITS-1:0] tag_bank_data;
     reg[5-1:0] L2CacheState___state_reg;
     CacheRequest L2CacheState___req_reg;
     reg[3-1:0] L2CacheState___cpu_rr_reg;
@@ -183,8 +208,6 @@ module L2Cache #(
     // members
 
     // tmp variables
-    logic[DATA_BANKS-1:0][32-1:0] L2CacheState___data_q_reg_tmp;
-    logic[DATA_BANKS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] L2CacheState___tag_q_reg_tmp;
     logic[5-1:0] L2CacheState___state_reg_tmp;
     CacheRequest L2CacheState___req_reg_tmp;
     logic[3-1:0] L2CacheState___cpu_rr_reg_tmp;
@@ -197,6 +220,114 @@ module L2Cache #(
     logic[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___evict_beat_reg_tmp;
     logic[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] L2CacheState___evict_tag_reg_tmp;
     logic[CACHE_LINE_SIZE*'h8-1:0] L2CacheState___evict_line_reg_tmp;
+
+    genvar l2_bank;
+    generate
+        for (l2_bank = 0; l2_bank < DATA_BANKS; l2_bank = l2_bank + 1) begin : gen_l2_data_bank
+            L2CacheRamBank #(.WIDTH(32), .DEPTH(SETS)) data_bank (
+                .clk(l2_clock), .addr(l2_bank_addr),
+                .wr(data_bank_write[l2_bank]), .rd(l2_bank_read),
+                .data_in(data_bank_data[l2_bank]),
+                .data_out(L2CacheState___data_q_reg[l2_bank])
+            );
+        end
+        for (l2_bank = 0; l2_bank < WAYS; l2_bank = l2_bank + 1) begin : gen_l2_tag_bank
+            L2CacheRamBank #(.WIDTH(TAG_RAM_BITS), .DEPTH(SETS)) tag_bank (
+                .clk(l2_clock),
+                .addr((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_INIT) ?
+                    L2CacheState___init_set_reg : l2_bank_addr),
+                .wr(tag_bank_wr[l2_bank]), .rd(l2_bank_read),
+                .data_in(tag_bank_data),
+                .data_out(L2CacheState___tag_q_reg[l2_bank])
+            );
+        end
+    endgenerate
+
+    // RAM controls are combinational inputs to the bank modules.  Keeping them
+    // outside the controller's clocked task gives every bank a conventional
+    // synchronous single-port RAM template at the l2_clock edge.
+    always_comb begin : l2_ram_controls
+        integer bank;
+        integer way_index;
+        logic[31:0] address;
+        logic[31:0] write_data;
+        logic write_enable;
+
+        address = (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IDLE) ?
+            L2CacheRequest___active_request_comb.set :
+            L2CacheRequest___request_geometry_comb.set;
+        l2_bank_addr = address[SET_BITS-1:0];
+        l2_bank_read = (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_READ) ||
+            (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_WRITE_LOOKUP);
+
+        for (bank = 0; bank < DATA_BANKS; bank = bank + 1) begin
+            write_enable =
+                (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_AXI_R &&
+                    L2CacheMemory___axi_out_selected_resp_comb.r.valid &&
+                    L2CacheMemory___axi_out_driver_comb.r.ready &&
+                    L2CacheState___fill_way_reg == bank / LINE_WORDS &&
+                    bank % LINE_WORDS >= L2CacheState___fill_beat_reg * PORT_WORDS &&
+                    bank % LINE_WORDS < (L2CacheState___fill_beat_reg + 1) * PORT_WORDS) ||
+                (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP &&
+                    L2CacheState___req_reg.from_slave && L2CacheState___req_reg.write &&
+                    L2CacheTagData___hit_lookup_comb.hit &&
+                    L2CacheTagData___hit_lookup_comb.way == bank / LINE_WORDS &&
+                    bank % LINE_WORDS >= L2CacheRequest___request_geometry_comb.beat * PORT_WORDS &&
+                    bank % LINE_WORDS < (L2CacheRequest___request_geometry_comb.beat + 1) * PORT_WORDS &&
+                    L2CacheState___req_reg.write_word_mask[(bank % LINE_WORDS) % PORT_WORDS]) ||
+                ((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP ||
+                    L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_WRITE_LOOKUP) &&
+                    L2CacheState___req_reg.write && L2CacheTagData___hit_lookup_comb.hit &&
+                    !L2CacheState___req_reg.from_slave &&
+                    L2CacheTagData___hit_lookup_comb.way == bank / LINE_WORDS &&
+                    (L2CacheRequest___request_geometry_comb.word == bank % LINE_WORDS ||
+                     ((L2CacheState___req_reg.addr & 3) != 0 &&
+                      L2CacheRequest___request_geometry_comb.word + 1 == bank % LINE_WORDS)));
+
+            write_data =
+                (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP ||
+                 L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_WRITE_LOOKUP) ?
+                    (L2CacheState___req_reg.from_slave ?
+                        (L2CacheState___req_reg.write_beat >> ((bank % PORT_WORDS) * 32)) :
+                        (((L2CacheState___req_reg.addr & 3) != 0 &&
+                          L2CacheRequest___request_geometry_comb.word + 1 == bank % LINE_WORDS) ?
+                            L2CacheTagData___hit_write_pair_comb.next_word :
+                            L2CacheTagData___hit_write_pair_comb.word)) :
+                    ((L2CacheState___req_reg.from_slave && L2CacheState___req_reg.write &&
+                      L2CacheRequest___request_geometry_comb.beat == L2CacheState___fill_beat_reg &&
+                      bank % LINE_WORDS >= L2CacheState___fill_beat_reg * PORT_WORDS &&
+                      bank % LINE_WORDS < (L2CacheState___fill_beat_reg + 1) * PORT_WORDS) ?
+                        (L2CacheState___req_reg.write_word_mask[(bank % LINE_WORDS) % PORT_WORDS] ?
+                            (L2CacheState___req_reg.write_beat >> ((bank % PORT_WORDS) * 32)) :
+                            (L2CacheMemory___axi_out_selected_resp_comb.r.data >>
+                                (((bank % LINE_WORDS) % PORT_WORDS) * 32))) :
+                     (L2CacheState___req_reg.write &&
+                      L2CacheRequest___request_geometry_comb.word == bank % LINE_WORDS) ?
+                        L2CacheTagData___fill_write_pair_comb.word :
+                     (L2CacheState___req_reg.write && (L2CacheState___req_reg.addr & 3) != 0 &&
+                      L2CacheRequest___request_geometry_comb.word + 1 == bank % LINE_WORDS) ?
+                        L2CacheTagData___fill_write_pair_comb.next_word :
+                        (L2CacheMemory___axi_out_selected_resp_comb.r.data >>
+                            (((bank % LINE_WORDS) % PORT_WORDS) * 32)));
+            data_bank_write[bank] = write_enable;
+            data_bank_data[bank] = write_data;
+        end
+
+        tag_bank_data = L2CacheTagData___tag_write_data_comb;
+        for (way_index = 0; way_index < WAYS; way_index = way_index + 1) begin
+            tag_bank_wr[way_index] =
+                (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_INIT) ||
+                (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_AXI_R &&
+                    L2CacheMemory___axi_out_selected_resp_comb.r.valid &&
+                    L2CacheMemory___axi_out_driver_comb.r.ready &&
+                    L2CacheState___fill_beat_reg == LINE_BEATS - 1 &&
+                    L2CacheState___fill_way_reg == way_index) ||
+                ((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP ||
+                  L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_WRITE_LOOKUP) &&
+                    L2CacheState___req_reg.write && L2CacheTagData___hit_lookup_comb.hit &&
+                    L2CacheTagData___hit_lookup_comb.way == way_index);
+        end
+    end
 
 
     always_comb begin : L2CacheRequest___slave_request_novelty_comb_func  // L2CacheRequest___slave_request_novelty_comb_func
@@ -417,9 +548,11 @@ module L2Cache #(
         word='h0;
         beat_word='h0;
         L2CacheMemory___evict_line_comb = 'h0;
-        for (word=unsigned'(32'(L2CacheState___evict_beat_reg))*PORT_WORDS;(word < (((unsigned'(32'(L2CacheState___evict_beat_reg)) + 'h1))*PORT_WORDS)) && (word < LINE_WORDS);word=word+1) begin
-            beat_word=word - (unsigned'(32'(L2CacheState___evict_beat_reg))*PORT_WORDS);
-            L2CacheMemory___evict_line_comb[beat_word*'h20 +:32] = L2CacheState___evict_line_reg[word*'h20 +:32];
+        for (beat_word='h0;beat_word < PORT_WORDS;beat_word=beat_word+1) begin
+            word=(unsigned'(32'(L2CacheState___evict_beat_reg))*PORT_WORDS) + beat_word;
+            if (word < LINE_WORDS) begin
+                L2CacheMemory___evict_line_comb[beat_word*'h20 +:32] = L2CacheState___evict_line_reg[word*'h20 +:32];
+            end
         end
     end
 
@@ -759,8 +892,6 @@ module L2Cache #(
         logic[31:0] i;
         logic[31:0] way;
         logic[31:0] bank_addr;
-        logic[31:0] data_ram_index;
-        logic[31:0] tag_ram_index;
         logic bank_read;
         logic bank_write;
         logic[31:0] bank_data;
@@ -807,27 +938,10 @@ module L2Cache #(
         for (i='h0;i < DATA_BANKS;i=i+1) begin
             bank_write=((((((((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_AXI_R) && L2CacheMemory___axi_out_selected_resp_comb.r.valid) && L2CacheMemory___axi_out_driver_comb.r.ready) && (L2CacheState___fill_way_reg == ((i/LINE_WORDS)))) && (i % LINE_WORDS)>=(unsigned'(32'(L2CacheState___fill_beat_reg))*PORT_WORDS)) && (((i % LINE_WORDS)) < (((unsigned'(32'(L2CacheState___fill_beat_reg)) + 'h1))*PORT_WORDS)))) || (((((((((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP) && L2CacheState___req_reg.from_slave) && L2CacheState___req_reg.write) && hit_lookup.hit) && (hit_lookup.way == ((i/LINE_WORDS)))) && (i % LINE_WORDS)>=(unsigned'(32'(request_geometry.beat))*PORT_WORDS)) && (((i % LINE_WORDS)) < (((unsigned'(32'(request_geometry.beat)) + 'h1))*PORT_WORDS))) && L2CacheState___req_reg.write_word_mask[(((i % LINE_WORDS)) % PORT_WORDS)]))) || (((((((((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_WRITE_LOOKUP))) && L2CacheState___req_reg.write) && hit_lookup.hit) && !L2CacheState___req_reg.from_slave) && (hit_lookup.way == ((i/LINE_WORDS)))) && (((request_geometry.word == ((i % LINE_WORDS))) || (((((unsigned'(32'(L2CacheState___req_reg.addr)) & 'h3)) != 'h0) && ((unsigned'(32'(request_geometry.word)) + 'h1) == ((i % LINE_WORDS)))))))));
             bank_data=(((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_WRITE_LOOKUP))) ? (((L2CacheState___req_reg.from_slave) ? (unsigned'(32'((L2CacheState___req_reg.write_beat >> ((((i % PORT_WORDS))*'h20)))))) : (((((((unsigned'(32'(L2CacheState___req_reg.addr)) & 'h3)) != 'h0) && ((unsigned'(32'(request_geometry.word)) + 'h1) == ((i % LINE_WORDS))))) ? (unsigned'(32'(hit_write_pair.next_word))) : (unsigned'(32'(hit_write_pair.word))))))) : (((((((L2CacheState___req_reg.from_slave && L2CacheState___req_reg.write) && (request_geometry.beat == L2CacheState___fill_beat_reg)) && (i % LINE_WORDS)>=(unsigned'(32'(L2CacheState___fill_beat_reg))*PORT_WORDS)) && (((i % LINE_WORDS)) < (((unsigned'(32'(L2CacheState___fill_beat_reg)) + 'h1))*PORT_WORDS)))) ? (((L2CacheState___req_reg.write_word_mask[((i % LINE_WORDS)) % PORT_WORDS]) ? (unsigned'(32'((L2CacheState___req_reg.write_beat >> ((((i % PORT_WORDS))*'h20)))))) : (unsigned'(32'((L2CacheMemory___axi_out_selected_resp_comb.r.data >> ((((((i % LINE_WORDS)) % PORT_WORDS))*'h20)))))))) : (((L2CacheState___req_reg.write && (request_geometry.word == ((i % LINE_WORDS))))) ? (unsigned'(32'(fill_write_pair.word))) : ((((L2CacheState___req_reg.write && (((unsigned'(32'(L2CacheState___req_reg.addr)) & 'h3)) != 'h0)) && ((unsigned'(32'(request_geometry.word)) + 'h1) == ((i % LINE_WORDS))))) ? (unsigned'(32'(fill_write_pair.next_word))) : (unsigned'(32'((L2CacheMemory___axi_out_selected_resp_comb.r.data >> ((((((i % LINE_WORDS)) % PORT_WORDS))*'h20))))))))));
-            if (bank_write) begin
-                data_ram_index=(unsigned'(32'(bank_addr))*DATA_BANKS) + i;
-                L2CacheState___data_ram[data_ram_index] <= bank_data;
-            end
-            if (bank_read) begin
-                data_ram_index=(unsigned'(32'(bank_addr))*DATA_BANKS) + i;
-                L2CacheState___data_q_reg_tmp[i] = L2CacheState___data_ram[data_ram_index];
-            end
         end
-        tag_bank_data = L2CacheTagData___tag_write_data_comb;
         for (way='h0;way < WAYS;way=way+1) begin
             tag_bank_read=bank_read;
             tag_bank_write=(((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_INIT)) || ((((((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_AXI_R) && L2CacheMemory___axi_out_selected_resp_comb.r.valid) && L2CacheMemory___axi_out_driver_comb.r.ready) && (L2CacheState___fill_beat_reg == (LINE_BEATS - 'h1))) && (L2CacheState___fill_way_reg == way)))) || (((((((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_WRITE_LOOKUP))) && L2CacheState___req_reg.write) && hit_lookup.hit) && (hit_lookup.way == way)));
-            if (tag_bank_write) begin
-                tag_ram_index=(unsigned'(32'(((((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_INIT))) ? (L2CacheState___init_set_reg) : (bank_addr))))*WAYS) + way;
-                L2CacheState___tag_ram[tag_ram_index] <= tag_bank_data;
-            end
-            if (tag_bank_read) begin
-                tag_ram_index=(unsigned'(32'(((((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_INIT))) ? (L2CacheState___init_set_reg) : (bank_addr))))*WAYS) + way;
-                L2CacheState___tag_q_reg_tmp[way] = L2CacheState___tag_ram[tag_ram_index];
-            end
         end
         for (i='h0;i < MEM_PORTS;i=i+1) begin
             if (!axi_in__awvalid_in[i]) begin
@@ -1252,14 +1366,12 @@ module L2Cache #(
                 L2CacheState___slave_ar_seen_reg[i].addr <= 'h0;
                 L2CacheState___slave_ar_seen_reg[i].id <= 'h0;
             end
-            L2CacheState___data_q_reg_tmp = '0;
-            L2CacheState___tag_q_reg_tmp = '0;
             L2CacheState___state_reg_tmp = L2CacheFsmState_pkg::ST_INIT;
         end
     end
     endtask
 
-    task _work_clk (input logic reset);
+    task _work_clk (input logic unused);
     begin: _work_clk
     end
     endtask
@@ -1271,8 +1383,6 @@ module L2Cache #(
     end
 
     always_ff @(posedge l2_clock) begin
-        L2CacheState___data_q_reg_tmp = L2CacheState___data_q_reg;
-        L2CacheState___tag_q_reg_tmp = L2CacheState___tag_q_reg;
         L2CacheState___state_reg_tmp = L2CacheState___state_reg;
         L2CacheState___req_reg_tmp = L2CacheState___req_reg;
         L2CacheState___cpu_rr_reg_tmp = L2CacheState___cpu_rr_reg;
@@ -1288,8 +1398,6 @@ module L2Cache #(
 
         _work_l2_clock(reset);
 
-        L2CacheState___data_q_reg <= L2CacheState___data_q_reg_tmp;
-        L2CacheState___tag_q_reg <= L2CacheState___tag_q_reg_tmp;
         L2CacheState___state_reg <= L2CacheState___state_reg_tmp;
         L2CacheState___req_reg <= L2CacheState___req_reg_tmp;
         L2CacheState___cpu_rr_reg <= L2CacheState___cpu_rr_reg_tmp;

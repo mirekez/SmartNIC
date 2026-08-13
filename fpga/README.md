@@ -1,4 +1,4 @@
-# KlusterLab 1.0 Kintex-7 target
+# KlusterLab r2.0 Kintex-7 target
 
 Target part: `xc7k160tffg676-3` (`XC7K160T-3FFG676E`).
 
@@ -18,8 +18,41 @@ PCIe uses bank-116 channel 3 and its dedicated differential reference clock.
 | PCIe RX0 N/P | B5 / B6 | MGTXRXN/P3_116 |
 | PCIe refclk N/P | D5 / D6 | MGTREFCLK0N/P_116 |
 
-Use the AMD 10G/25G Ethernet Subsystem or an equivalent synthesizable
-10GBASE-R PCS/PMA wrapper for the two serial lanes. Configure the 7-series
-Integrated Block for PCI Express for Gen2 x1 with a 64-bit, 125 MHz user-side
-bridge. `klusterlab_pin_plan.xdc` records the exact package bindings; adapt its
-port names to the chosen vendor-IP wrapper.
+Vivado 2024.2 cannot use the newer Ethernet 1/10/25G subsystem on Kintex-7, so
+the project creates two AXI 10G Ethernet v3.1 instances. Lane 0 contains the
+shared bank-115 QPLL/reset/clock logic and lane 1 consumes it. Both expose the
+64-bit, 156.25 MHz AXI-stream MAC interface used by `SmartNIC`.
+
+Run `./build.sh` (or set `VIVADO_ROOT` first) to recreate the project and build
+`open_switch.bit`. See `CLOCKING.md` for the clock tree and optional Si5324
+specification. `klusterlab_r2.xdc` is the active constraint file;
+`klusterlab_pin_plan.xdc` is retained only as the original transceiver draft.
+
+The FPGA profile uses 2 KiB instruction and 1 KiB data L1 caches per core and
+a shared 64 KiB, four-way L2 (four 9 KiB jumbo frames plus 28 KiB reserve).
+RV32 atomics, interrupt routing, and Sv32 MMU/TLB logic are disabled. To keep
+Vivado synthesis practical on memory-limited build hosts, the bounded parser
+captures 192 header bytes and accepts up to four IPv6 extension headers / 96
+extension bytes; this does not limit packet or jumbo-frame payload length.
+The FPGA files substitute `rtl/PacketParser_fpga.sv` at the same module
+boundary because Vivado 2024.2 exhausts a 10 GiB host while elaborating the
+CppHDL parser's unrolled functions. The compact implementation queues the
+first 64 bytes and preserves RAW/framing signals; parsed metadata is
+provisional until that parser is rewritten as a pipelined datapath.
+
+Current hardware scope is 2x10G plus Processing. The board's PCIe pins and
+clock are documented below, but the PCIe endpoint/System AXI bridge and the
+DDR3 MIG are not instantiated by this top level yet; consequently the CPU's
+external-memory AXI port is held in backpressure. Do not treat this bitstream
+as bootable firmware until those two board subsystems are integrated.
+
+## Validation status
+
+The normal CMake build completes, including CppHDL generation and Verilator
+lint of the two-clock SmartNIC. Vivado 2024.2 isolated synthesis confirms that
+the shared L2 maps to 36 RAMB18 primitives and that the banked NIC buffering
+maps to block RAM. Full-project synthesis repeatedly passed RTL elaboration
+and netlist optimization, then the Linux OOM handler killed Vivado while it was
+initializing the timing engine on this 10 GiB VM with exhausted swap. Therefore
+`open_switch.bit` is not committed; rerun `./build.sh` on a host with more
+memory to complete implementation and bitstream generation.

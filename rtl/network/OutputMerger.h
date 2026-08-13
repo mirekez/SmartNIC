@@ -377,9 +377,13 @@ private:
                         any_data = true;
 
                         last_byte = true;
-                        for (remaining = byte_index + 1;
+                        // Keep the loop's initialization and trip count static
+                        // so Vivado can unroll it.  A data-dependent initial
+                        // value makes the synthesizer's convergence check fail.
+                        for (remaining = 0;
                              remaining < LANE_BYTES; ++remaining) {
-                            if ((bool)word_keep[remaining]) {
+                            if (remaining > byte_index
+                                && (bool)word_keep[remaining]) {
                                 last_byte = false;
                             }
                         }
