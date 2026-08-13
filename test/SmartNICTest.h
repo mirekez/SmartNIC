@@ -16,7 +16,8 @@ using namespace cpphdl;
 
 template<size_t LANE_WIDTH = NET_LANE_WIDTH, size_t CPU_COUNT = CPUS_USED,
     size_t TRAFFIC_DEPTH = 1024, size_t CPU_RAM_WORDS = 4096,
-    size_t HOST_MEMORY_BYTES = 4 * 1024 * 1024>
+    size_t HOST_MEMORY_BYTES = 4 * 1024 * 1024,
+    size_t RX_RAM_DEPTH = RX_RAM_BANK_DEPTH>
 class SmartNICTest : public Module
 {
 public:
@@ -25,13 +26,13 @@ public:
     static constexpr size_t L2_BYTES = 32;
     static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t NET_BYTES = NET_BITS / 8;
-    static constexpr size_t HANDLE_BITS = clog2(RX_RAM_BANK_DEPTH * 2) + 3;
+    static constexpr size_t HANDLE_BITS = clog2(RX_RAM_DEPTH * 2) + 3;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
 
     static_assert(CPU_COUNT >= 1 && CPU_COUNT <= STREAMS,
         "capture harness supports one through eight Tribe clusters");
 
-    SmartNIC<LANE_WIDTH, RX_RAM_BANK_DEPTH, 64, 1024> smartnic;
+    SmartNIC<LANE_WIDTH, RX_RAM_DEPTH, 64, 1024> smartnic;
     Processing<CPU_COUNT, HANDLE_BITS, FRAME_LENGTH_BITS> processing;
     System<8, 256> system;
     TrafficGenerator<LANE_WIDTH, TRAFFIC_DEPTH> traffic;

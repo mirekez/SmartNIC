@@ -50,6 +50,9 @@ public:
     _PORT(logic<READ_PORTS * LANE_WIDTH>) read_data_out;
     _PORT(logic<READ_PORTS>) read_valid_out;
     _PORT(logic<READ_PORTS>) read_ready_in;
+    _PORT(logic<READ_PORTS>) release_valid_in;
+    _PORT(logic<READ_PORTS * HANDLE_BITS>) release_handle_in;
+    _PORT(logic<READ_PORTS * FRAME_LENGTH_BITS>) release_length_in;
 
     // Eight CPU/DMA transmit streams.  Every packet begins at byte zero of a
     // TxFifo word and becomes visible to the merger only when EOP is written.
@@ -263,6 +266,9 @@ public:
         rx_ram.read_handle_in = read_handle_in;
         rx_ram.read_word_in = read_word_in;
         rx_ram.read_ready_in = read_ready_in;
+        rx_ram.release_valid_in = release_valid_in;
+        rx_ram.release_handle_in = release_handle_in;
+        rx_ram.release_length_in = release_length_in;
         rx_ram.__inst_name = __inst_name + "/rx_ram";
         rx_ram._assign();
 

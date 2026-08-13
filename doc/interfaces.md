@@ -76,7 +76,8 @@ link_up_in
 
 ### Processing-side network boundary
 
-- Clock: `L2_CLK_HZ = 312500000 * NET_LANE_WIDTH / 256`.
+- Clock: 312.5 MHz for the 400G target. The 800G parameter remains 390.625 MHz
+  and is outside the current sustained-throughput claim.
 - RX descriptor stream: 256-bit `valid/ready`, five words, word index, SOP/EOP.
 - RxRAM read command per port: packet handle plus exact byte length.
 - RxRAM response per port: 256-bit data, byte keep, SOP/EOP, `valid/ready`.

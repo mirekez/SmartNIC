@@ -35,8 +35,9 @@
 2. Processing level
    - Contains `N` Tribe CPU clusters.
    - Each cluster contains four RISC-V cores and one shared L2 cache.
-   - L2 data width is 256 bits; its clock is rate-matched to the configured
-     network lane (195.3125 MHz for 400G, 390.625 MHz for 800G).
+   - L2 data width is 256 bits; the 400G target uses 312.5 MHz L2 and 1.25 GHz
+     CPU cores to retain command and packet-boundary margin.
+   - 800G remains parameterized but is outside the current sustained proof.
    - Exposes descriptor-prefetch and packet-DMA MMIO devices to every core.
    - Moves selected packet data between packet RAM, L2 caches and system level.
 
@@ -115,9 +116,8 @@ TX paths:
 
 - 400G port: `8 * 160 * 312.5 MHz = 400 Gb/s` raw datapath capacity.
 - 800G port: `8 * 320 * 312.5 MHz = 800 Gb/s` raw datapath capacity.
-- One processing lane is exactly rate-matched: 50 Gb/s in 400G builds and
-  100 Gb/s in 800G builds.
-- Exact-rate CDC has no sustained bandwidth margin; buffering covers phase and bounded stalls only.
+- One 400G processing lane is 256 bits x 312.5 MHz = 80 Gb/s gross; eight lanes
+  provide 640 Gb/s gross aggregate capacity.
 - Network ingress and egress receive deadline-reserved packet-RAM bandwidth.
 - The current functional capture path traverses L2; a direct packet-RAM/host
   path is required before claiming sustained host line rate.

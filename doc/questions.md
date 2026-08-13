@@ -4,8 +4,9 @@
 
 - Both 400G (`8 x 160`) and 800G (`8 x 320`) variants are built and tested.
 - Current integration uses `N=8` Tribe clusters, four cores per cluster.
-- Network clock is 312.5 MHz; L2 is exact-rate at 195.3125/390.625 MHz;
-  primary CPU clock is four times L2; System test clock is 256 MHz.
+- Network and L2 clocks are 312.5 MHz for the 400G target; primary CPU clock is
+  four times L2 (1.25 GHz); System test clock is 256 MHz. The 800G L2 parameter
+  remains 390.625 MHz but has no sustained-throughput claim.
 - Processing exports one DDR AXI master per cluster.
 - System currently uses eight 256-bit RX/TX queue pairs and a 512-bit Avalon
   host interface at 256 MHz; AXI4 is compile-time selectable.

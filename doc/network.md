@@ -6,9 +6,9 @@
 - PCS, FEC and SerDes are outside this level.
 - Run the external datapath at 312.5 MHz.
 - Keep RX-RAM storage and native `160/320`-bit ports in `net_clk`.
-- Rate-match each 256-bit processing lane to its network lane:
-  - 400G: 195.3125 MHz (`312.5 * 160 / 256`).
-  - 800G: 390.625 MHz (`312.5 * 320 / 256`).
+- Processing clocks:
+  - 400G target: 312.5 MHz, retaining packet/command margin.
+  - 800G parameter: 390.625 MHz, without a current sustained claim.
 - Never depend on CPUs responding before an Ethernet deadline.
 
 ### PCS adapter and integration verification
@@ -163,7 +163,7 @@ The IP address tables are consumed by filtering, parsing and offload logic. They
 ## CDC and width conversion
 
 ```text
-net_clk 312.5 MHz               l2_clk 195.3125/390.625 MHz
+net_clk 312.5 MHz               l2_clk 312.5 MHz (400G target)
 160/320b stream -> pack -> async FIFO -> unpack -> 256b stream
 256b stream     <- pack <- async FIFO <- unpack <- 160/320b stream
 ```

@@ -10,22 +10,30 @@
 #define HOST_AXI4 0
 #endif
 
+#ifndef DEMO_VIDEO
+#define DEMO_VIDEO 0
+#endif
+
 // PCIe-facing System datapath.  Processing queues remain 256-bit and the
 // System MasterDMA packs/unpacks pairs of queue beats at this boundary.
 #define HOST_DATA_WIDTH 512
 #define HOST_ADDR_WIDTH 64
 #define SYSTEM_CLK_HZ 256000000ULL
 
-// Datapath clocks.  The L2 clock is rate-matched to one balanced Ethernet
-// stream so a 256-bit CPU/DMA lane has exactly the same raw byte rate.
+// Datapath clocks. In 400G mode, 312.5 MHz gives eight 256-bit PacketDMA lanes
+// 800 Gb/s gross capacity and 1.25 GHz CPU cores. This leaves both DMA boundary
+// cycles and enough instructions for the descriptor/doorbell loop. Exact rate
+// matching (195.3125 MHz) provides neither margin. The 800G configuration is
+// not part of the current throughput target and retains its prior rate match.
 #define NET_CLK_HZ 312500000ULL
 #define L2_DATA_WIDTH 256
 #if ENABLE_800G
 #define NET_LANE_WIDTH 320
+#define L2_CLK_HZ ((NET_CLK_HZ * NET_LANE_WIDTH) / L2_DATA_WIDTH)
 #else
 #define NET_LANE_WIDTH 160
+#define L2_CLK_HZ 312500000ULL
 #endif
-#define L2_CLK_HZ ((NET_CLK_HZ * NET_LANE_WIDTH) / L2_DATA_WIDTH)
 
 // PacketParser bounds.  These are deliberately finite: the parser examines a
 // fixed header window and reports PACKET_PARSER_FLAG_LIMIT instead of allowing

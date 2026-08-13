@@ -8,9 +8,9 @@
   - Private L1 caches.
   - One shared L2 cache.
   - 256-bit L2 memory/DMA datapath.
-- The L2 boundary clock is derived from the selected network lane rate:
-  - 195.3125 MHz for 160-bit network lanes.
-  - 390.625 MHz for 320-bit network lanes.
+- The 400G target uses a 312.5 MHz L2 boundary and 1.25 GHz CPU cores.
+- The 800G L2 parameter remains 390.625 MHz but is outside the current
+  sustained-throughput claim.
 - `cpu_clk` is currently four times `l2_clk`. Cores, MMIO devices, PacketDMA
   control and the exported primary DDR AXI interface use `cpu_clk`.
 - Each cluster has independent boot, reset, fault and performance state.
@@ -150,7 +150,7 @@ devices --->|                         <-> DMA slave port  |
 
 ### Requirements
 
-- One 256-bit lane peaks at 50 Gb/s in a 400G build or 100 Gb/s in an 800G build.
+- One 256-bit lane peaks at 80 Gb/s in the current 400G build.
 - A single lane is insufficient for either 400G or 800G full-payload movement.
 - Eight ideal lanes equal the port rate; at 85% sustained efficiency, either
   port width requires ten active 256-bit lanes for full-payload movement.

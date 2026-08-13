@@ -81,6 +81,15 @@ private:
 
 public:
 
+#if DEMO_VIDEO
+    // Native-simulation observer used only by demo/Visualizer.h.  Keep the
+    // visualization dependency out of production RTL and normal test builds.
+    TribeCacheDebug demo_cache_debug(uint32_t core)
+    {
+        return tribe.cores[core].debug_cache_out();
+    }
+#endif
+
     void _assign()
     {
         uint32_t core;

@@ -325,7 +325,7 @@ public:
             descriptor_fetcher[index].descriptor_eop_in = _ASSIGN_INDEXED((index),
                 descriptor_cdc[index].read_data_out()[260]);
             descriptor_fetcher[index].packet_command_ready_in =
-                packet_dma[index].command_ready_out;
+                packet_dma[index].descriptor_command_ready_out;
             packet_dma[index].descriptor_command_valid_in =
                 descriptor_fetcher[index].packet_command_valid_out;
             packet_dma[index].descriptor_command_handle_in =

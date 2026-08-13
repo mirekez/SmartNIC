@@ -28,7 +28,9 @@ namespace
 #endif
 
 constexpr size_t TRAFFIC_DEPTH = 1024;
-using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, TRAFFIC_DEPTH>;
+constexpr size_t TEST_RX_RAM_DEPTH = RX_RAM_BANK_DEPTH;
+using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, TRAFFIC_DEPTH, 4096,
+    4 * 1024 * 1024, TEST_RX_RAM_DEPTH>;
 using Generator = GenEthStream<NET_LANE_WIDTH>;
 
 constexpr uint64_t HOST_PACKET_BASE = 0x00100000;
@@ -36,7 +38,12 @@ constexpr uint32_t HOST_PACKET_STRIDE = 2048;
 // Sustained mode replays an exactly aggregate-word-aligned image. Functional
 // mode retains the original compact mixed-size coverage.
 constexpr uint32_t BASE_FRAME_COUNT = SUSTAINED_CAPTURE ? 40 : 32;
-constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE ? 24 : 1;
+// The 400G throughput run carries more than all receive-side buffering. It
+// therefore cannot pass by absorbing a finite burst and
+// draining it later; RxRAM must recycle consumed packet allocations while the
+// non-stallable wire source is still active.
+constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE
+    ? (ENABLE_800G ? 24 : 64) : 1;
 constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_REPEATS;
 constexpr uint32_t HOST_SAMPLE_PERIOD = 10;
 static_assert(FRAME_COUNT % CPUS_USED == 0);
@@ -46,6 +53,16 @@ constexpr uint32_t HOST_FRAMES_PER_CPU =
 constexpr uint32_t HOST_FRAME_COUNT = HOST_FRAMES_PER_CPU * CPUS_USED;
 constexpr uint64_t MAX_CPU_TICKS = ENABLE_800G ? 30000000 : 15000000;
 constexpr uint64_t PROGRESS_INTERVAL = 10000;
+constexpr uint64_t BALANCER_BYTES = 8ull * 1024 * (NET_LANE_WIDTH / 8);
+constexpr uint64_t RX_RAM_BYTES = 8ull * TEST_RX_RAM_DEPTH * 2
+    * (NET_LANE_WIDTH / 8);
+constexpr uint64_t RX_DESCRIPTOR_BYTES = 8ull * 64 * 160 + 16ull * 160;
+constexpr uint64_t SYSTEM_RX_QUEUE_BYTES = 8ull * 256 * 32;
+constexpr uint64_t TOTAL_RX_BUFFER_BYTES = BALANCER_BYTES + RX_RAM_BYTES
+    + RX_DESCRIPTOR_BYTES + SYSTEM_RX_QUEUE_BYTES;
+constexpr uint64_t ABSORPTION_NET_CYCLES =
+    (TOTAL_RX_BUFFER_BYTES + Dut::NET_BYTES - 1) / Dut::NET_BYTES;
+constexpr uint32_t MAX_RETIREMENT_LAG_PACKETS = 128;
 
 struct Elf32Header
 {
@@ -101,6 +118,9 @@ class CaptureTest
     uint64_t wire_start_cycle = 0;
     uint64_t wire_stop_cycle = 0;
     bool wire_started = false;
+    bool wire_midpoint_seen = false;
+    uint32_t wire_midpoint_completed = 0;
+    uint32_t wire_end_completed = 0;
     bool backpressure_reported = false;
     bool error = false;
 
@@ -182,9 +202,17 @@ class CaptureTest
             }
             dut._work_net_clk(reset);
             dut._strobe_net_clk();
+            if (SUSTAINED_CAPTURE && !ENABLE_800G && wire_started
+                && !wire_midpoint_seen
+                && (uint32_t)dut.traffic_emitted_beats_out()
+                    >= (382u * TRAFFIC_REPEATS) / 2) {
+                wire_midpoint_seen = true;
+                wire_midpoint_completed = completed_packets();
+            }
             if (wire_started && dut.traffic.done_out()
                 && wire_stop_cycle == 0) {
                 wire_stop_cycle = net_cycles + 1;
+                wire_end_completed = completed_packets();
             }
             ++net_cycles;
             edges.net = true;
@@ -606,6 +634,35 @@ public:
         if ((uint32_t)dut.traffic_backpressure_cycles_out() != 0) {
             fail(std::format("wire-speed violation: {} network cycles backpressured",
                 (uint32_t)dut.traffic_backpressure_cycles_out()));
+        }
+        if (SUSTAINED_CAPTURE && !ENABLE_800G) {
+            if (wire_elapsed_cycles() <= ABSORPTION_NET_CYCLES) {
+                fail(std::format(
+                    "throughput interval {} cycles did not exceed the complete "
+                    "receive-buffer absorption interval of {} cycles",
+                    wire_elapsed_cycles(), ABSORPTION_NET_CYCLES));
+            }
+            if (!wire_midpoint_seen) {
+                fail("throughput midpoint was not observed while ingress ran");
+            }
+            const uint32_t second_half_retired = wire_end_completed
+                - wire_midpoint_completed;
+            if (second_half_retired + MAX_RETIREMENT_LAG_PACKETS
+                < FRAME_COUNT / 2) {
+                fail(std::format(
+                    "processing fell behind during sustained ingress: retired "
+                    "{} of {} second-half packets before wire end",
+                    second_half_retired, FRAME_COUNT / 2));
+            }
+            std::print(
+                "400G sustained proof: wire_bytes={} modeled_rx_buffer_bytes={} "
+                "wire_cycles={} absorption_cycles={} midpoint_retired={} "
+                "wire_end_retired={}\n",
+                (uint64_t)(uint32_t)dut.traffic_emitted_beats_out()
+                    * Dut::NET_BYTES,
+                TOTAL_RX_BUFFER_BYTES, wire_elapsed_cycles(),
+                ABSORPTION_NET_CYCLES, wire_midpoint_completed,
+                wire_end_completed);
         }
         // Fetchers become enabled by independently booting CPUs, so their
         // initial descriptor-to-cluster phase is intentionally unspecified.

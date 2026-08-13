@@ -7,6 +7,7 @@
 
 #include "../common/RAM.h"
 #include "../common/ClockDomains.h"
+#include "../../Config.h"
 
 using namespace cpphdl;
 
@@ -84,6 +85,13 @@ public:
     _PORT(logic<READ_PORTS>) read_valid_out;
     _PORT(logic<READ_PORTS>) read_ready_in;
 
+    // A packet becomes reusable only after its final RAM response has crossed
+    // into the downstream CDC. Releases are in packet order within each
+    // ingress stream and let the receive store operate as a circular buffer.
+    _PORT(logic<READ_PORTS>) release_valid_in;
+    _PORT(logic<READ_PORTS * HANDLE_BITS>) release_handle_in;
+    _PORT(logic<READ_PORTS * FRAME_LENGTH_BITS>) release_length_in;
+
     _PORT(bool) protocol_error_out;
     _PORT(bool) storage_full_out;
 
@@ -93,6 +101,8 @@ private:
     reg<logic<LANE_WIDTH>> pack_data_reg[STREAMS];
     reg<u<clog2(LANE_BYTES + 1)>> pack_count_reg[STREAMS];
     reg<u<LOGICAL_ROW_BITS>> next_row_reg[STREAMS];
+    reg<u<LOGICAL_ROW_BITS>> release_row_reg[STREAMS];
+    reg<u<clog2(LOGICAL_ROWS + 1)>> used_rows_reg[STREAMS];
     reg<u<LOGICAL_ROW_BITS>> packet_start_reg[STREAMS];
     reg<u<FRAME_LENGTH_BITS>> packet_length_reg[STREAMS];
     reg<u1> in_frame_reg[STREAMS];
@@ -123,6 +133,15 @@ private:
     logic<STREAMS * FRAME_LENGTH_BITS> packet_length_comb;
     logic<READ_PORTS * LANE_WIDTH> read_data_comb;
     logic<READ_PORTS> read_valid_comb;
+
+    static constexpr uint32_t MAX_PACKET_ROWS =
+        (((1u << FRAME_LENGTH_BITS) - 1 + LANE_BYTES - 1) / LANE_BYTES + 1)
+            & ~1u;
+
+    static uint32_t released_rows(uint32_t length)
+    {
+        return ((length + LANE_BYTES - 1) / LANE_BYTES + 1) & ~1u;
+    }
 
     static uint32_t request_handle(logic<136> handles,
         uint32_t port)
@@ -401,7 +420,9 @@ private:
                 --count;
             }
             input_ready_comb[stream] = count < COMPLETION_FIFO_WORDS
-                && (uint32_t)next_row_reg[stream] < LOGICAL_ROWS - 3;
+                && ((bool)in_frame_reg[stream]
+                    || (uint32_t)used_rows_reg[stream]
+                        <= LOGICAL_ROWS - MAX_PACKET_ROWS);
         }
         return input_ready_comb;
     }
@@ -544,6 +565,12 @@ public:
         uint32_t head;
         uint32_t tail;
         uint32_t completion_count;
+        uint32_t used_rows;
+        uint32_t release_row;
+        uint32_t release_stream;
+        uint32_t release_handle;
+        uint32_t release_length;
+        uint32_t rows;
         uint8_t input_byte;
         bool in_frame;
         bool keep;
@@ -557,6 +584,8 @@ public:
                 pack_data_reg[stream]._next = 0;
                 pack_count_reg[stream]._next = 0;
                 next_row_reg[stream]._next = 0;
+                release_row_reg[stream]._next = 0;
+                used_rows_reg[stream]._next = 0;
                 packet_start_reg[stream]._next = 0;
                 packet_length_reg[stream]._next = 0;
                 in_frame_reg[stream]._next = 0;
@@ -593,6 +622,31 @@ public:
             head = (uint32_t)completion_head_reg[stream];
             tail = (uint32_t)completion_tail_reg[stream];
             completion_count = (uint32_t)completion_count_reg[stream];
+            used_rows = (uint32_t)used_rows_reg[stream];
+            release_row = (uint32_t)release_row_reg[stream];
+            for (port = 0; port < READ_PORTS; ++port) {
+                if ((bool)release_valid_in()[port]) {
+                    release_handle = (uint32_t)release_handle_in().bits(
+                        port * HANDLE_BITS + HANDLE_BITS - 1,
+                        port * HANDLE_BITS);
+                    release_stream = release_handle & 7;
+                    if (release_stream == stream) {
+                        release_length = (uint32_t)release_length_in().bits(
+                            port * FRAME_LENGTH_BITS + FRAME_LENGTH_BITS - 1,
+                            port * FRAME_LENGTH_BITS);
+                        rows = released_rows(release_length);
+                        if ((release_handle >> 3) != release_row
+                            || rows == 0 || rows > used_rows) {
+                            protocol_error_reg._next = 1;
+                        }
+                        else {
+                            release_row = (release_row + rows)
+                                & (LOGICAL_ROWS - 1);
+                            used_rows -= rows;
+                        }
+                    }
+                }
+            }
             if (completion_count != 0 && (bool)packet_ready_in()[stream]) {
                 head = (head + 1) & (COMPLETION_FIFO_WORDS - 1);
                 --completion_count;
@@ -606,7 +660,7 @@ public:
             in_frame = (bool)in_frame_reg[stream];
 
             if ((bool)valid_in()[stream] && !(bool)input_ready_comb_func()[stream]
-                && next_row >= LOGICAL_ROWS - 3) {
+                && !(bool)in_frame_reg[stream]) {
                 storage_full_reg._next = 1;
             }
             if ((bool)valid_in()[stream] && (bool)input_ready_comb_func()[stream]) {
@@ -670,6 +724,18 @@ public:
                                     tail = (tail + 1) & (COMPLETION_FIFO_WORDS - 1);
                                     ++completion_count;
                                 }
+                                // Keep every allocation even-sized. Packet
+                                // starts therefore stay aligned and release
+                                // can advance the circular oldest pointer from
+                                // only the descriptor's handle and length.
+                                if ((next_row & 1) != 0) ++next_row;
+                                rows = released_rows(packet_length);
+                                if (used_rows + rows > LOGICAL_ROWS) {
+                                    protocol_error_reg._next = 1;
+                                    storage_full_reg._next = 1;
+                                }
+                                else used_rows += rows;
+                                next_row &= LOGICAL_ROWS - 1;
                                 in_frame = false;
                             }
                         }
@@ -680,6 +746,8 @@ public:
             pack_data_reg[stream]._next = pack_data;
             pack_count_reg[stream]._next = pack_count;
             next_row_reg[stream]._next = next_row;
+            release_row_reg[stream]._next = release_row;
+            used_rows_reg[stream]._next = used_rows;
             packet_start_reg[stream]._next = packet_start;
             packet_length_reg[stream]._next = packet_length;
             in_frame_reg[stream]._next = in_frame;
@@ -737,6 +805,8 @@ public:
             pack_data_reg[stream].strobe();
             pack_count_reg[stream].strobe();
             next_row_reg[stream].strobe();
+            release_row_reg[stream].strobe();
+            used_rows_reg[stream].strobe();
             packet_start_reg[stream].strobe();
             packet_length_reg[stream].strobe();
             in_frame_reg[stream].strobe();
@@ -768,7 +838,8 @@ public:
         uint32_t stream, slot, port, bank;
         for (stream = 0; stream < STREAMS; ++stream) {
             pack_data_reg[stream].strobe(); pack_count_reg[stream].strobe();
-            next_row_reg[stream].strobe(); packet_start_reg[stream].strobe();
+            next_row_reg[stream].strobe(); release_row_reg[stream].strobe();
+            used_rows_reg[stream].strobe(); packet_start_reg[stream].strobe();
             packet_length_reg[stream].strobe(); in_frame_reg[stream].strobe();
             completion_head_reg[stream].strobe();
             completion_tail_reg[stream].strobe();

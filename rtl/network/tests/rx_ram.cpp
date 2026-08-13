@@ -103,6 +103,12 @@ class RxRAMTest
     logic<READ_PORTS * HANDLE_BITS> read_request_handle;
     logic<READ_PORTS * LOGICAL_ROW_BITS> read_request_word;
     logic<READ_PORTS> read_response_ready;
+    logic<READ_PORTS> release_valid;
+    logic<READ_PORTS * HANDLE_BITS> release_handle;
+    logic<READ_PORTS * FRAME_LENGTH_BITS> release_length;
+    logic<READ_PORTS> next_release_valid;
+    logic<READ_PORTS * HANDLE_BITS> next_release_handle;
+    logic<READ_PORTS * FRAME_LENGTH_BITS> next_release_length;
 
     std::array<std::vector<RxWireByte>, STREAMS> wire;
     std::array<size_t, STREAMS> position{};
@@ -149,6 +155,9 @@ class RxRAMTest
         dut.read_handle_in = _ASSIGN_REG(read_request_handle);
         dut.read_word_in = _ASSIGN_REG(read_request_word);
         dut.read_ready_in = _ASSIGN_REG(read_response_ready);
+        dut.release_valid_in = _ASSIGN_REG(release_valid);
+        dut.release_handle_in = _ASSIGN_REG(release_handle);
+        dut.release_length_in = _ASSIGN_REG(release_length);
         dut.__inst_name = "rx_ram";
         dut._assign();
 #endif
@@ -169,6 +178,9 @@ class RxRAMTest
         copy_to_verilator(dut.read_handle_in, read_request_handle);
         copy_to_verilator(dut.read_word_in, read_request_word);
         dut.read_ready_in = (uint8_t)(uint64_t)read_response_ready;
+        dut.release_valid_in = (uint8_t)(uint64_t)release_valid;
+        copy_to_verilator(dut.release_handle_in, release_handle);
+        copy_to_verilator(dut.release_length_in, release_length);
         dut.eval();
 #else
         (void)reset;
@@ -446,6 +458,9 @@ class RxRAMTest
     {
         logic<READ_PORTS> response_valid = read_response_valid_value();
         logic<READ_PORTS * LANE_WIDTH> response_data = read_data_value();
+        next_release_valid = 0;
+        next_release_handle = 0;
+        next_release_length = 0;
         for (size_t port = 0; port < READ_PORTS; ++port) {
             if (!(bool)response_valid[port]
                 || !(bool)read_response_ready[port]) {
@@ -488,6 +503,15 @@ class RxRAMTest
             ++readers[port].next_word;
             size_t words = (frame.length + LANE_BYTES - 1) / LANE_BYTES;
             if (readers[port].next_word == words) {
+                next_release_valid[port] = 1;
+                for (size_t bit = 0; bit < HANDLE_BITS; ++bit) {
+                    next_release_handle[port * HANDLE_BITS + bit] =
+                        (frame.handle >> bit) & 1;
+                }
+                for (size_t bit = 0; bit < FRAME_LENGTH_BITS; ++bit) {
+                    next_release_length[port * FRAME_LENGTH_BITS + bit] =
+                        (frame.length >> bit) & 1;
+                }
                 readers[port].frame.reset();
             }
         }
@@ -510,6 +534,9 @@ public:
         read_request_valid = 0;
         read_request_handle = 0;
         read_request_word = 0;
+        release_valid = 0;
+        release_handle = 0;
+        release_length = 0;
         for (size_t cycle = 0; cycle < 2; ++cycle) {
             eval_low(true);
             rising_edge(true);
@@ -561,6 +588,9 @@ public:
             prepare_read_inputs();
             eval_low(false);
             sample_read_responses();
+            const auto release_valid_after_edge = next_release_valid;
+            const auto release_handle_after_edge = next_release_handle;
+            const auto release_length_after_edge = next_release_length;
             logic<READ_PORTS> request_ready = read_request_ready_value();
             for (size_t port = 0; port < READ_PORTS; ++port) {
                 if ((bool)read_request_valid[port]
@@ -569,6 +599,9 @@ public:
                 }
             }
             rising_edge(false);
+            release_valid = release_valid_after_edge;
+            release_handle = release_handle_after_edge;
+            release_length = release_length_after_edge;
             ++read_cycles;
 
             bool active = !read_jobs.empty();

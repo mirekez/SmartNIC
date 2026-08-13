@@ -266,6 +266,7 @@ class NetworkBasicTest
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
     static constexpr size_t LOGICAL_ROW_BITS = clog2(BANK_DEPTH * 2);
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
+    static constexpr size_t FRAME_LENGTH_BITS = 14;
 
 #ifdef VERILATOR
     VERILATOR_MODEL dut;
@@ -284,6 +285,9 @@ class NetworkBasicTest
     logic<READ_PORTS * HANDLE_BITS> read_request_handle;
     logic<READ_PORTS * LOGICAL_ROW_BITS> read_request_word;
     logic<READ_PORTS> read_response_ready;
+    logic<READ_PORTS> release_valid;
+    logic<READ_PORTS * HANDLE_BITS> release_handle;
+    logic<READ_PORTS * FRAME_LENGTH_BITS> release_length;
     logic<STREAMS> tx_input_valid;
     logic<INPUT_BITS> tx_input_data;
     logic<INPUT_BYTES> tx_input_keep;
@@ -321,6 +325,9 @@ class NetworkBasicTest
         dut.read_handle_in = _ASSIGN_REG(read_request_handle);
         dut.read_word_in = _ASSIGN_REG(read_request_word);
         dut.read_ready_in = _ASSIGN_REG(read_response_ready);
+        dut.release_valid_in = _ASSIGN_REG(release_valid);
+        dut.release_handle_in = _ASSIGN_REG(release_handle);
+        dut.release_length_in = _ASSIGN_REG(release_length);
         dut.tx_valid_in = _ASSIGN_REG(tx_input_valid);
         dut.tx_data_in = _ASSIGN_REG(tx_input_data);
         dut.tx_keep_in = _ASSIGN_REG(tx_input_keep);
@@ -348,6 +355,9 @@ class NetworkBasicTest
         copy_to_verilator(dut.read_handle_in, read_request_handle);
         copy_to_verilator(dut.read_word_in, read_request_word);
         dut.read_ready_in = (uint8_t)(uint64_t)read_response_ready;
+        dut.release_valid_in = (uint8_t)(uint64_t)release_valid;
+        copy_to_verilator(dut.release_handle_in, release_handle);
+        copy_to_verilator(dut.release_length_in, release_length);
         dut.tx_valid_in = (uint8_t)(uint64_t)tx_input_valid;
         copy_to_verilator(dut.tx_data_in, tx_input_data);
         copy_to_verilator(dut.tx_keep_in, tx_input_keep);
