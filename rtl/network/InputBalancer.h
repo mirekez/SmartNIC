@@ -14,6 +14,7 @@
 #include <cpphdl.h>
 #include <algorithm>
 #include "../common/ClockDomains.h"
+#include "InputBalancerReplacement.h"
 
 using namespace cpphdl;
 
@@ -26,12 +27,7 @@ extern long _system_clock;
     M(1, 0) M(1, 1) M(1, 2) M(1, 3) M(1, 4) M(1, 5) M(1, 6) M(1, 7)
 
 template<size_t LANE_WIDTH = 64>
-#ifdef SMARTNIC_TWO_CLOCKS
-class [[clang::annotate("CPPHDL_REPLACEMENT_FILE=InputBalancerReplacement.sv;")]]
-InputBalancer : public Module
-#else
 class InputBalancer : public Module
-#endif
 {
 public:
     static constexpr size_t LANES = 2;
@@ -346,7 +342,7 @@ public:
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
     }
 
-    void _work(bool reset)
+    void INPUT_BALANCER_WORK_METHOD(bool reset)
     {
         size_t output;
         size_t byte;
@@ -649,9 +645,16 @@ public:
         protocol_error_reg.strobe();
     }
 
-    SMARTNIC_NETWORK_CLOCK_METHODS()
+#ifdef SMARTNIC_TWO_CLOCKS
+    // Native hierarchical simulation drives children from Network::_work(),
+    // while generated RTL clocks this module through _work_net_clk().
+    void _work(bool reset) { _work_net_clk(reset); }
+    void _work_l2_clk(bool) {}
+    void _strobe_l2_clk() {}
+#endif
 };
 
 template class InputBalancer<64>;
 
 #undef INPUT_BALANCER_FOR_EACH_BANK
+#undef INPUT_BALANCER_WORK_METHOD
