@@ -2,6 +2,7 @@ set script_dir [file dirname [file normalize [info script]]]
 # The four-core Tribe hierarchy can exceed a 10 GiB VM when Vivado starts its
 # default seven synthesis workers.  One internal thread is slower but bounded.
 set_param general.maxThreads 1
+set_param synth.maxThreads 1
 source [file join $script_dir create_project.tcl]
 # One job keeps peak RAM below the limits of typical development VMs while
 # Vivado elaborates four CPU cores and two licensed 10G Ethernet subsystems.

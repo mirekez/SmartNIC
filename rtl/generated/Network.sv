@@ -30,7 +30,7 @@ module Network #(
 ,   input wire raw_in
 ,   output wire ready_out
 ,   output wire descriptor_valid_out
-,   output RxDescriptorWord descriptor_data_out
+,   output wire RxDescriptorWord descriptor_data_out
 ,   input wire descriptor_ready_in
 ,   input wire[READ_PORTS-1:0] read_valid_in
 ,   input wire[READ_PORTS*HANDLE_BITS-1:0] read_handle_in
@@ -129,7 +129,7 @@ module Network #(
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] parser__eop_in;
     wire[2-1:0] parser__raw_in;
     wire[2-1:0] parser__ready_out;
-    PacketParserWord[2-1:0] parser__data_out;
+    wire PacketParserWord[2-1:0] parser__data_out;
     wire[128-1:0] parser__keep_out;
     wire[2-1:0] parser__valid_out;
     wire[2-1:0] parser__last_out;
@@ -211,11 +211,11 @@ module Network #(
 ,       .storage_full_out(rx_ram__storage_full_out)
     );
     wire[2-1:0] rx_fifo__valid_in;
-    RxDescriptorWord[2-1:0] rx_fifo__data_in;
+    wire RxDescriptorWord[2-1:0] rx_fifo__data_in;
     wire[2-1:0] rx_fifo__ready_out;
     wire[2-1:0] rx_fifo__almost_full_out;
     wire rx_fifo__valid_out;
-    RxDescriptorWord rx_fifo__data_out;
+    wire RxDescriptorWord rx_fifo__data_out;
     wire rx_fifo__ready_in;
     wire rx_fifo__clear_in;
     RxFifo #(

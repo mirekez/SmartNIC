@@ -21,7 +21,10 @@ public:
 
 private:
     reg<logic<MEM_WIDTH_BYTES * 8>> data_out_reg;
-    memory<u8, MEM_WIDTH_BYTES, MEM_DEPTH> buffer;
+    // Byte enables are expanded into write_mask_comb below, so storage can be
+    // emitted as one packed word per address.  This avoids Vivado expanding a
+    // byte/word 3-D array into individual registers during elaboration.
+    memory<logic<MEM_WIDTH_BYTES * 8>, 1, MEM_DEPTH> buffer;
     logic<MEM_WIDTH_BYTES * 8> data_out_comb;
     // Keep this temporary at module scope.  CppHDL preserves parameterized
     // member widths in generated SV; a local logic<> was specialized to one

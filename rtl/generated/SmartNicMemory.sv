@@ -24,7 +24,7 @@ module SmartNicMemory #(
 
     // regs and combs
     reg[MEM_WIDTH_BYTES*'h8-1:0] data_out_reg;
-    reg[MEM_WIDTH_BYTES-1:0][8-1:0] buffer[MEM_DEPTH];
+    reg[MEM_WIDTH_BYTES*'h8-1:0] buffer[MEM_DEPTH];
     logic[MEM_WIDTH_BYTES*'h8-1:0] data_out_comb;
     logic[MEM_WIDTH_BYTES*'h8-1:0] write_mask_comb;
 

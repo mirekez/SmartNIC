@@ -118,7 +118,7 @@ module SmartNIC #(
     wire network__raw_in;
     wire network__ready_out;
     wire network__descriptor_valid_out;
-    RxDescriptorWord network__descriptor_data_out;
+    wire RxDescriptorWord network__descriptor_data_out;
     wire network__descriptor_ready_in;
     wire[READ_PORTS-1:0] network__read_valid_in;
     wire[READ_PORTS*($clog2((BANK_DEPTH*'h2)) + 'h3)-1:0] network__read_handle_in;

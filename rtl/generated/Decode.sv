@@ -2,7 +2,6 @@
 
 import Predef_pkg::*;
 import Zicsr_pkg::*;
-import Rv32ia_pkg::*;
 import Rv32im_pkg::*;
 import Rv32ic_pkg::*;
 import Rv32i_pkg::*;
@@ -12,7 +11,6 @@ import Wb_pkg::*;
 import Br_pkg::*;
 import Sys_pkg::*;
 import Trap_pkg::*;
-import Amo_pkg::*;
 import Csr_pkg::*;
 import State_pkg::*;
 
@@ -28,7 +26,7 @@ module Decode (
 ,   input wire[31:0] regs_data1_in
 ,   output wire[5-1:0] rs1_out
 ,   output wire[5-1:0] rs2_out
-,   output State state_out
+,   output wire State state_out
 );
 
 
@@ -574,108 +572,13 @@ module Decode (
     end
     endtask
 
-    function logic[7:0] Rv32ia___funct5 (input Rv32ia _this);
-        return unsigned'(8'((_this._.raw >>> 'h1B)));
-    endfunction
-
-    task Rv32ia___decode (
-        input Rv32ia _this
-,       output State state_out
-    );
-    begin: Rv32ia___decode
-        state_out = 0;
-        Rv32im___decode(_this, state_out);
-        if (((((_this._.raw & 'h3)) == 'h3) && (_this._.r.opcode == 'h2F)) && (_this._.r.funct3 == 'h2)) begin
-            state_out = 0;
-            state_out.rd=_this._.r.rd;
-            state_out.rs1=_this._.r.rs1;
-            state_out.rs2=_this._.r.rs2;
-            state_out.funct3=_this._.r.funct3;
-            state_out.imm='h0;
-            state_out.alu_op=Alu_pkg::ADD;
-            case (Rv32ia___funct5(_this))
-            Rv32ia_pkg::FUNCT5_LR: begin
-                if (_this._.r.rs2 == 'h0) begin
-                    state_out.amo_op=Amo_pkg::LR_W;
-                    state_out.mem_op=Mem_pkg::LOAD;
-                    state_out.wb_op=Wb_pkg::MEM;
-                end
-            end
-            Rv32ia_pkg::FUNCT5_SC: begin
-                state_out.amo_op=Amo_pkg::SC_W;
-                state_out.mem_op=Mem_pkg::STORE;
-                state_out.wb_op=Wb_pkg::ALU;
-            end
-            Rv32ia_pkg::FUNCT5_AMOSWAP: begin
-                state_out.amo_op=Amo_pkg::AMOSWAP_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            Rv32ia_pkg::FUNCT5_AMOADD: begin
-                state_out.amo_op=Amo_pkg::AMOADD_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            Rv32ia_pkg::FUNCT5_AMOXOR: begin
-                state_out.amo_op=Amo_pkg::AMOXOR_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            Rv32ia_pkg::FUNCT5_AMOAND: begin
-                state_out.amo_op=Amo_pkg::AMOAND_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            Rv32ia_pkg::FUNCT5_AMOOR: begin
-                state_out.amo_op=Amo_pkg::AMOOR_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            Rv32ia_pkg::FUNCT5_AMOMIN: begin
-                state_out.amo_op=Amo_pkg::AMOMIN_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            Rv32ia_pkg::FUNCT5_AMOMAX: begin
-                state_out.amo_op=Amo_pkg::AMOMAX_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            Rv32ia_pkg::FUNCT5_AMOMINU: begin
-                state_out.amo_op=Amo_pkg::AMOMINU_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            Rv32ia_pkg::FUNCT5_AMOMAXU: begin
-                state_out.amo_op=Amo_pkg::AMOMAXU_W;
-                state_out.mem_op=Mem_pkg::LOAD;
-                state_out.wb_op=Wb_pkg::MEM;
-            end
-            default: begin
-                state_out = 0;
-                state_out.sys_op=Sys_pkg::TRAP;
-                state_out.trap_op=Trap_pkg::ILLEGAL_INST;
-                state_out.imm=_this._.raw;
-                state_out.br_op=Br_pkg::BNONE;
-            end
-            endcase
-            if (state_out.amo_op == Amo_pkg::AMONONE) begin
-                state_out.sys_op=Sys_pkg::TRAP;
-                state_out.trap_op=Trap_pkg::ILLEGAL_INST;
-                state_out.imm=_this._.raw;
-                state_out.br_op=Br_pkg::BNONE;
-            end
-        end
-    end
-    endtask
-
     task Zicsr___decode (
         input Zicsr _this
 ,       output State state_out
     );
     begin: Zicsr___decode
         state_out = 0;
-        Rv32ia___decode(_this, state_out);
+        Rv32im___decode(_this, state_out);
         if (((((_this._.raw & 'h3)) == 'h3) && (_this._.r.opcode == 'h73)) && (_this._.i.funct3 == 'h0)) begin
             if (_this._.raw == 'h73) begin
                 state_out = 0;
@@ -712,20 +615,11 @@ module Decode (
                                 state_out.imm=_this._.raw;
                             end
                             else begin
-                                if (((_this._.raw & 'hFE007FFF)) == 'h12000073) begin
-                                    state_out = 0;
-                                    state_out.sys_op=Sys_pkg::SFENCE_VMA;
-                                    state_out.rs1=_this._.r.rs1;
-                                    state_out.rs2=_this._.r.rs2;
-                                    state_out.imm=_this._.raw;
-                                end
-                                else begin
-                                    state_out = 0;
-                                    state_out.sys_op=Sys_pkg::TRAP;
-                                    state_out.trap_op=Trap_pkg::ILLEGAL_INST;
-                                    state_out.imm=_this._.raw;
-                                    state_out.br_op=Br_pkg::BNONE;
-                                end
+                                state_out = 0;
+                                state_out.sys_op=Sys_pkg::TRAP;
+                                state_out.trap_op=Trap_pkg::ILLEGAL_INST;
+                                state_out.imm=_this._.raw;
+                                state_out.br_op=Br_pkg::BNONE;
                             end
                         end
                     end

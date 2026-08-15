@@ -10,7 +10,7 @@ module WritebackMem (
     input wire clk
 ,   input wire l2_clock
 ,   input wire reset
-,   input State state_in
+,   input wire State state_in
 ,   input wire[31:0] alu_result_in
 ,   input wire split_load_in
 ,   input wire[31:0] split_load_low_addr_in

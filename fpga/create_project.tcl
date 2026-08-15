@@ -30,16 +30,7 @@ set_property -dict [list \
 generate_target all [get_ips {eth10g_master eth10g_slave}]
 
 set generated_dir [file join $repo_dir rtl generated]
-# These optional Tribe blocks are intentionally disabled in Config.h. Keeping
-# stale generated module files in the source tree is useful for other builds,
-# but excluding them here makes the FPGA resource configuration unambiguous.
-set generated_sources {}
-foreach source [glob -directory $generated_dir *.sv] {
-    if {[lsearch -exact {MMU_TLB.sv InterruptController.sv} \
-            [file tail $source]] < 0} {
-        lappend generated_sources $source
-    }
-}
+set generated_sources [glob -directory $generated_dir *.sv]
 add_files -norecurse $generated_sources
 add_files -norecurse [file join $script_dir rtl klusterlab_top.sv]
 add_files -fileset constrs_1 -norecurse \

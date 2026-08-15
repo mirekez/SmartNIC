@@ -11,7 +11,7 @@ module Execute (
     input wire clk
 ,   input wire l2_clock
 ,   input wire reset
-,   input State state_in
+,   input wire State state_in
 ,   output wire[31:0] alu_result_out
 ,   output wire[31:0] debug_alu_a_out
 ,   output wire[31:0] debug_alu_b_out

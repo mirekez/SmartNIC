@@ -241,6 +241,7 @@ private:
         PacketParserFields fields)
     {
         uint32_t cursor;
+        uint32_t iteration;
         uint32_t kind;
         uint32_t option_length;
 
@@ -253,25 +254,30 @@ private:
             return fields;
         }
         cursor = 0;
-        while (cursor < option_bytes) {
-            kind = get_byte(bytes, offset + cursor);
-            if (kind == 0) {
-                cursor = option_bytes;
-            }
-            else if (kind == 1) {
-                ++cursor;
-            }
-            else if (cursor + 1 >= option_bytes) {
-                fields.flags = u8((uint8_t)fields.flags | PACKET_PARSER_FLAG_MALFORMED);
-                return fields;
-            }
-            else {
-                option_length = get_byte(bytes, offset + cursor + 1);
-                if (option_length < 2 || cursor + option_length > option_bytes) {
+        // A fixed trip count keeps synthesis from trying to prove that a
+        // data-dependent option length always advances the cursor.
+        for (iteration = 0;
+            iteration < PACKET_PARSER_MAX_TCP_OPTION_BYTES; ++iteration) {
+            if (cursor < option_bytes) {
+                kind = get_byte(bytes, offset + cursor);
+                if (kind == 0) {
+                    cursor = option_bytes;
+                }
+                else if (kind == 1) {
+                    ++cursor;
+                }
+                else if (cursor + 1 >= option_bytes) {
                     fields.flags = u8((uint8_t)fields.flags | PACKET_PARSER_FLAG_MALFORMED);
                     return fields;
                 }
-                cursor += option_length;
+                else {
+                    option_length = get_byte(bytes, offset + cursor + 1);
+                    if (option_length < 2 || cursor + option_length > option_bytes) {
+                        fields.flags = u8((uint8_t)fields.flags | PACKET_PARSER_FLAG_MALFORMED);
+                        return fields;
+                    }
+                    cursor += option_length;
+                }
             }
         }
         return fields;
@@ -362,6 +368,7 @@ private:
         uint32_t length, PacketParserCursor cursor)
     {
         uint32_t headers;
+        uint32_t iteration;
         uint32_t skipped;
         uint32_t extension_bytes;
         uint32_t fragment;
@@ -369,47 +376,49 @@ private:
         headers = 0;
         skipped = 0;
         cursor.noninitial_fragment = 0;
-        while (is_ipv6_extension((uint32_t)cursor.selector)) {
-            if (headers >= PACKET_PARSER_MAX_IPV6_EXTENSION_HEADERS) {
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_LIMIT);
-                cursor.ok = 0;
-                return cursor;
-            }
-            if (!range_valid((uint32_t)cursor.offset, 8, length)) {
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MALFORMED);
-                cursor.ok = 0;
-                return cursor;
-            }
-            if ((uint32_t)cursor.selector == 44) {
-                extension_bytes = 8;
-                fragment = get_be16(bytes, (uint32_t)cursor.offset + 2);
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_FRAGMENT);
-                if ((fragment & 0xfff8) != 0) {
-                    cursor.noninitial_fragment = 1;
+        for (iteration = 0;
+            iteration < PACKET_PARSER_MAX_IPV6_EXTENSION_HEADERS; ++iteration) {
+            if (is_ipv6_extension((uint32_t)cursor.selector)) {
+                if (!range_valid((uint32_t)cursor.offset, 8, length)) {
+                    cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MALFORMED);
+                    cursor.ok = 0;
+                    return cursor;
                 }
+                if ((uint32_t)cursor.selector == 44) {
+                    extension_bytes = 8;
+                    fragment = get_be16(bytes, (uint32_t)cursor.offset + 2);
+                    cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_FRAGMENT);
+                    if ((fragment & 0xfff8) != 0) {
+                        cursor.noninitial_fragment = 1;
+                    }
+                }
+                else if ((uint32_t)cursor.selector == 51) {
+                    extension_bytes = ((uint32_t)get_byte(bytes,
+                        (uint32_t)cursor.offset + 1) + 2) * 4;
+                }
+                else {
+                    extension_bytes = ((uint32_t)get_byte(bytes,
+                        (uint32_t)cursor.offset + 1) + 1) * 8;
+                }
+                if (skipped + extension_bytes > PACKET_PARSER_MAX_IPV6_EXTENSION_BYTES) {
+                    cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_LIMIT);
+                    cursor.ok = 0;
+                    return cursor;
+                }
+                if (!range_valid((uint32_t)cursor.offset, extension_bytes, length)) {
+                    cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MALFORMED);
+                    cursor.ok = 0;
+                    return cursor;
+                }
+                cursor.selector = u32(get_byte(bytes, (uint32_t)cursor.offset));
+                cursor.offset = u32((uint32_t)cursor.offset + extension_bytes);
+                skipped += extension_bytes;
+                ++headers;
             }
-            else if ((uint32_t)cursor.selector == 51) {
-                extension_bytes = ((uint32_t)get_byte(bytes,
-                    (uint32_t)cursor.offset + 1) + 2) * 4;
-            }
-            else {
-                extension_bytes = ((uint32_t)get_byte(bytes,
-                    (uint32_t)cursor.offset + 1) + 1) * 8;
-            }
-            if (skipped + extension_bytes > PACKET_PARSER_MAX_IPV6_EXTENSION_BYTES) {
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_LIMIT);
-                cursor.ok = 0;
-                return cursor;
-            }
-            if (!range_valid((uint32_t)cursor.offset, extension_bytes, length)) {
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MALFORMED);
-                cursor.ok = 0;
-                return cursor;
-            }
-            cursor.selector = u32(get_byte(bytes, (uint32_t)cursor.offset));
-            cursor.offset = u32((uint32_t)cursor.offset + extension_bytes);
-            skipped += extension_bytes;
-            ++headers;
+        }
+        if (is_ipv6_extension((uint32_t)cursor.selector)) {
+            cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_LIMIT);
+            cursor.ok = 0;
         }
         return cursor;
     }
@@ -447,29 +456,34 @@ private:
     static PacketParserCursor skip_vlan_headers(const logic<HEADER_BITS>& bytes,
         uint32_t length, PacketParserCursor cursor)
     {
+        uint32_t iteration;
         cursor.count = 0;
 #if PACKET_PARSER_ENABLE_VLAN
-        while ((uint32_t)cursor.selector == 0x8100
+        for (iteration = 0; iteration < PACKET_PARSER_MAX_VLAN_HEADERS;
+            ++iteration) {
+            if ((uint32_t)cursor.selector == 0x8100
+                || (uint32_t)cursor.selector == 0x88a8
+                || (uint32_t)cursor.selector == 0x9100) {
+                if (!range_valid((uint32_t)cursor.offset, 4, length)) {
+                    cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MALFORMED);
+                    cursor.ok = 0;
+                    return cursor;
+                }
+                if ((uint32_t)cursor.count < PACKET_PARSER_OUTPUT_VLAN_HEADERS) {
+                    cursor.fields.vlan_tci[(uint32_t)cursor.count] =
+                        u16(get_be16(bytes, (uint32_t)cursor.offset));
+                }
+                cursor.selector = u32(get_be16(bytes, (uint32_t)cursor.offset + 2));
+                cursor.offset = u32((uint32_t)cursor.offset + 4);
+                cursor.count = u32((uint32_t)cursor.count + 1);
+                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_VLAN);
+            }
+        }
+        if ((uint32_t)cursor.selector == 0x8100
             || (uint32_t)cursor.selector == 0x88a8
             || (uint32_t)cursor.selector == 0x9100) {
-            if ((uint32_t)cursor.count >= PACKET_PARSER_MAX_VLAN_HEADERS) {
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_LIMIT);
-                cursor.ok = 0;
-                return cursor;
-            }
-            if (!range_valid((uint32_t)cursor.offset, 4, length)) {
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MALFORMED);
-                cursor.ok = 0;
-                return cursor;
-            }
-            if ((uint32_t)cursor.count < PACKET_PARSER_OUTPUT_VLAN_HEADERS) {
-                cursor.fields.vlan_tci[(uint32_t)cursor.count] =
-                    u16(get_be16(bytes, (uint32_t)cursor.offset));
-            }
-            cursor.selector = u32(get_be16(bytes, (uint32_t)cursor.offset + 2));
-            cursor.offset = u32((uint32_t)cursor.offset + 4);
-            cursor.count = u32((uint32_t)cursor.count + 1);
-            cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_VLAN);
+            cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_LIMIT);
+            cursor.ok = 0;
         }
 #else
 #endif
@@ -480,29 +494,32 @@ private:
         uint32_t length, PacketParserCursor cursor)
     {
         uint32_t entry;
+        uint32_t iteration;
         bool bottom;
         cursor.count = 0;
         bottom = false;
 #if PACKET_PARSER_ENABLE_MPLS
-        while (!bottom) {
-            if ((uint32_t)cursor.count >= PACKET_PARSER_MAX_MPLS_LABELS) {
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_LIMIT);
-                cursor.ok = 0;
-                return cursor;
+        for (iteration = 0; iteration < PACKET_PARSER_MAX_MPLS_LABELS;
+            ++iteration) {
+            if (!bottom) {
+                if (!range_valid((uint32_t)cursor.offset, 4, length)) {
+                    cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MALFORMED);
+                    cursor.ok = 0;
+                    return cursor;
+                }
+                entry = get_be32(bytes, (uint32_t)cursor.offset);
+                if ((uint32_t)cursor.count < PACKET_PARSER_OUTPUT_MPLS_LABELS) {
+                    cursor.fields.mpls[(uint32_t)cursor.count] = u32(entry);
+                }
+                bottom = (entry & 0x100) != 0;
+                cursor.offset = u32((uint32_t)cursor.offset + 4);
+                cursor.count = u32((uint32_t)cursor.count + 1);
+                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MPLS);
             }
-            if (!range_valid((uint32_t)cursor.offset, 4, length)) {
-                cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MALFORMED);
-                cursor.ok = 0;
-                return cursor;
-            }
-            entry = get_be32(bytes, (uint32_t)cursor.offset);
-            if ((uint32_t)cursor.count < PACKET_PARSER_OUTPUT_MPLS_LABELS) {
-                cursor.fields.mpls[(uint32_t)cursor.count] = u32(entry);
-            }
-            bottom = (entry & 0x100) != 0;
-            cursor.offset = u32((uint32_t)cursor.offset + 4);
-            cursor.count = u32((uint32_t)cursor.count + 1);
-            cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_MPLS);
+        }
+        if (!bottom) {
+            cursor.fields.flags = u8((uint8_t)cursor.fields.flags | PACKET_PARSER_FLAG_LIMIT);
+            cursor.ok = 0;
         }
 #else
 #endif

@@ -47,7 +47,7 @@ module L1CacheRefill #(
 ,   output wire mem_out__cache_disable_out
 ,   input wire[PORT_BITWIDTH-1:0] mem_out__read_data_in
 ,   input wire mem_out__wait_in
-,   output L1CachePerf perf_out
+,   output wire L1CachePerf perf_out
 ,   input wire debugen_in
 );
     parameter  LINE_WORDS = CACHE_LINE_SIZE/'h4;

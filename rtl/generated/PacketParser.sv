@@ -21,7 +21,7 @@ module PacketParser #(
 ,   input wire[INPUT_BYTES-1:0] eop_in
 ,   input wire[2-1:0] raw_in
 ,   output wire[2-1:0] ready_out
-,   output PacketParserWord[2-1:0] data_out
+,   output wire PacketParserWord[2-1:0] data_out
 ,   output wire[128-1:0] keep_out
 ,   output wire[2-1:0] valid_out
 ,   output wire[2-1:0] last_out
@@ -177,6 +177,7 @@ module PacketParser #(
 ,       input PacketParserFields fields
     );
         logic[31:0] cursor;
+        logic[31:0] iteration;
         logic[31:0] kind;
         logic[31:0] option_length;
         if (option_bytes > 'h28) begin
@@ -188,27 +189,29 @@ module PacketParser #(
             return fields;
         end
         cursor='h0;
-        while (cursor < option_bytes) begin
-            kind=get_byte(bytes, offset + cursor);
-            if (kind == 'h0) begin
-                cursor=option_bytes;
-            end
-            else begin
-                if (kind == 'h1) begin
-                    cursor=cursor+1;
+        for (iteration='h0;iteration < 'h28;iteration=iteration+1) begin
+            if (cursor < option_bytes) begin
+                kind=get_byte(bytes, offset + cursor);
+                if (kind == 'h0) begin
+                    cursor=option_bytes;
                 end
                 else begin
-                    if (cursor + 'h1>=option_bytes) begin
-                        fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
-                        return fields;
+                    if (kind == 'h1) begin
+                        cursor=cursor+1;
                     end
                     else begin
-                        option_length=get_byte(bytes, (offset + cursor) + 'h1);
-                        if ((option_length < 'h2) || ((cursor + option_length) > option_bytes)) begin
+                        if (cursor + 'h1>=option_bytes) begin
                             fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
                             return fields;
                         end
-                        cursor+=option_length;
+                        else begin
+                            option_length=get_byte(bytes, (offset + cursor) + 'h1);
+                            if ((option_length < 'h2) || ((cursor + option_length) > option_bytes)) begin
+                                fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
+                                return fields;
+                            end
+                            cursor+=option_length;
+                        end
                     end
                 end
             end
@@ -298,53 +301,55 @@ module PacketParser #(
 ,       input PacketParserCursor cursor
     );
         logic[31:0] headers;
+        logic[31:0] iteration;
         logic[31:0] skipped;
         logic[31:0] extension_bytes;
         logic[31:0] fragment;
         headers='h0;
         skipped='h0;
         cursor.noninitial_fragment = unsigned'(1'h0);
-        while (is_ipv6_extension(unsigned'(32'(cursor.selector)))) begin
-            if (headers>='h4) begin
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
-                cursor.ok = unsigned'(1'h0);
-                return cursor;
-            end
-            if (!range_valid(unsigned'(32'(cursor.offset)), 'h8, length)) begin
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
-                cursor.ok = unsigned'(1'h0);
-                return cursor;
-            end
-            if (unsigned'(32'(cursor.selector)) == 'h2C) begin
-                extension_bytes='h8;
-                fragment=get_be16(bytes, unsigned'(32'(cursor.offset)) + 'h2);
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT))));
-                if (((fragment & 'hFFF8)) != 'h0) begin
-                    cursor.noninitial_fragment = unsigned'(1'h1);
+        for (iteration='h0;iteration < 'h4;iteration=iteration+1) begin
+            if (is_ipv6_extension(unsigned'(32'(cursor.selector)))) begin
+                if (!range_valid(unsigned'(32'(cursor.offset)), 'h8, length)) begin
+                    cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
+                    cursor.ok = unsigned'(1'h0);
+                    return cursor;
                 end
-            end
-            else begin
-                if (unsigned'(32'(cursor.selector)) == 'h33) begin
-                    extension_bytes=((unsigned'(32'(get_byte(bytes, (unsigned'(32'(cursor.offset)) + 'h1)))) + 'h2))*'h4;
+                if (unsigned'(32'(cursor.selector)) == 'h2C) begin
+                    extension_bytes='h8;
+                    fragment=get_be16(bytes, unsigned'(32'(cursor.offset)) + 'h2);
+                    cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT))));
+                    if (((fragment & 'hFFF8)) != 'h0) begin
+                        cursor.noninitial_fragment = unsigned'(1'h1);
+                    end
                 end
                 else begin
-                    extension_bytes=((unsigned'(32'(get_byte(bytes, (unsigned'(32'(cursor.offset)) + 'h1)))) + 'h1))*'h8;
+                    if (unsigned'(32'(cursor.selector)) == 'h33) begin
+                        extension_bytes=((unsigned'(32'(get_byte(bytes, (unsigned'(32'(cursor.offset)) + 'h1)))) + 'h2))*'h4;
+                    end
+                    else begin
+                        extension_bytes=((unsigned'(32'(get_byte(bytes, (unsigned'(32'(cursor.offset)) + 'h1)))) + 'h1))*'h8;
+                    end
                 end
+                if ((skipped + extension_bytes) > 'h60) begin
+                    cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
+                    cursor.ok = unsigned'(1'h0);
+                    return cursor;
+                end
+                if (!range_valid(unsigned'(32'(cursor.offset)), extension_bytes, length)) begin
+                    cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
+                    cursor.ok = unsigned'(1'h0);
+                    return cursor;
+                end
+                cursor.selector = unsigned'(32'(unsigned'(32'(get_byte(bytes, unsigned'(32'(cursor.offset)))))));
+                cursor.offset = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.offset)) + extension_bytes))));
+                skipped+=extension_bytes;
+                headers=headers+1;
             end
-            if ((skipped + extension_bytes) > 'h60) begin
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
-                cursor.ok = unsigned'(1'h0);
-                return cursor;
-            end
-            if (!range_valid(unsigned'(32'(cursor.offset)), extension_bytes, length)) begin
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
-                cursor.ok = unsigned'(1'h0);
-                return cursor;
-            end
-            cursor.selector = unsigned'(32'(unsigned'(32'(get_byte(bytes, unsigned'(32'(cursor.offset)))))));
-            cursor.offset = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.offset)) + extension_bytes))));
-            skipped+=extension_bytes;
-            headers=headers+1;
+        end
+        if (is_ipv6_extension(unsigned'(32'(cursor.selector)))) begin
+            cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
+            cursor.ok = unsigned'(1'h0);
         end
         return cursor;
     endfunction
@@ -384,25 +389,27 @@ module PacketParser #(
 ,       input logic[31:0] length
 ,       input PacketParserCursor cursor
     );
+        logic[31:0] iteration;
         cursor.count = unsigned'(32'h0);
-        while (((unsigned'(32'(cursor.selector)) == 'h8100) || (unsigned'(32'(cursor.selector)) == 'h88A8)) || (unsigned'(32'(cursor.selector)) == 'h9100)) begin
-            if (cursor.count>='h4) begin
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
-                cursor.ok = unsigned'(1'h0);
-                return cursor;
+        for (iteration='h0;iteration < 'h4;iteration=iteration+1) begin
+            if (((unsigned'(32'(cursor.selector)) == 'h8100) || (unsigned'(32'(cursor.selector)) == 'h88A8)) || (unsigned'(32'(cursor.selector)) == 'h9100)) begin
+                if (!range_valid(unsigned'(32'(cursor.offset)), 'h4, length)) begin
+                    cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
+                    cursor.ok = unsigned'(1'h0);
+                    return cursor;
+                end
+                if (unsigned'(32'(cursor.count)) < 'h2) begin
+                    cursor.fields.vlan_tci[unsigned'(32'(cursor.count))] = unsigned'(16'(unsigned'(16'(get_be16(bytes, unsigned'(32'(cursor.offset)))))));
+                end
+                cursor.selector = unsigned'(32'(unsigned'(32'(get_be16(bytes, unsigned'(32'(cursor.offset)) + 'h2)))));
+                cursor.offset = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.offset)) + 'h4))));
+                cursor.count = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.count)) + 'h1))));
+                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_VLAN))));
             end
-            if (!range_valid(unsigned'(32'(cursor.offset)), 'h4, length)) begin
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
-                cursor.ok = unsigned'(1'h0);
-                return cursor;
-            end
-            if (unsigned'(32'(cursor.count)) < 'h2) begin
-                cursor.fields.vlan_tci[unsigned'(32'(cursor.count))] = unsigned'(16'(unsigned'(16'(get_be16(bytes, unsigned'(32'(cursor.offset)))))));
-            end
-            cursor.selector = unsigned'(32'(unsigned'(32'(get_be16(bytes, unsigned'(32'(cursor.offset)) + 'h2)))));
-            cursor.offset = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.offset)) + 'h4))));
-            cursor.count = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.count)) + 'h1))));
-            cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_VLAN))));
+        end
+        if (((unsigned'(32'(cursor.selector)) == 'h8100) || (unsigned'(32'(cursor.selector)) == 'h88A8)) || (unsigned'(32'(cursor.selector)) == 'h9100)) begin
+            cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
+            cursor.ok = unsigned'(1'h0);
         end
         return cursor;
     endfunction
@@ -413,28 +420,30 @@ module PacketParser #(
 ,       input PacketParserCursor cursor
     );
         logic[31:0] entry;
+        logic[31:0] iteration;
         logic bottom;
         cursor.count = unsigned'(32'h0);
         bottom=0;
-        while (!bottom) begin
-            if (cursor.count>='h4) begin
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
-                cursor.ok = unsigned'(1'h0);
-                return cursor;
+        for (iteration='h0;iteration < 'h4;iteration=iteration+1) begin
+            if (!bottom) begin
+                if (!range_valid(unsigned'(32'(cursor.offset)), 'h4, length)) begin
+                    cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
+                    cursor.ok = unsigned'(1'h0);
+                    return cursor;
+                end
+                entry=get_be32(bytes, unsigned'(32'(cursor.offset)));
+                if (unsigned'(32'(cursor.count)) < 'h2) begin
+                    cursor.fields.mpls[unsigned'(32'(cursor.count))] = unsigned'(32'(unsigned'(32'(entry))));
+                end
+                bottom=((entry & 'h100)) != 'h0;
+                cursor.offset = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.offset)) + 'h4))));
+                cursor.count = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.count)) + 'h1))));
+                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MPLS))));
             end
-            if (!range_valid(unsigned'(32'(cursor.offset)), 'h4, length)) begin
-                cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MALFORMED))));
-                cursor.ok = unsigned'(1'h0);
-                return cursor;
-            end
-            entry=get_be32(bytes, unsigned'(32'(cursor.offset)));
-            if (unsigned'(32'(cursor.count)) < 'h2) begin
-                cursor.fields.mpls[unsigned'(32'(cursor.count))] = unsigned'(32'(unsigned'(32'(entry))));
-            end
-            bottom=((entry & 'h100)) != 'h0;
-            cursor.offset = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.offset)) + 'h4))));
-            cursor.count = unsigned'(32'(unsigned'(32'(unsigned'(32'(cursor.count)) + 'h1))));
-            cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_MPLS))));
+        end
+        if (!bottom) begin
+            cursor.fields.flags = unsigned'(8'(unsigned'(8'(unsigned'(8'(cursor.fields.flags)) | PacketParserFlags_pkg::PACKET_PARSER_FLAG_LIMIT))));
+            cursor.ok = unsigned'(1'h0);
         end
         return cursor;
     endfunction

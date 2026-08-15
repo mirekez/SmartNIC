@@ -2,7 +2,6 @@
 
 import Predef_pkg::*;
 import Zicsr_pkg::*;
-import Rv32ia_pkg::*;
 import Rv32im_pkg::*;
 import Rv32ic_pkg::*;
 import Rv32i_pkg::*;
@@ -12,9 +11,9 @@ import Wb_pkg::*;
 import Br_pkg::*;
 import Sys_pkg::*;
 import Trap_pkg::*;
-import Amo_pkg::*;
 import Csr_pkg::*;
 import State_pkg::*;
+import Amo_pkg::*;
 import L1CacheFsmState_pkg::*;
 import L1InputRequestComb_pkg::*;
 import L1LookupComb_pkg::*;
@@ -26,15 +25,6 @@ import L1MemDriver_pkg::*;
 import L1RequestState_pkg::*;
 import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
-import TribeCoreDebug_pkg::*;
-import TribeMmuDebug_pkg::*;
-import TribeCacheDebug_pkg::*;
-import TribeWritebackDebug_pkg::*;
-import TribeCsrDebug_pkg::*;
-import TribeIrqDebug_pkg::*;
-import TribeRegsDebug_pkg::*;
-import TribeBranchDebug_pkg::*;
-import TribeDecodeDebug_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
 import L1PeerStoreState_pkg::*;
@@ -54,23 +44,14 @@ module TribeTest #(
 ,   output wire dmem_read_out
 ,   output wire[31:0] dmem_addr_out
 ,   output wire[31:0] imem_read_addr_out
-,   output TribeCoreDebug debug_core_out
-,   output TribeMmuDebug debug_mmu_out
-,   output TribeCacheDebug debug_cache_out
-,   output TribeWritebackDebug debug_wb_out
-,   output TribeCsrDebug debug_csr_out
-,   output TribeIrqDebug debug_irq_out
-,   output TribeRegsDebug debug_regs_out
-,   output TribeBranchDebug debug_branch_out
-,   output TribeDecodeDebug debug_decode_out
 ,   output wire sbi_set_timer_out
 ,   output wire[31:0] sbi_timer_lo_out
 ,   output wire[31:0] sbi_timer_hi_out
 ,   output wire sbi_set_timer_per_core_out[CPU_CORES]
 ,   output wire[31:0] sbi_timer_lo_per_core_out[CPU_CORES]
 ,   output wire[31:0] sbi_timer_hi_per_core_out[CPU_CORES]
-,   output TribeSbiDebug debug_sbi_out
-,   output TribePerf perf_out
+,   output wire TribeSbiDebug debug_sbi_out
+,   output wire TribePerf perf_out
 ,   input wire[31:0] reset_pc_in
 ,   input wire[31:0] boot_hartid_in
 ,   input wire[31:0] boot_dtb_addr_in
@@ -79,14 +60,6 @@ module TribeTest #(
 ,   input wire[31:0] memory_base_in
 ,   input wire[31:0] memory_size_in
 ,   input wire[31:0] mem_region_size_in[4]
-,   input wire clint_msip_in
-,   input wire clint_mtip_in
-,   input wire[31:0] time_lo_in
-,   input wire[31:0] time_hi_in
-,   input wire external_irq_in
-,   input wire clint_msip_per_core_in[CPU_CORES]
-,   input wire clint_mtip_per_core_in[CPU_CORES]
-,   input wire external_irq_per_core_in[CPU_CORES]
 ,   input wire axi_in__awvalid_in[4]
 ,   output wire axi_in__awready_out[4]
 ,   input wire[32-1:0] axi_in__awaddr_in[4]
@@ -143,25 +116,11 @@ module TribeTest #(
     parameter  L2_ADDRESS_BITS = 64'h20;
     parameter  L2_RAM_ADDRESS_BITS = 64'h1F;
     parameter  L2_PORT_COUNT = 64'h4;
-    parameter  ATOMIC_OWNER_BITS = (CPU_CORES > 'h1) ? ($clog2(CPU_CORES)) : ('h1);
 
 
     // regs and combs
     L1PeerStoreState peer_store_reg[CPU_CORES];
-    reg atomic_owner_valid_reg;
-    reg[ATOMIC_OWNER_BITS-1:0] atomic_owner_reg;
-    reg[ATOMIC_OWNER_BITS-1:0] atomic_rr_reg;
     L1PeerInvalidateComb peer_invalidate_comb[CPU_CORES];
-    logic[CPU_CORES-1:0] sbi_ipi_targets_comb;
-;
-    logic[CPU_CORES-1:0] sbi_fence_i_targets_comb;
-;
-    logic[CPU_CORES-1:0] sbi_sfence_targets_comb;
-;
-    logic[CPU_CORES-1:0] atomic_grant_comb;
-;
-    logic[CPU_CORES-1:0] atomic_data_access_comb;
-;
 
     // members
     genvar __i;
@@ -171,28 +130,10 @@ module TribeTest #(
     wire cores__dmem_read_out[CPU_CORES];
     wire[31:0] cores__dmem_addr_out[CPU_CORES];
     wire[31:0] cores__imem_read_addr_out[CPU_CORES];
-    wire cores__atomic_request_out[CPU_CORES];
-    wire cores__atomic_data_request_out[CPU_CORES];
-    wire cores__atomic_complete_out[CPU_CORES];
-    wire cores__atomic_grant_in[CPU_CORES];
-    TribeCoreDebug cores__debug_core_out[CPU_CORES];
-    TribeMmuDebug cores__debug_mmu_out[CPU_CORES];
-    TribeCacheDebug cores__debug_cache_out[CPU_CORES];
-    TribeWritebackDebug cores__debug_wb_out[CPU_CORES];
-    TribeCsrDebug cores__debug_csr_out[CPU_CORES];
-    TribeIrqDebug cores__debug_irq_out[CPU_CORES];
-    TribeRegsDebug cores__debug_regs_out[CPU_CORES];
-    TribeBranchDebug cores__debug_branch_out[CPU_CORES];
-    TribeDecodeDebug cores__debug_decode_out[CPU_CORES];
     wire cores__sbi_set_timer_out[CPU_CORES];
     wire[31:0] cores__sbi_timer_lo_out[CPU_CORES];
     wire[31:0] cores__sbi_timer_hi_out[CPU_CORES];
-    wire cores__sbi_send_ipi_out[CPU_CORES];
-    wire cores__sbi_remote_fence_i_out[CPU_CORES];
-    wire cores__sbi_remote_sfence_vma_out[CPU_CORES];
-    wire[31:0] cores__sbi_hart_mask_out[CPU_CORES];
-    wire[31:0] cores__sbi_hart_base_out[CPU_CORES];
-    TribeSbiDebug cores__debug_sbi_out[CPU_CORES];
+    wire TribeSbiDebug cores__debug_sbi_out[CPU_CORES];
     wire[31:0] cores__reset_pc_in[CPU_CORES];
     wire[31:0] cores__boot_hartid_in[CPU_CORES];
     wire[31:0] cores__boot_dtb_addr_in[CPU_CORES];
@@ -219,15 +160,7 @@ module TribeTest #(
     wire cores__d_mem_out__cache_disable_out[CPU_CORES];
     wire[256-1:0] cores__d_mem_out__read_data_in[CPU_CORES];
     wire cores__d_mem_out__wait_in[CPU_CORES];
-    wire cores__clint_msip_in[CPU_CORES];
-    wire cores__clint_mtip_in[CPU_CORES];
-    wire[31:0] cores__time_lo_in[CPU_CORES];
-    wire[31:0] cores__time_hi_in[CPU_CORES];
-    wire cores__external_irq_in[CPU_CORES];
-    wire cores__sbi_ipi_in[CPU_CORES];
-    wire cores__remote_fence_i_in[CPU_CORES];
-    wire cores__remote_sfence_vma_in[CPU_CORES];
-    TribePerf cores__perf_out[CPU_CORES];
+    wire TribePerf cores__perf_out[CPU_CORES];
     wire cores__debugen_in[CPU_CORES];
     generate
     for (__i=0; __i < CPU_CORES; __i = __i + 1) begin
@@ -241,27 +174,9 @@ module TribeTest #(
         ,           .dmem_read_out(cores__dmem_read_out[__i])
         ,           .dmem_addr_out(cores__dmem_addr_out[__i])
         ,           .imem_read_addr_out(cores__imem_read_addr_out[__i])
-        ,           .atomic_request_out(cores__atomic_request_out[__i])
-        ,           .atomic_data_request_out(cores__atomic_data_request_out[__i])
-        ,           .atomic_complete_out(cores__atomic_complete_out[__i])
-        ,           .atomic_grant_in(cores__atomic_grant_in[__i])
-        ,           .debug_core_out(cores__debug_core_out[__i])
-        ,           .debug_mmu_out(cores__debug_mmu_out[__i])
-        ,           .debug_cache_out(cores__debug_cache_out[__i])
-        ,           .debug_wb_out(cores__debug_wb_out[__i])
-        ,           .debug_csr_out(cores__debug_csr_out[__i])
-        ,           .debug_irq_out(cores__debug_irq_out[__i])
-        ,           .debug_regs_out(cores__debug_regs_out[__i])
-        ,           .debug_branch_out(cores__debug_branch_out[__i])
-        ,           .debug_decode_out(cores__debug_decode_out[__i])
         ,           .sbi_set_timer_out(cores__sbi_set_timer_out[__i])
         ,           .sbi_timer_lo_out(cores__sbi_timer_lo_out[__i])
         ,           .sbi_timer_hi_out(cores__sbi_timer_hi_out[__i])
-        ,           .sbi_send_ipi_out(cores__sbi_send_ipi_out[__i])
-        ,           .sbi_remote_fence_i_out(cores__sbi_remote_fence_i_out[__i])
-        ,           .sbi_remote_sfence_vma_out(cores__sbi_remote_sfence_vma_out[__i])
-        ,           .sbi_hart_mask_out(cores__sbi_hart_mask_out[__i])
-        ,           .sbi_hart_base_out(cores__sbi_hart_base_out[__i])
         ,           .debug_sbi_out(cores__debug_sbi_out[__i])
         ,           .reset_pc_in(cores__reset_pc_in[__i])
         ,           .boot_hartid_in(cores__boot_hartid_in[__i])
@@ -289,14 +204,6 @@ module TribeTest #(
         ,           .d_mem_out__cache_disable_out(cores__d_mem_out__cache_disable_out[__i])
         ,           .d_mem_out__read_data_in(cores__d_mem_out__read_data_in[__i])
         ,           .d_mem_out__wait_in(cores__d_mem_out__wait_in[__i])
-        ,           .clint_msip_in(cores__clint_msip_in[__i])
-        ,           .clint_mtip_in(cores__clint_mtip_in[__i])
-        ,           .time_lo_in(cores__time_lo_in[__i])
-        ,           .time_hi_in(cores__time_hi_in[__i])
-        ,           .external_irq_in(cores__external_irq_in[__i])
-        ,           .sbi_ipi_in(cores__sbi_ipi_in[__i])
-        ,           .remote_fence_i_in(cores__remote_fence_i_in[__i])
-        ,           .remote_sfence_vma_in(cores__remote_sfence_vma_in[__i])
         ,           .perf_out(cores__perf_out[__i])
         ,           .debugen_in(cores__debugen_in[__i])
         );
@@ -735,9 +642,6 @@ module TribeTest #(
 
     // tmp variables
     L1PeerStoreState peer_store_reg_tmp[CPU_CORES];
-    logic atomic_owner_valid_reg_tmp;
-    logic[ATOMIC_OWNER_BITS-1:0] atomic_owner_reg_tmp;
-    logic[ATOMIC_OWNER_BITS-1:0] atomic_rr_reg_tmp;
 
 
     always_comb begin : peer_invalidate_comb_func  // peer_invalidate_comb_func
@@ -758,76 +662,6 @@ module TribeTest #(
                         end
                     end
                 end
-            end
-        end
-    end
-
-    function logic sbi_hart_selected (
-        input logic[31:0] mask
-,       input logic[31:0] base
-,       input logic[31:0] target
-    );
-        if (base == 'hFFFFFFFF) begin
-            return 1;
-        end
-        return (target>=base && ((target - base) < 'h20)) && (((((mask >>> ((target - base)))) & 'h1)) != 'h0);
-    endfunction
-
-    always_comb begin : sbi_ipi_targets_comb_func  // sbi_ipi_targets_comb_func
-        logic[31:0] source;
-        logic[31:0] target;
-        sbi_ipi_targets_comb = 'h0;
-        for (source='h0;source < CPU_CORES;source=source+1) begin
-            for (target='h0;target < CPU_CORES;target=target+1) begin
-                if (cores__sbi_send_ipi_out[source] && sbi_hart_selected(cores__sbi_hart_mask_out[source], cores__sbi_hart_base_out[source], target)) begin
-                    sbi_ipi_targets_comb[target] = 'h1;
-                end
-            end
-        end
-    end
-
-    always_comb begin : sbi_fence_i_targets_comb_func  // sbi_fence_i_targets_comb_func
-        logic[31:0] source;
-        logic[31:0] target;
-        sbi_fence_i_targets_comb = 'h0;
-        for (source='h0;source < CPU_CORES;source=source+1) begin
-            for (target='h0;target < CPU_CORES;target=target+1) begin
-                if (cores__sbi_remote_fence_i_out[source] && sbi_hart_selected(cores__sbi_hart_mask_out[source], cores__sbi_hart_base_out[source], target)) begin
-                    sbi_fence_i_targets_comb[target] = 'h1;
-                end
-            end
-        end
-    end
-
-    always_comb begin : sbi_sfence_targets_comb_func  // sbi_sfence_targets_comb_func
-        logic[31:0] source;
-        logic[31:0] target;
-        sbi_sfence_targets_comb = 'h0;
-        for (source='h0;source < CPU_CORES;source=source+1) begin
-            for (target='h0;target < CPU_CORES;target=target+1) begin
-                if (cores__sbi_remote_sfence_vma_out[source] && sbi_hart_selected(cores__sbi_hart_mask_out[source], cores__sbi_hart_base_out[source], target)) begin
-                    sbi_sfence_targets_comb[target] = 'h1;
-                end
-            end
-        end
-    end
-
-    always_comb begin : atomic_grant_comb_func  // atomic_grant_comb_func
-        atomic_grant_comb = 'h0;
-        if (atomic_owner_valid_reg) begin
-            atomic_grant_comb[unsigned'(32'(atomic_owner_reg))] = 'h1;
-        end
-    end
-
-    always_comb begin : atomic_data_access_comb_func  // atomic_data_access_comb_func
-        logic[31:0] i;
-        atomic_data_access_comb = 'h0;
-        if (atomic_owner_valid_reg) begin
-            atomic_data_access_comb[unsigned'(32'(atomic_owner_reg))] = 'h1;
-        end
-        else begin
-            for (i='h0;i < CPU_CORES;i=i+1) begin
-                atomic_data_access_comb[i] = 'h1;
             end
         end
     end
@@ -948,30 +782,21 @@ module TribeTest #(
             for (gregion='h0;gregion < 'h4;gregion=gregion+1) begin
                 assign cores__mem_region_size_in[gi][gregion] = mem_region_size_in[gregion];
             end
-            assign cores__clint_msip_in[gi] = clint_msip_per_core_in[gi];
-            assign cores__clint_mtip_in[gi] = clint_mtip_per_core_in[gi];
-            assign cores__external_irq_in[gi] = external_irq_per_core_in[gi];
-            assign cores__sbi_ipi_in[gi] = sbi_ipi_targets_comb[gi];
-            assign cores__remote_fence_i_in[gi] = sbi_fence_i_targets_comb[gi];
-            assign cores__remote_sfence_vma_in[gi] = sbi_sfence_targets_comb[gi];
-            assign cores__time_lo_in[gi] = time_lo_in;
-            assign cores__time_hi_in[gi] = time_hi_in;
             assign sbi_set_timer_per_core_out[gi] = cores__sbi_set_timer_out[gi];
             assign sbi_timer_lo_per_core_out[gi] = cores__sbi_timer_lo_out[gi];
             assign sbi_timer_hi_per_core_out[gi] = cores__sbi_timer_hi_out[gi];
-            assign cores__atomic_grant_in[gi] = atomic_grant_comb[gi];
             assign cores__i_mem_out__read_data_in[gi] = i_mem_cdc__fast_in__read_data_out[gi];
             assign cores__i_mem_out__wait_in[gi] = i_mem_cdc__fast_in__wait_out[gi];
             assign cores__d_mem_out__read_data_in[gi] = d_mem_cdc__fast_in__read_data_out[gi];
-            assign cores__d_mem_out__wait_in[gi] = !atomic_data_access_comb[gi] || d_mem_cdc__fast_in__wait_out[gi];
+            assign cores__d_mem_out__wait_in[gi] = d_mem_cdc__fast_in__wait_out[gi];
             assign i_mem_cdc__fast_in__read_in[gi] = cores__i_mem_out__read_out[gi];
             assign i_mem_cdc__fast_in__write_in[gi] = cores__i_mem_out__write_out[gi];
             assign i_mem_cdc__fast_in__addr_in[gi] = cores__i_mem_out__addr_out[gi];
             assign i_mem_cdc__fast_in__write_data_in[gi] = cores__i_mem_out__write_data_out[gi];
             assign i_mem_cdc__fast_in__write_mask_in[gi] = cores__i_mem_out__write_mask_out[gi];
             assign i_mem_cdc__fast_in__cache_disable_in[gi] = cores__i_mem_out__cache_disable_out[gi];
-            assign d_mem_cdc__fast_in__read_in[gi] = atomic_data_access_comb[gi] && cores__d_mem_out__read_out[gi];
-            assign d_mem_cdc__fast_in__write_in[gi] = atomic_data_access_comb[gi] && cores__d_mem_out__write_out[gi];
+            assign d_mem_cdc__fast_in__read_in[gi] = cores__d_mem_out__read_out[gi];
+            assign d_mem_cdc__fast_in__write_in[gi] = cores__d_mem_out__write_out[gi];
             assign d_mem_cdc__fast_in__addr_in[gi] = cores__d_mem_out__addr_out[gi];
             assign d_mem_cdc__fast_in__write_data_in[gi] = cores__d_mem_out__write_data_out[gi];
             assign d_mem_cdc__fast_in__write_mask_in[gi] = cores__d_mem_out__write_mask_out[gi];
@@ -998,43 +823,11 @@ module TribeTest #(
     task work_clk_func (input logic reset);
     begin: work_clk_func
         logic[31:0] i;
-        logic atomic_selected;
-        logic ordinary_data_pending;
-        logic[31:0] atomic_candidate;
-        logic[31:0] atomic_offset;
         for (i='h0;i < CPU_CORES;i=i+1) begin
             peer_store_reg_tmp[i].valid = unsigned'(1'(0));
-            if ((cores__dmem_write_out[i] && atomic_data_access_comb[i]) && !d_mem_cdc__fast_in__wait_out[i]) begin
+            if (cores__dmem_write_out[i] && !d_mem_cdc__fast_in__wait_out[i]) begin
                 peer_store_reg_tmp[i].valid = unsigned'(1'(1));
                 peer_store_reg_tmp[i].addr = unsigned'(32'(cores__dmem_addr_out[i]));
-            end
-        end
-        atomic_selected=0;
-        ordinary_data_pending=0;
-        for (i='h0;i < CPU_CORES;i=i+1) begin
-            if (((cores__dmem_read_out[i] || cores__dmem_write_out[i])) && !cores__atomic_data_request_out[i]) begin
-                ordinary_data_pending=1;
-            end
-        end
-        if (atomic_owner_valid_reg) begin
-            if (cores__atomic_complete_out[unsigned'(32'(atomic_owner_reg))] || !cores__atomic_request_out[unsigned'(32'(atomic_owner_reg))]) begin
-                atomic_owner_valid_reg_tmp = unsigned'(1'(0));
-                atomic_rr_reg_tmp = (unsigned'(32'(atomic_owner_reg)) == (CPU_CORES - 'h1)) ? (unsigned'(32'('h0))) : (unsigned'(32'(atomic_owner_reg)) + 'h1);
-            end
-        end
-        else begin
-            if (!ordinary_data_pending) begin
-                for (atomic_offset='h0;atomic_offset < CPU_CORES;atomic_offset=atomic_offset+1) begin
-                    atomic_candidate=unsigned'(32'(atomic_rr_reg)) + atomic_offset;
-                    if (atomic_candidate>=CPU_CORES) begin
-                        atomic_candidate-=CPU_CORES;
-                    end
-                    if (!atomic_selected && cores__atomic_request_out[atomic_candidate]) begin
-                        atomic_owner_valid_reg_tmp = unsigned'(1'(1));
-                        atomic_owner_reg_tmp = atomic_candidate;
-                        atomic_selected=1;
-                    end
-                end
             end
         end
         if (reset) begin
@@ -1042,9 +835,6 @@ module TribeTest #(
                 peer_store_reg_tmp[i].valid = unsigned'(1'(0));
                 peer_store_reg_tmp[i].addr = unsigned'(32'h0);
             end
-            atomic_owner_valid_reg_tmp = '0;
-            atomic_owner_reg_tmp = '0;
-            atomic_rr_reg_tmp = '0;
         end
     end
     endtask
@@ -1068,16 +858,10 @@ module TribeTest #(
 
     always_ff @(posedge clk) begin
         peer_store_reg_tmp = peer_store_reg;
-        atomic_owner_valid_reg_tmp = atomic_owner_valid_reg;
-        atomic_owner_reg_tmp = atomic_owner_reg;
-        atomic_rr_reg_tmp = atomic_rr_reg;
 
         _work_clk(reset);
 
         peer_store_reg <= peer_store_reg_tmp;
-        atomic_owner_valid_reg <= atomic_owner_valid_reg_tmp;
-        atomic_owner_reg <= atomic_owner_reg_tmp;
-        atomic_rr_reg <= atomic_rr_reg_tmp;
     end
 
     always_ff @(posedge l2_clock) begin
@@ -1097,24 +881,6 @@ module TribeTest #(
     assign dmem_addr_out = cores__dmem_addr_out['h0];
 
     assign imem_read_addr_out = cores__imem_read_addr_out['h0];
-
-    assign debug_core_out = cores__debug_core_out['h0];
-
-    assign debug_mmu_out = cores__debug_mmu_out['h0];
-
-    assign debug_cache_out = cores__debug_cache_out['h0];
-
-    assign debug_wb_out = cores__debug_wb_out['h0];
-
-    assign debug_csr_out = cores__debug_csr_out['h0];
-
-    assign debug_irq_out = cores__debug_irq_out['h0];
-
-    assign debug_regs_out = cores__debug_regs_out['h0];
-
-    assign debug_branch_out = cores__debug_branch_out['h0];
-
-    assign debug_decode_out = cores__debug_decode_out['h0];
 
     assign sbi_set_timer_out = cores__sbi_set_timer_out['h0];
 
