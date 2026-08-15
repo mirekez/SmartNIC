@@ -69,11 +69,14 @@ module SmartNIC #(
     // regs and combs
     reg read_active_reg[1];
     reg[HANDLE_BITS-1:0] read_handle_reg[1];
+    reg[14-1:0] read_length_reg[1];
     reg[14-1:0] read_remaining_reg[1];
     reg[LOGICAL_ROW_BITS-1:0] read_word_reg[1];
     reg[6-1:0] meta_bytes_reg[1][8];
     reg meta_sop_reg[1][8];
     reg meta_eop_reg[1][8];
+    reg[HANDLE_BITS-1:0] meta_handle_reg[1][8];
+    reg[14-1:0] meta_length_reg[1][8];
     reg[3-1:0] meta_head_reg[1];
     reg[3-1:0] meta_tail_reg[1];
     reg[4-1:0] meta_count_reg[1];
@@ -84,6 +87,9 @@ module SmartNIC #(
     logic[READ_PORTS*HANDLE_BITS-1:0] network_read_handle_comb;
     logic[READ_PORTS*LOGICAL_ROW_BITS-1:0] network_read_word_comb;
     logic[1-1:0] network_read_ready_comb;
+    logic[1-1:0] network_release_valid_comb;
+    logic[READ_PORTS*HANDLE_BITS-1:0] network_release_handle_comb;
+    logic[14-1:0] network_release_length_comb;
     logic[2-1:0] network_tx_valid_comb;
     logic[NET_BITS-1:0] network_tx_data_comb;
     logic[NET_BYTES-1:0] network_tx_keep_comb;
@@ -121,6 +127,9 @@ module SmartNIC #(
     wire[READ_PORTS*LANE_WIDTH-1:0] network__read_data_out;
     wire[READ_PORTS-1:0] network__read_valid_out;
     wire[READ_PORTS-1:0] network__read_ready_in;
+    wire[READ_PORTS-1:0] network__release_valid_in;
+    wire[READ_PORTS*($clog2((BANK_DEPTH*'h2)) + 'h3)-1:0] network__release_handle_in;
+    wire[READ_PORTS*64'hE-1:0] network__release_length_in;
     wire[2-1:0] network__tx_valid_in;
     wire[64'h2*LANE_WIDTH-1:0] network__tx_data_in;
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] network__tx_keep_in;
@@ -163,6 +172,9 @@ module SmartNIC #(
 ,       .read_data_out(network__read_data_out)
 ,       .read_valid_out(network__read_valid_out)
 ,       .read_ready_in(network__read_ready_in)
+,       .release_valid_in(network__release_valid_in)
+,       .release_handle_in(network__release_handle_in)
+,       .release_length_in(network__release_length_in)
 ,       .tx_valid_in(network__tx_valid_in)
 ,       .tx_data_in(network__tx_data_in)
 ,       .tx_keep_in(network__tx_keep_in)
@@ -255,11 +267,14 @@ module SmartNIC #(
     // tmp variables
     logic read_active_reg_tmp[1];
     logic[HANDLE_BITS-1:0] read_handle_reg_tmp[1];
+    logic[14-1:0] read_length_reg_tmp[1];
     logic[14-1:0] read_remaining_reg_tmp[1];
     logic[LOGICAL_ROW_BITS-1:0] read_word_reg_tmp[1];
     logic[6-1:0] meta_bytes_reg_tmp[1][8];
     logic meta_sop_reg_tmp[1][8];
     logic meta_eop_reg_tmp[1][8];
+    logic[HANDLE_BITS-1:0] meta_handle_reg_tmp[1][8];
+    logic[14-1:0] meta_length_reg_tmp[1][8];
     logic[3-1:0] meta_head_reg_tmp[1];
     logic[3-1:0] meta_tail_reg_tmp[1];
     logic[4-1:0] meta_count_reg_tmp[1];
@@ -313,6 +328,38 @@ module SmartNIC #(
         network_read_ready_comb = 'h0;
         for (port='h0;port < READ_PORTS;port=port+1) begin
             network_read_ready_comb[port] = (unsigned'(32'(meta_count_reg[port])) != 'h0) && rx_stream__ready_out[port];
+        end
+    end
+
+    always_comb begin : network_release_valid_comb_func  // network_release_valid_comb_func
+        logic[31:0] port;
+        logic[31:0] head;
+        network_release_valid_comb = 'h0;
+        for (port='h0;port < READ_PORTS;port=port+1) begin
+            head=unsigned'(32'(meta_head_reg[port]));
+            network_release_valid_comb[port] = (network__read_valid_out[port] && network_read_ready_comb[port]) && meta_eop_reg[port][head];
+        end
+    end
+
+    always_comb begin : network_release_handle_comb_func  // network_release_handle_comb_func
+        logic[31:0] port;
+        logic[31:0] _bit;
+        network_release_handle_comb = 'h0;
+        for (port='h0;port < READ_PORTS;port=port+1) begin
+            for (_bit='h0;_bit < HANDLE_BITS;_bit=_bit+1) begin
+                network_release_handle_comb[(port*HANDLE_BITS) + _bit] = meta_handle_reg[port][unsigned'(32'(meta_head_reg[port]))][_bit];
+            end
+        end
+    end
+
+    always_comb begin : network_release_length_comb_func  // network_release_length_comb_func
+        logic[31:0] port;
+        logic[31:0] _bit;
+        network_release_length_comb = 'h0;
+        for (port='h0;port < READ_PORTS;port=port+1) begin
+            for (_bit='h0;_bit < FRAME_LENGTH_BITS;_bit=_bit+1) begin
+                network_release_length_comb[(port*FRAME_LENGTH_BITS) + _bit] = meta_length_reg[port][unsigned'(32'(meta_head_reg[port]))][_bit];
+            end
         end
     end
 
@@ -460,6 +507,9 @@ module SmartNIC #(
         assign network__read_handle_in = network_read_handle_comb;
         assign network__read_word_in = network_read_word_comb;
         assign network__read_ready_in = network_read_ready_comb;
+        assign network__release_valid_in = network_release_valid_comb;
+        assign network__release_handle_in = network_release_handle_comb;
+        assign network__release_length_in = network_release_length_comb;
         assign network__tx_valid_in = network_tx_valid_comb;
         assign network__tx_data_in = network_tx_data_comb;
         assign network__tx_keep_in = network_tx_keep_comb;
@@ -527,6 +577,7 @@ module SmartNIC #(
             if (command_fire) begin
                 command = read_command_0_comb;
                 read_handle_reg_tmp[port] = command['h0 +:HANDLE_BITS - 'h1 - 'h0 + 1];
+                read_length_reg_tmp[port] = command[HANDLE_BITS +:READ_COMMAND_BITS - 'h1 - HANDLE_BITS + 1];
                 read_remaining_reg_tmp[port] = command[HANDLE_BITS +:READ_COMMAND_BITS - 'h1 - HANDLE_BITS + 1];
                 read_word_reg_tmp[port] = 'h0;
                 read_active_reg_tmp[port] = unsigned'(1'(command[HANDLE_BITS +:READ_COMMAND_BITS - 'h1 - HANDLE_BITS + 1] != 'h0));
@@ -543,6 +594,8 @@ module SmartNIC #(
                 meta_bytes_reg_tmp[port][tail] = bytes;
                 meta_sop_reg_tmp[port][tail] = unsigned'(1'(unsigned'(32'(read_word_reg[port])) == 'h0));
                 meta_eop_reg_tmp[port][tail] = unsigned'(1'(remaining<=LANE_BYTES));
+                meta_handle_reg_tmp[port][tail] = read_handle_reg[port];
+                meta_length_reg_tmp[port][tail] = read_length_reg[port];
                 tail=((tail + 'h1)) & ((READ_META_DEPTH - 'h1));
                 count=count+1;
                 read_word_reg_tmp[port] = read_word_reg[port] + 'h1;
@@ -576,6 +629,7 @@ module SmartNIC #(
             for (port='h0;port < READ_PORTS;port=port+1) begin
                 read_active_reg_tmp[port] = '0;
                 read_handle_reg_tmp[port] = '0;
+                read_length_reg_tmp[port] = '0;
                 read_remaining_reg_tmp[port] = '0;
                 read_word_reg_tmp[port] = '0;
                 meta_head_reg_tmp[port] = '0;
@@ -585,6 +639,8 @@ module SmartNIC #(
                     meta_bytes_reg_tmp[port][slot] = '0;
                     meta_sop_reg_tmp[port][slot] = '0;
                     meta_eop_reg_tmp[port][slot] = '0;
+                    meta_handle_reg_tmp[port][slot] = '0;
+                    meta_length_reg_tmp[port][slot] = '0;
                 end
             end
             descriptor_hold_reg_tmp = '0;
@@ -602,11 +658,14 @@ module SmartNIC #(
     always_ff @(posedge net_clk) begin
         read_active_reg_tmp = read_active_reg;
         read_handle_reg_tmp = read_handle_reg;
+        read_length_reg_tmp = read_length_reg;
         read_remaining_reg_tmp = read_remaining_reg;
         read_word_reg_tmp = read_word_reg;
         meta_bytes_reg_tmp = meta_bytes_reg;
         meta_sop_reg_tmp = meta_sop_reg;
         meta_eop_reg_tmp = meta_eop_reg;
+        meta_handle_reg_tmp = meta_handle_reg;
+        meta_length_reg_tmp = meta_length_reg;
         meta_head_reg_tmp = meta_head_reg;
         meta_tail_reg_tmp = meta_tail_reg;
         meta_count_reg_tmp = meta_count_reg;
@@ -618,11 +677,14 @@ module SmartNIC #(
 
         read_active_reg <= read_active_reg_tmp;
         read_handle_reg <= read_handle_reg_tmp;
+        read_length_reg <= read_length_reg_tmp;
         read_remaining_reg <= read_remaining_reg_tmp;
         read_word_reg <= read_word_reg_tmp;
         meta_bytes_reg <= meta_bytes_reg_tmp;
         meta_sop_reg <= meta_sop_reg_tmp;
         meta_eop_reg <= meta_eop_reg_tmp;
+        meta_handle_reg <= meta_handle_reg_tmp;
+        meta_length_reg <= meta_length_reg_tmp;
         meta_head_reg <= meta_head_reg_tmp;
         meta_tail_reg <= meta_tail_reg_tmp;
         meta_count_reg <= meta_count_reg_tmp;

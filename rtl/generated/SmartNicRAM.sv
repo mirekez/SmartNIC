@@ -47,6 +47,7 @@ module SmartNicRAM #(
 
     task _work (input logic reset);
     begin: _work
+        _work_net_clk(reset);
     end
     endtask
 

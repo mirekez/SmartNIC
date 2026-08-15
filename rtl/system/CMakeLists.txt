@@ -92,7 +92,7 @@ function(smartnic_add_complete_system_target target generated_dir)
             "${generated_dir}/MasterDMA.sv"
             "${generated_dir}/Controller.sv"
             "${generated_dir}/System.sv"
-        DEPENDS cpphdl
+        DEPENDS "${CPPHDL_CONVERTER_DEPENDENCY}"
             "${CMAKE_CURRENT_SOURCE_DIR}/System.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/Controller.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/MasterDMA.h"

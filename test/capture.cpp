@@ -1,6 +1,7 @@
-// Full-system capture test. A finite minimum-IPG burst is injected at 2x10G.
-// The single Tribe worker releases every descriptor and sends packet 100,
-// 200, ... to the host. The test verifies those sampled packets byte-exactly.
+// Full-system capture test for the 2x10G profile. The single Tribe worker
+// releases every descriptor and sends packet 100, 200, ... to the host. The
+// test verifies those sampled packets byte-exactly; sustained mode also runs
+// long enough to require circular RxRAM allocation reuse.
 
 #include "SmartNICTest.h"
 #include "../rtl/testing/GenEthStream.h"
@@ -25,7 +26,11 @@ namespace
 #define SUSTAINED_CAPTURE 0
 #endif
 
-constexpr size_t TRAFFIC_DEPTH = 8192;
+// Sustained mode serializes each aggregate word into two single-lane words and
+// uses a longer inter-packet gap. This exercises the complete 2x10G profile
+// for longer than its receive buffering at the rate supported by its single
+// RxRAM read engine, without inserting illegal gaps inside a frame.
+constexpr size_t TRAFFIC_DEPTH = SUSTAINED_CAPTURE ? 32768 : 8192;
 using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, TRAFFIC_DEPTH>;
 using Generator = GenEthStream<NET_LANE_WIDTH>;
 
@@ -38,6 +43,7 @@ constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_REPEATS;
 constexpr uint32_t CAPTURED_FRAME_COUNT = FRAME_COUNT / CAPTURE_INTERVAL;
 constexpr uint64_t MAX_CPU_TICKS = 40000000;
 constexpr uint64_t PROGRESS_INTERVAL = 25000;
+constexpr uint32_t FIRMWARE_BOOT_TICKS = 25000;
 
 struct Elf32Header
 {
@@ -79,7 +85,7 @@ class CaptureTest
     logic<Dut::NET_BYTES> traffic_load_eop = 0;
     bool traffic_start = false;
     bool traffic_clear = false;
-    u<16> traffic_repeat_count = 1;
+    u<16> traffic_repeat_count = TRAFFIC_REPEATS;
     bool host_read = false;
     bool host_write = false;
     u32 host_address = 0;
@@ -328,8 +334,7 @@ class CaptureTest
                 0x02, 1, 2, 3, 4, (uint8_t)(0x80 + frame_index),
                 0x08, 0x00};
             std::copy(std::begin(header), std::end(header), frame.begin());
-            // Keep every packet bytewise unique after the one-byte MAC fields
-            // wrap, so long-run loss/duplication checking remains unambiguous.
+            // Keep every packet in the loaded base image bytewise unique.
             frame[14] = (uint8_t)frame_index;
             frame[15] = (uint8_t)(frame_index >> 8);
             frame[16] = (uint8_t)(frame_index >> 16);
@@ -350,23 +355,13 @@ class CaptureTest
         return sampled;
     }
 
-    static std::vector<std::vector<uint8_t>> wire_frames(
+    static std::vector<std::vector<uint8_t>> repeated_frames(
         const std::vector<std::vector<uint8_t>>& base)
     {
         std::vector<std::vector<uint8_t>> frames;
         frames.reserve(FRAME_COUNT);
         for (uint32_t repeat = 0; repeat < TRAFFIC_REPEATS; ++repeat) {
-            for (uint32_t index = 0; index < base.size(); ++index) {
-                auto frame = base[index];
-                const uint32_t sequence = repeat * BASE_FRAME_COUNT + index;
-                frame[5] = (uint8_t)sequence;
-                frame[11] = (uint8_t)(0x80 + sequence);
-                frame[14] = (uint8_t)sequence;
-                frame[15] = (uint8_t)(sequence >> 8);
-                frame[16] = (uint8_t)(sequence >> 16);
-                frame[17] = (uint8_t)(sequence >> 24);
-                frames.push_back(std::move(frame));
-            }
+            frames.insert(frames.end(), base.begin(), base.end());
         }
         return frames;
     }
@@ -375,9 +370,13 @@ class CaptureTest
     {
         Generator generator;
         generator.clear();
-        for (const auto& frame : frames) generator.push(frame, 12);
+        for (const auto& frame : frames) {
+            generator.push(frame, SUSTAINED_CAPTURE ? 256 : 12);
+        }
         generator.finalize();
-        if (generator.size() > TRAFFIC_DEPTH) {
+        const size_t load_words = generator.size()
+            * (SUSTAINED_CAPTURE ? 2 : 1);
+        if (load_words > TRAFFIC_DEPTH) {
             fail("traffic image exceeds harness generator depth");
             return false;
         }
@@ -387,13 +386,36 @@ class CaptureTest
                 return false;
             }
             const auto& beat = generator.front();
-            traffic_load_data = beat.data;
-            traffic_load_keep = beat.keep;
-            traffic_load_sop = beat.sop;
-            traffic_load_eop = beat.eop;
-            traffic_load_valid = true;
-            wait_net_edge();
-            traffic_load_valid = false;
+            const uint32_t words = SUSTAINED_CAPTURE ? 2 : 1;
+            for (uint32_t word = 0; word < words; ++word) {
+                traffic_load_data = 0;
+                traffic_load_keep = 0;
+                traffic_load_sop = 0;
+                traffic_load_eop = 0;
+                if (SUSTAINED_CAPTURE) {
+                    traffic_load_data.bits(NET_LANE_WIDTH - 1, 0) =
+                        beat.data.bits((word + 1) * NET_LANE_WIDTH - 1,
+                            word * NET_LANE_WIDTH);
+                    traffic_load_keep.bits(NET_LANE_WIDTH / 8 - 1, 0) =
+                        beat.keep.bits((word + 1) * (NET_LANE_WIDTH / 8) - 1,
+                            word * (NET_LANE_WIDTH / 8));
+                    traffic_load_sop.bits(NET_LANE_WIDTH / 8 - 1, 0) =
+                        beat.sop.bits((word + 1) * (NET_LANE_WIDTH / 8) - 1,
+                            word * (NET_LANE_WIDTH / 8));
+                    traffic_load_eop.bits(NET_LANE_WIDTH / 8 - 1, 0) =
+                        beat.eop.bits((word + 1) * (NET_LANE_WIDTH / 8) - 1,
+                            word * (NET_LANE_WIDTH / 8));
+                }
+                else {
+                    traffic_load_data = beat.data;
+                    traffic_load_keep = beat.keep;
+                    traffic_load_sop = beat.sop;
+                    traffic_load_eop = beat.eop;
+                }
+                traffic_load_valid = true;
+                wait_net_edge();
+                traffic_load_valid = false;
+            }
             generator.pop();
         }
         traffic_load_data = 0;
@@ -533,7 +555,7 @@ public:
             cycle(true);
         }
         const auto base_frames = make_frames();
-        const auto frames = wire_frames(base_frames);
+        const auto frames = repeated_frames(base_frames);
         const auto expected = sampled_frames(frames);
         for (uint32_t slot = 0; slot < expected.size(); ++slot) {
             write_ring_descriptor(slot,
@@ -542,7 +564,13 @@ public:
         }
         write32(Controller<>::REG_RX_PRODUCER, expected.size());
         write32(Controller<>::REG_CONTROL, Controller<>::CONTROL_ENABLE);
-        if (!load_traffic(frames)) return false;
+        if (!load_traffic(base_frames)) return false;
+
+        // The 2x10G profile has one processing cluster. Let its firmware
+        // finish initialization before releasing a non-stallable sustained
+        // burst, so the test measures steady-state datapath throughput rather
+        // than boot latency against finite receive buffering.
+        for (uint32_t tick = 0; tick < FIRMWARE_BOOT_TICKS; ++tick) cycle();
 
         traffic_start = true;
         wait_net_edge();
@@ -567,7 +595,9 @@ public:
                 report_protocol_errors();
                 fail("RTL protocol_error asserted");
             }
-            if (dut.storage_full_out()) fail("RxRAM/RxFIFO storage_full asserted");
+            if (dut.storage_full_out()) {
+                fail("RxRAM/RxFIFO storage_full asserted");
+            }
         }
         consumer = read32(Controller<>::REG_RX_CONSUMER);
         if (backpressure_reported) report_backpressure_state(consumer);

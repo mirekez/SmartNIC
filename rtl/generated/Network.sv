@@ -39,6 +39,9 @@ module Network #(
 ,   output wire[READ_PORTS*LANE_WIDTH-1:0] read_data_out
 ,   output wire[READ_PORTS-1:0] read_valid_out
 ,   input wire[READ_PORTS-1:0] read_ready_in
+,   input wire[READ_PORTS-1:0] release_valid_in
+,   input wire[READ_PORTS*HANDLE_BITS-1:0] release_handle_in
+,   input wire[READ_PORTS*FRAME_LENGTH_BITS-1:0] release_length_in
 ,   input wire[2-1:0] tx_valid_in
 ,   input wire[INPUT_BITS-1:0] tx_data_in
 ,   input wire[INPUT_BYTES-1:0] tx_keep_in
@@ -171,6 +174,9 @@ module Network #(
     wire[READ_PORTS*LANE_WIDTH-1:0] rx_ram__read_data_out;
     wire[READ_PORTS-1:0] rx_ram__read_valid_out;
     wire[READ_PORTS-1:0] rx_ram__read_ready_in;
+    wire[READ_PORTS-1:0] rx_ram__release_valid_in;
+    wire[READ_PORTS*($clog2((BANK_DEPTH*64'h2)) + 'h3)-1:0] rx_ram__release_handle_in;
+    wire[READ_PORTS*64'hE-1:0] rx_ram__release_length_in;
     wire rx_ram__protocol_error_out;
     wire rx_ram__storage_full_out;
     RxRAM #(
@@ -198,6 +204,9 @@ module Network #(
 ,       .read_data_out(rx_ram__read_data_out)
 ,       .read_valid_out(rx_ram__read_valid_out)
 ,       .read_ready_in(rx_ram__read_ready_in)
+,       .release_valid_in(rx_ram__release_valid_in)
+,       .release_handle_in(rx_ram__release_handle_in)
+,       .release_length_in(rx_ram__release_length_in)
 ,       .protocol_error_out(rx_ram__protocol_error_out)
 ,       .storage_full_out(rx_ram__storage_full_out)
     );
@@ -377,6 +386,9 @@ module Network #(
         assign rx_ram__read_handle_in = read_handle_in;
         assign rx_ram__read_word_in = read_word_in;
         assign rx_ram__read_ready_in = read_ready_in;
+        assign rx_ram__release_valid_in = release_valid_in;
+        assign rx_ram__release_handle_in = release_handle_in;
+        assign rx_ram__release_length_in = release_length_in;
         assign rx_fifo__valid_in = descriptor_valid_comb;
         assign rx_fifo__data_in = descriptor_input_comb;
         assign rx_fifo__ready_in = descriptor_ready_in;
@@ -493,6 +505,7 @@ module Network #(
 
     task _work (input logic reset);
     begin: _work
+        _work_net_clk(reset);
     end
     endtask
 
