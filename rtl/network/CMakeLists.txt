@@ -264,9 +264,8 @@ if(BUILD_TESTING)
     add_test(NAME network_basic COMMAND network_basic_tests)
     add_test(NAME smartnic_integration COMMAND smartnic_test)
     # Elaborate the exact checked-in FPGA Network composition.  The normal
-    # tests convert fresh, internally consistent RTL into the build tree, so
-    # they cannot catch stale/manual interface regressions between the FPGA
-    # parser shim, RxFifo, Fifo, and Network sources used by Vivado.
+    # tests convert fresh RTL into the build tree, so this also catches stale
+    # generated interfaces among PacketParser, RxFifo, Fifo, and Network.
     add_test(NAME network_fpga_rtl_lint
         COMMAND "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator"
             --lint-only
@@ -289,7 +288,7 @@ if(BUILD_TESTING)
             "${PROJECT_SOURCE_DIR}/rtl/generated/Fifo.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/SmartNicRAM.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/InputBalancer.sv"
-            "${PROJECT_SOURCE_DIR}/fpga/rtl/PacketParser_fpga.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParser.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/RxRAM.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/RxFifo.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/TxFifo.sv"

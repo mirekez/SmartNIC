@@ -527,7 +527,7 @@ public:
         protocol_error_out = _ASSIGN_COMB(error_comb_func());
     }
 
-    void _work(bool reset)
+    void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         size_t stream;
         if (reset) {

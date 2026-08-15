@@ -418,7 +418,7 @@ module OutputMerger #(
                         any_data=1;
                         last_byte=1;
                         for (remaining='h0;remaining < LANE_BYTES;remaining=remaining+1) begin
-                            if (remaining > byte_index && word_keep[remaining]) begin
+                            if ((remaining > byte_index) && word_keep[remaining]) begin
                                 last_byte=0;
                             end
                         end
@@ -528,8 +528,8 @@ module OutputMerger #(
         assign protocol_error_out = error_comb;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
         logic[63:0] stream;
         if (reset) begin
             rr_reg_tmp = '0;
@@ -545,7 +545,7 @@ module OutputMerger #(
             protocol_error_reg_tmp = '0;
             for (stream='h0;stream < STREAMS;stream=stream+1) begin
             end
-            disable _work;
+            disable _work_net_clk;
         end
         if (merge_result_comb[RESULT_VALID] && ready_in) begin
             rr_reg_tmp = merge_result_comb[RESULT_NEXT_RR +:RESULT_NEXT_RR + 'h2 - RESULT_NEXT_RR + 1];
@@ -567,9 +567,8 @@ module OutputMerger #(
     end
     endtask
 
-    task _work_net_clk (input logic reset);
-    begin: _work_net_clk
-        _work(reset);
+    task _work (input logic reset);
+    begin: _work
     end
     endtask
 

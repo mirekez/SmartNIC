@@ -22,7 +22,7 @@ module SmartNicRAM #(
 
     // regs and combs
     reg[WIDTH-1:0] q_out_reg;
-    (* ram_style = "block" *) reg[WIDTH-1:0] buffer[0:DEPTH-1];
+    reg[((WIDTH + 'h7))/'h8-1:0][8-1:0] buffer[DEPTH];
 
     // members
 
@@ -30,11 +30,11 @@ module SmartNicRAM #(
     logic[WIDTH-1:0] q_out_reg_tmp;
 
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
         if (reset) begin
             q_out_reg_tmp = '0;
-            disable _work;
+            disable _work_net_clk;
         end
         if (wr_in) begin
             buffer[addr_in] <= data_in;
@@ -45,9 +45,8 @@ module SmartNicRAM #(
     end
     endtask
 
-    task _work_net_clk (input logic reset);
-    begin: _work_net_clk
-        _work(reset);
+    task _work (input logic reset);
+    begin: _work
     end
     endtask
 

@@ -10,8 +10,8 @@ module Fifo #(
 ,   parameter OUTPUT_REG = 0
  )
  (
-    input wire l2_clock
-,   input wire system_clock
+    input wire net_clk
+,   input wire l2_clk
 ,   input wire reset
 ,   input wire write_in
 ,   input wire[FIFO_WIDTH_BYTES*'h8-1:0] write_data_in
@@ -50,8 +50,8 @@ module Fifo #(
 ,       FIFO_DEPTH
 ,       (OUTPUT_REG) ? (1) : (SHOWAHEAD)
     ) mem (
-        .l2_clock(l2_clock)
-,       .system_clock(system_clock)
+        .net_clk(net_clk)
+,       .l2_clk(l2_clk)
 ,       .reset(reset)
 ,       .write_addr_in(mem__write_addr_in)
 ,       .write_in(mem__write_in)
@@ -130,8 +130,8 @@ module Fifo #(
         assign afull_out = afull_reg;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
         logic mem_read;
         logic mem_write;
         logic output_read;
@@ -143,7 +143,7 @@ module Fifo #(
             afull_reg_tmp = '0;
             read_valid_reg_tmp = '0;
             read_data_reg_tmp = '0;
-            disable _work;
+            disable _work_net_clk;
         end
         if (OUTPUT_REG) begin
             mem_read=mem_read_comb;
@@ -198,12 +198,17 @@ module Fifo #(
     end
     endtask
 
-    task _work_system_clock (input logic reset);
-    begin: _work_system_clock
+    task _work (input logic reset);
+    begin: _work
     end
     endtask
 
-    always_ff @(posedge l2_clock) begin
+    task _work_l2_clk (input logic unused);
+    begin: _work_l2_clk
+    end
+    endtask
+
+    always_ff @(posedge net_clk) begin
         wp_reg_tmp = wp_reg;
         rp_reg_tmp = rp_reg;
         full_reg_tmp = full_reg;
@@ -211,7 +216,7 @@ module Fifo #(
         read_valid_reg_tmp = read_valid_reg;
         read_data_reg_tmp = read_data_reg;
 
-        _work(reset);
+        _work_net_clk(reset);
 
         wp_reg <= wp_reg_tmp;
         rp_reg <= rp_reg_tmp;
@@ -221,9 +226,9 @@ module Fifo #(
         read_data_reg <= read_data_reg_tmp;
     end
 
-    always_ff @(posedge system_clock) begin
+    always_ff @(posedge l2_clk) begin
 
-        _work_system_clock(reset);
+        _work_l2_clk(reset);
 
     end
 

@@ -486,8 +486,8 @@ module RxRAM #(
         assign storage_full_out = storage_full_reg;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
         logic[31:0] stream;
         logic[31:0] slot;
         logic[31:0] port;
@@ -536,7 +536,7 @@ module RxRAM #(
             end
             protocol_error_reg_tmp = unsigned'(1'h0);
             storage_full_reg_tmp = unsigned'(1'h0);
-            disable _work;
+            disable _work_net_clk;
         end
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             for (slot='h0;slot < COMPLETION_FIFO_WORDS;slot=slot+1) begin
@@ -663,9 +663,8 @@ module RxRAM #(
     end
     endtask
 
-    task _work_net_clk (input logic reset);
-    begin: _work_net_clk
-        _work(reset);
+    task _work (input logic reset);
+    begin: _work
     end
     endtask
 

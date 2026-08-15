@@ -30,15 +30,12 @@ specification. `klusterlab_r2.xdc` is the active constraint file;
 
 The FPGA profile uses 2 KiB instruction and 1 KiB data L1 caches per core and
 a shared 64 KiB, four-way L2 (four 9 KiB jumbo frames plus 28 KiB reserve).
-RV32 atomics, interrupt routing, and Sv32 MMU/TLB logic are disabled. To keep
-Vivado synthesis practical on memory-limited build hosts, the bounded parser
-captures 192 header bytes and accepts up to four IPv6 extension headers / 96
-extension bytes; this does not limit packet or jumbo-frame payload length.
-The FPGA files substitute `rtl/PacketParser_fpga.sv` at the same module
-boundary because Vivado 2024.2 exhausts a 10 GiB host while elaborating the
-CppHDL parser's unrolled functions. The compact implementation queues the
-first 64 bytes and preserves RAW/framing signals; parsed metadata is
-provisional until that parser is rewritten as a pipelined datapath.
+RV32 atomics, interrupt routing, and Sv32 MMU/TLB logic are disabled. The
+bounded parser captures 192 header bytes and accepts up to four IPv6 extension
+headers / 96 extension bytes; this does not limit packet or jumbo-frame payload
+length. The FPGA project uses `PacketParser.sv` generated directly from
+`rtl/network/PacketParser.h`, so hardware and native CppHDL/Verilator tests
+share the complete parser implementation.
 
 Current hardware scope is 2x10G plus Processing. The board's PCIe pins and
 clock are documented below, but the PCIe endpoint/System AXI bridge and the
