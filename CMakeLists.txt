@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Bootstrap CppHDL before project() so a fresh SmartNIC checkout can select the
-# compiler from the exported CppHDL Conda environment.  The converter itself is
-# built once, below, as part of the SmartNIC build graph.
+# compiler from the exported CppHDL Conda environment. SmartNIC normally uses
+# the converter already built in that checkout.
 set(CPPHDL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/cpphdl")
 set(CPPHDL_GIT_REPOSITORY "https://github.com/mirekez/cpphdl.git" CACHE STRING
     "CppHDL Git repository")
@@ -126,22 +126,63 @@ elseif(NOT EXISTS "${ETH_PCS_ROOT}/CMakeLists.txt")
         "or provide a checkout in the top project folder.")
 endif()
 
-# CppHDL is kept as the project subfolder/symlink and provides both the headers
-# and the C++-to-SystemVerilog converter.  SmartNIC tests stay independent of
-# the much larger CppHDL example and CPU test suites.
-set(CPPHDL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(CPPHDL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(CPPHDL_BUILD_TRIBE OFF CACHE BOOL "" FORCE)
-set(CPPHDL_BUILD_HDLCPP OFF CACHE BOOL "" FORCE)
-add_subdirectory("${CPPHDL_ROOT}" "${CMAKE_BINARY_DIR}/cpphdl" EXCLUDE_FROM_ALL)
+# CppHDL is a build tool, not part of SmartNIC. Prefer the converter already
+# built in its checkout and expose it as an imported executable target. A fresh
+# checkout without that executable retains the source-build fallback.
+set(CPPHDL_EXECUTABLE "${CPPHDL_ROOT}/build/cpphdl" CACHE FILEPATH
+    "Existing CppHDL converter executable")
+if(EXISTS "${CPPHDL_EXECUTABLE}")
+    message(STATUS "Using prebuilt CppHDL converter: ${CPPHDL_EXECUTABLE}")
+    add_executable(cpphdl IMPORTED GLOBAL)
+    set_target_properties(cpphdl PROPERTIES
+        IMPORTED_LOCATION "${CPPHDL_EXECUTABLE}")
+    set(CPPHDL_CONVERTER_DEPENDENCY "${CPPHDL_EXECUTABLE}")
 
-# Some Conda LLVM packages leave CLANG_INCLUDE_DIRS empty in ClangConfig.cmake
-# even though the development headers are installed in the prefix.  CppHDL is
-# a required RTL generator, so make that include path explicit for its target.
-if(TARGET cpphdl)
-    # Use an explicit compiler option as well: an older configured build can
-    # cache this prefix as an implicit include directory and CMake would then
-    # elide a normal target_include_directories() entry.
+    set(CPPHDL_HOST_OPT_FLAGS "" CACHE STRING
+        "Optional optimization flags for SmartNIC host simulations")
+    file(GLOB CPPHDL_STDCXXEXP_CANDIDATES
+        "${CPPHDL_ROOT}/.conda/lib/gcc/*/*/libstdc++exp.a")
+    if(CPPHDL_STDCXXEXP_CANDIDATES)
+        list(GET CPPHDL_STDCXXEXP_CANDIDATES 0 CPPHDL_STDCXXEXP)
+    endif()
+
+    function(cpphdl_link_stdcxxexp_if_available target)
+        if(CPPHDL_STDCXXEXP)
+            target_link_libraries(${target} PRIVATE "${CPPHDL_STDCXXEXP}")
+        endif()
+    endfunction()
+
+    function(cpphdl_add_host_opt_flags target)
+        if(CPPHDL_HOST_OPT_FLAGS)
+            separate_arguments(CPPHDL_HOST_OPT_FLAGS_LIST NATIVE_COMMAND
+                "${CPPHDL_HOST_OPT_FLAGS}")
+            target_compile_options(${target} PRIVATE
+                ${CPPHDL_HOST_OPT_FLAGS_LIST})
+        endif()
+    endfunction()
+
+    function(cpphdl_add_converter_dependency target)
+        # Relink the owning simulation if the external converter changes so
+        # its POST_BUILD RTL generation cannot remain stale.
+        set_property(TARGET ${target} APPEND PROPERTY
+            LINK_DEPENDS "${CPPHDL_EXECUTABLE}")
+    endfunction()
+
+    # The selected compiler already knows its implicit system include paths.
+    set(CPPHDL_TOOLCHAIN_ARGS "")
+else()
+    message(STATUS
+        "Prebuilt CppHDL converter not found; building it from source")
+    set(CPPHDL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(CPPHDL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(CPPHDL_BUILD_TRIBE OFF CACHE BOOL "" FORCE)
+    set(CPPHDL_BUILD_HDLCPP OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${CPPHDL_ROOT}" "${CMAKE_BINARY_DIR}/cpphdl"
+        EXCLUDE_FROM_ALL)
+    set(CPPHDL_CONVERTER_DEPENDENCY cpphdl)
+
+    # Some Conda LLVM packages leave CLANG_INCLUDE_DIRS empty in
+    # ClangConfig.cmake even though the headers are installed in the prefix.
     target_compile_options(cpphdl PRIVATE
         "-I${CPPHDL_ROOT}/.conda/include")
 endif()

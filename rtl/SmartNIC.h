@@ -2,11 +2,6 @@
 
 #define SMARTNIC_TWO_CLOCKS 1
 
-// SmartNIC RTL root.  The external side is the ordered post-PCS Ethernet
-// stream used by Network.  The processing side uses 256-bit framed streams and
-// packet read commands on the same 156.25 MHz clock; PacketStream performs
-// synchronous width conversion without a clock-domain crossing.
-
 #include "network/Network.h"
 #include "common/PacketStream.h"
 #include "Config.h"
@@ -98,11 +93,14 @@ private:
     // Net-domain RxRAM sequential read engines and response metadata queues.
     reg<u1> read_active_reg[READ_PORTS];
     reg<u<HANDLE_BITS>> read_handle_reg[READ_PORTS];
+    reg<u<FRAME_LENGTH_BITS>> read_length_reg[READ_PORTS];
     reg<u<FRAME_LENGTH_BITS>> read_remaining_reg[READ_PORTS];
     reg<u<LOGICAL_ROW_BITS>> read_word_reg[READ_PORTS];
     reg<u<6>> meta_bytes_reg[READ_PORTS][READ_META_DEPTH];
     reg<u1> meta_sop_reg[READ_PORTS][READ_META_DEPTH];
     reg<u1> meta_eop_reg[READ_PORTS][READ_META_DEPTH];
+    reg<u<HANDLE_BITS>> meta_handle_reg[READ_PORTS][READ_META_DEPTH];
+    reg<u<FRAME_LENGTH_BITS>> meta_length_reg[READ_PORTS][READ_META_DEPTH];
     reg<u<3>> meta_head_reg[READ_PORTS];
     reg<u<3>> meta_tail_reg[READ_PORTS];
     reg<u<4>> meta_count_reg[READ_PORTS];
@@ -116,6 +114,9 @@ private:
     logic<READ_PORTS * HANDLE_BITS> network_read_handle_comb;
     logic<READ_PORTS * LOGICAL_ROW_BITS> network_read_word_comb;
     logic<READ_PORTS> network_read_ready_comb;
+    logic<READ_PORTS> network_release_valid_comb;
+    logic<READ_PORTS * HANDLE_BITS> network_release_handle_comb;
+    logic<READ_PORTS * FRAME_LENGTH_BITS> network_release_length_comb;
     logic<STREAMS> network_tx_valid_comb;
     logic<NET_BITS> network_tx_data_comb;
     logic<NET_BYTES> network_tx_keep_comb;
@@ -191,6 +192,48 @@ private:
                 && rx_stream[port].ready_out();
         }
         return network_read_ready_comb;
+    }
+
+    logic<READ_PORTS>& network_release_valid_comb_func()
+    {
+        uint32_t port;
+        uint32_t head;
+        network_release_valid_comb = 0;
+        for (port = 0; port < READ_PORTS; ++port) {
+            head = (uint32_t)meta_head_reg[port];
+            network_release_valid_comb[port] = network.read_valid_out()[port]
+                && network_read_ready_comb_func()[port]
+                && meta_eop_reg[port][head];
+        }
+        return network_release_valid_comb;
+    }
+
+    logic<READ_PORTS * HANDLE_BITS>& network_release_handle_comb_func()
+    {
+        uint32_t port;
+        uint32_t bit;
+        network_release_handle_comb = 0;
+        for (port = 0; port < READ_PORTS; ++port) {
+            for (bit = 0; bit < HANDLE_BITS; ++bit) {
+                network_release_handle_comb[port * HANDLE_BITS + bit] =
+                    meta_handle_reg[port][(uint32_t)meta_head_reg[port]][bit];
+            }
+        }
+        return network_release_handle_comb;
+    }
+
+    logic<READ_PORTS * FRAME_LENGTH_BITS>& network_release_length_comb_func()
+    {
+        uint32_t port;
+        uint32_t bit;
+        network_release_length_comb = 0;
+        for (port = 0; port < READ_PORTS; ++port) {
+            for (bit = 0; bit < FRAME_LENGTH_BITS; ++bit) {
+                network_release_length_comb[port * FRAME_LENGTH_BITS + bit] =
+                    meta_length_reg[port][(uint32_t)meta_head_reg[port]][bit];
+            }
+        }
+        return network_release_length_comb;
     }
 
     logic<READ_PORTS>& l2_read_command_ready_comb_func()
@@ -425,6 +468,12 @@ public:
         network.read_handle_in = _ASSIGN_COMB(network_read_handle_comb_func());
         network.read_word_in = _ASSIGN_COMB(network_read_word_comb_func());
         network.read_ready_in = _ASSIGN_COMB(network_read_ready_comb_func());
+        network.release_valid_in =
+            _ASSIGN_COMB(network_release_valid_comb_func());
+        network.release_handle_in =
+            _ASSIGN_COMB(network_release_handle_comb_func());
+        network.release_length_in =
+            _ASSIGN_COMB(network_release_length_comb_func());
         network.tx_valid_in = _ASSIGN_COMB(network_tx_valid_comb_func());
         network.tx_data_in = _ASSIGN_COMB(network_tx_data_comb_func());
         network.tx_keep_in = _ASSIGN_COMB(network_tx_keep_comb_func());
@@ -531,6 +580,8 @@ public:
                 command = read_command_0_comb_func();
                 read_handle_reg[port]._next =
                     command.bits(HANDLE_BITS - 1, 0);
+                read_length_reg[port]._next = command.bits(
+                    READ_COMMAND_BITS - 1, HANDLE_BITS);
                 read_remaining_reg[port]._next = command.bits(
                     READ_COMMAND_BITS - 1, HANDLE_BITS);
                 read_word_reg[port]._next = 0;
@@ -553,6 +604,8 @@ public:
                 meta_sop_reg[port][tail]._next =
                     (uint32_t)read_word_reg[port] == 0;
                 meta_eop_reg[port][tail]._next = remaining <= LANE_BYTES;
+                meta_handle_reg[port][tail]._next = read_handle_reg[port];
+                meta_length_reg[port][tail]._next = read_length_reg[port];
                 tail = (tail + 1) & (READ_META_DEPTH - 1);
                 ++count;
                 read_word_reg[port]._next = read_word_reg[port] + 1;
@@ -587,6 +640,7 @@ public:
             for (port = 0; port < READ_PORTS; ++port) {
                 read_active_reg[port].clr();
                 read_handle_reg[port].clr();
+                read_length_reg[port].clr();
                 read_remaining_reg[port].clr();
                 read_word_reg[port].clr();
                 meta_head_reg[port].clr();
@@ -596,6 +650,8 @@ public:
                     meta_bytes_reg[port][slot].clr();
                     meta_sop_reg[port][slot].clr();
                     meta_eop_reg[port][slot].clr();
+                    meta_handle_reg[port][slot].clr();
+                    meta_length_reg[port][slot].clr();
                 }
             }
             descriptor_hold_reg.clr();
@@ -622,6 +678,7 @@ public:
         for (port = 0; port < READ_PORTS; ++port) {
             read_active_reg[port].strobe();
             read_handle_reg[port].strobe();
+            read_length_reg[port].strobe();
             read_remaining_reg[port].strobe();
             read_word_reg[port].strobe();
             meta_head_reg[port].strobe();
@@ -631,6 +688,8 @@ public:
                 meta_bytes_reg[port][slot].strobe();
                 meta_sop_reg[port][slot].strobe();
                 meta_eop_reg[port][slot].strobe();
+                meta_handle_reg[port][slot].strobe();
+                meta_length_reg[port][slot].strobe();
             }
         }
         descriptor_hold_reg.strobe();

@@ -19,35 +19,17 @@ add_custom_target(capture_firmware DEPENDS "${CAPTURE_ELF}")
 file(GLOB CAPTURE_STDCXXEXP
     "${PROJECT_SOURCE_DIR}/cpphdl/.conda/lib/gcc/*/*/libstdc++exp.a")
 
-option(SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS
-    "Register the long 2x10G throughput assertion in CTest"
-    OFF)
-
 function(smartnic_add_capture_target sustained)
-    set(cdc_available TRUE)
-    foreach(required_header
-            "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common/Axi4Cdc.h"
-            "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/cache/L1MemCdc.h")
-        if(NOT EXISTS "${required_header}")
-            set(cdc_available FALSE)
-        endif()
-    endforeach()
     if(sustained)
-        set(target capture_20g_throughput_test)
-        if(SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS AND cdc_available)
-            add_executable(${target} capture.cpp)
-        else()
-            add_executable(${target} EXCLUDE_FROM_ALL capture.cpp)
-        endif()
-        set(suffix _throughput)
+        set(target capture_2x10g_sustained_test)
+        set(rate 2x10g)
+        add_executable(${target} capture.cpp)
+        set(suffix _sustained)
         set(sustained_value 1)
     else()
-        set(target capture_20g_test)
-        if(cdc_available)
-            add_executable(${target} capture.cpp)
-        else()
-            add_executable(${target} EXCLUDE_FROM_ALL capture.cpp)
-        endif()
+        set(target capture_2x10g_test)
+        set(rate 2x10g)
+        add_executable(${target} capture.cpp)
         set(suffix "")
         set(sustained_value 0)
     endif()
@@ -70,22 +52,21 @@ function(smartnic_add_capture_target sustained)
         target_link_libraries(${target} PRIVATE "${CAPTURE_STDCXXEXP_LIBRARY}")
     endif()
 
-    if(BUILD_TESTING AND cdc_available
-            AND (NOT sustained OR SMARTNIC_ENABLE_SUSTAINED_CAPTURE_TESTS))
-        add_test(NAME system_capture_20g${suffix}
+    if(BUILD_TESTING)
+        add_test(NAME system_capture_${rate}${suffix}
             COMMAND "$<TARGET_FILE:${target}>" "${CAPTURE_ELF}")
-        set_tests_properties(system_capture_20g${suffix} PROPERTIES
+        set_tests_properties(system_capture_${rate}${suffix} PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-            LABELS "system;capture;cpu;avalon;20g${suffix}"
+            LABELS "system;capture;cpu;avalon;${rate}${suffix}"
             TIMEOUT 3600)
     endif()
 endfunction()
 
 smartnic_add_capture_target(FALSE)
 smartnic_add_capture_target(TRUE)
-add_custom_target(run_capture_20g_throughput
-    COMMAND "$<TARGET_FILE:capture_20g_throughput_test>" "${CAPTURE_ELF}"
-    DEPENDS capture_20g_throughput_test capture_firmware
+add_custom_target(run_capture_2x10g_sustained
+    COMMAND "$<TARGET_FILE:capture_2x10g_sustained_test>" "${CAPTURE_ELF}"
+    DEPENDS capture_2x10g_sustained_test capture_firmware
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     USES_TERMINAL
     VERBATIM)

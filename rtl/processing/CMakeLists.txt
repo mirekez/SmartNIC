@@ -1,23 +1,6 @@
 add_executable(descriptor_fetcher_test tests/decoder_fetcher.cpp)
 add_executable(packet_dma_test tests/packet_dma.cpp)
-set(SMARTNIC_TRIBE_CDC_AVAILABLE TRUE)
-foreach(required_header
-        "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common/Axi4Cdc.h"
-        "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/cache/L1MemCdc.h")
-    if(NOT EXISTS "${required_header}")
-        set(SMARTNIC_TRIBE_CDC_AVAILABLE FALSE)
-    endif()
-endforeach()
-if(SMARTNIC_TRIBE_CDC_AVAILABLE)
-    add_executable(cpu_test tests/cpu.cpp)
-else()
-    # This CppHDL checkout omits the optional native CDC simulation wrappers.
-    # Keep the explicit target for developers who restore them, but do not let
-    # an ordinary SmartNIC build fail before using the checked-in CPU RTL.
-    add_executable(cpu_test EXCLUDE_FROM_ALL tests/cpu.cpp)
-    message(STATUS
-        "Tribe CDC simulation headers are absent; cpu_test is excluded from ALL")
-endif()
+add_executable(cpu_test tests/cpu.cpp)
 
 set(SMARTNIC_L2_CLOCK_HZ 156250000)
 set(SMARTNIC_CPU_CLOCK_HZ 312500000)
@@ -159,7 +142,7 @@ add_custom_target(processing_rtl
         -I "${CMAKE_CURRENT_SOURCE_DIR}"
         -I "${PROJECT_SOURCE_DIR}"
         ${CPPHDL_TOOLCHAIN_ARGS}
-    DEPENDS cpphdl
+    DEPENDS "${CPPHDL_CONVERTER_DEPENDENCY}"
         "${CMAKE_CURRENT_SOURCE_DIR}/Processing.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/CPU.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/DescriptorFetcher.h"
@@ -171,9 +154,7 @@ add_custom_target(processing_rtl
 if(BUILD_TESTING)
     add_test(NAME processing_descriptor_fetcher COMMAND descriptor_fetcher_test)
     add_test(NAME processing_packet_dma COMMAND packet_dma_test)
-    if(SMARTNIC_TRIBE_CDC_AVAILABLE)
-        add_test(NAME processing_cpu COMMAND cpu_test)
-    endif()
+    add_test(NAME processing_cpu COMMAND cpu_test)
     set_tests_properties(processing_descriptor_fetcher PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         LABELS "processing;cpphdl;verilator"
@@ -188,13 +169,11 @@ if(BUILD_TESTING)
         ENVIRONMENT
             "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
     )
-    if(SMARTNIC_TRIBE_CDC_AVAILABLE)
-        set_tests_properties(processing_cpu PROPERTIES
-            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-            LABELS "processing;cpphdl;verilator;cpu"
-            TIMEOUT 1800
-            ENVIRONMENT
-                "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
-        )
-    endif()
+    set_tests_properties(processing_cpu PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "processing;cpphdl;verilator;cpu"
+        TIMEOUT 1800
+        ENVIRONMENT
+            "CONDA_PREFIX=${PROJECT_SOURCE_DIR}/cpphdl/.conda;CPPHDL_VERILATOR=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator;CPPHDL_VERILATOR_CXX=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/clang++;CPPHDL_VERILATOR_CFLAGS=-O0;PATH=${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin:$ENV{PATH}"
+    )
 endif()
