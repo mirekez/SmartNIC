@@ -15,11 +15,11 @@ module RxFifo #(
 ,   input wire l2_clk
 ,   input wire reset
 ,   input wire[2-1:0] valid_in
-,   input wire RxDescriptorWord[2-1:0] data_in
+,   input RxDescriptorWord[2-1:0] data_in
 ,   output wire[2-1:0] ready_out
 ,   output wire[2-1:0] almost_full_out
 ,   output wire valid_out
-,   output wire RxDescriptorWord data_out
+,   output RxDescriptorWord data_out
 ,   input wire ready_in
 ,   input wire clear_in
 );
@@ -56,8 +56,8 @@ module RxFifo #(
 ,       1
 ,       0
         ) fifos (
-            .l2_clock(net_clk)
-,           .system_clock(l2_clk)
+            .net_clk(net_clk)
+        ,           .l2_clk(l2_clk)
         ,           .reset(reset)
         ,           .write_in(fifos__write_in[__i])
         ,           .write_data_in(fifos__write_data_in[__i])
@@ -152,15 +152,15 @@ module RxFifo #(
         assign data_out = output_data_comb;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
         logic[31:0] stream;
         logic[31:0] selected;
         if (reset) begin
             rr_reg_tmp = '0;
             for (stream='h0;stream < STREAMS;stream=stream+1) begin
             end
-            disable _work;
+            disable _work_net_clk;
         end
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
         end
@@ -171,9 +171,8 @@ module RxFifo #(
     end
     endtask
 
-    task _work_net_clk (input logic reset);
-    begin: _work_net_clk
-        _work(reset);
+    task _work (input logic reset);
+    begin: _work
     end
     endtask
 

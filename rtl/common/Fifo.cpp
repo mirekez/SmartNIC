@@ -131,7 +131,7 @@ public:
         afull_out = _ASSIGN_REG(afull_reg);
     }
 
-    void _work(bool reset)
+    void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         bool mem_read;
         bool mem_write;

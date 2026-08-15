@@ -203,7 +203,7 @@ public:
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
     }
 
-    void _work(bool reset)
+    void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         size_t byte;
         uint32_t pop;

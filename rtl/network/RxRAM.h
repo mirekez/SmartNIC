@@ -528,7 +528,7 @@ public:
         storage_full_out = _ASSIGN_REG(storage_full_reg);
     }
 
-    void _work(bool reset)
+    void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         uint32_t stream;
         uint32_t slot;

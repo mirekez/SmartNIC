@@ -45,7 +45,7 @@ public:
         read_data_out = _ASSIGN_COMB(data_out_comb_func());
     }
 
-    void _work(bool reset)
+    void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         size_t byte;
         if (reset) {

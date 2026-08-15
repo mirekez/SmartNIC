@@ -35,13 +35,12 @@ set generated_dir [file join $repo_dir rtl generated]
 # but excluding them here makes the FPGA resource configuration unambiguous.
 set generated_sources {}
 foreach source [glob -directory $generated_dir *.sv] {
-    if {[lsearch -exact {MMU_TLB.sv InterruptController.sv PacketParser.sv} \
+    if {[lsearch -exact {MMU_TLB.sv InterruptController.sv} \
             [file tail $source]] < 0} {
         lappend generated_sources $source
     }
 }
 add_files -norecurse $generated_sources
-add_files -norecurse [file join $script_dir rtl PacketParser_fpga.sv]
 add_files -norecurse [file join $script_dir rtl klusterlab_top.sv]
 add_files -fileset constrs_1 -norecurse \
     [file join $script_dir klusterlab_r2.xdc]

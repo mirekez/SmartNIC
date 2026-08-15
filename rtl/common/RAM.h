@@ -24,7 +24,7 @@ private:
     memory<u8, (WIDTH + 7) / 8, DEPTH> buffer;
 
 public:
-    void _work(bool reset)
+    void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         if (reset) {
             q_out_reg.clr();

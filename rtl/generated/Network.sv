@@ -404,8 +404,8 @@ module Network #(
         assign storage_full_out = rx_ram__storage_full_out;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
         logic[31:0] stream;
         logic[31:0] _bit;
         logic[31:0] address;
@@ -430,7 +430,7 @@ module Network #(
                 ram_complete_reg_tmp[stream] = '0;
             end
             protocol_error_reg_tmp = '0;
-            disable _work;
+            disable _work_net_clk;
         end
         parser_bus = parser__data_out;
         handles = rx_ram__packet_handle_out;
@@ -491,9 +491,8 @@ module Network #(
     end
     endtask
 
-    task _work_net_clk (input logic reset);
-    begin: _work_net_clk
-        _work(reset);
+    task _work (input logic reset);
+    begin: _work
     end
     endtask
 

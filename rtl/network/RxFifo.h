@@ -176,7 +176,7 @@ public:
         data_out = _ASSIGN_COMB(output_data_comb_func());
     }
 
-    void _work(bool reset)
+    void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         uint32_t stream;
         uint32_t selected;

@@ -11,7 +11,8 @@ module PacketParser #(
     parameter LANE_WIDTH = 'h40
  )
  (
-    input wire clk
+    input wire net_clk
+,   input wire l2_clk
 ,   input wire reset
 ,   input wire[2-1:0] valid_in
 ,   input wire[INPUT_BITS-1:0] data_in
@@ -605,8 +606,8 @@ module PacketParser #(
         assign protocol_error_out = protocol_error_reg;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_net_clk (input logic reset);
+    begin: _work_net_clk
         logic[31:0] stream;
         logic[31:0] slot;
         logic[31:0] _byte;
@@ -648,7 +649,7 @@ module PacketParser #(
                 end
             end
             protocol_error_reg_tmp = unsigned'(1'h0);
-            disable _work;
+            disable _work_net_clk;
         end
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             aligned_header_reg_tmp[stream] = aligned_header_reg[stream];
@@ -774,7 +775,17 @@ module PacketParser #(
     end
     endtask
 
-    always @(posedge clk) begin
+    task _work (input logic reset);
+    begin: _work
+    end
+    endtask
+
+    task _work_l2_clk (input logic unused);
+    begin: _work_l2_clk
+    end
+    endtask
+
+    always_ff @(posedge net_clk) begin
         aligned_header_reg_tmp = aligned_header_reg;
         header_count_reg_tmp = header_count_reg;
         frame_length_reg_tmp = frame_length_reg;
@@ -790,7 +801,7 @@ module PacketParser #(
         fifo_count_reg_tmp = fifo_count_reg;
         protocol_error_reg_tmp = protocol_error_reg;
 
-        _work(reset);
+        _work_net_clk(reset);
 
         aligned_header_reg <= aligned_header_reg_tmp;
         header_count_reg <= header_count_reg_tmp;
@@ -806,6 +817,12 @@ module PacketParser #(
         fifo_tail_reg <= fifo_tail_reg_tmp;
         fifo_count_reg <= fifo_count_reg_tmp;
         protocol_error_reg <= protocol_error_reg_tmp;
+    end
+
+    always_ff @(posedge l2_clk) begin
+
+        _work_l2_clk(reset);
+
     end
 
 
