@@ -49,11 +49,11 @@ module TxQueue #(
     wire queue__empty_out;
     wire queue__full_out;
     wire[16-1:0] queue__packet_length_out;
-    wire[$clog2(256 + 'h1)-1:0] queue__packet_count_out;
+    wire[$clog2(DEPTH + 'h1)-1:0] queue__packet_count_out;
     wire queue__protocol_error_out;
     wire queue__clear_in;
     PacketQueue #(
-        256
+        DEPTH
 ,       256
 ,       16
     ) queue (

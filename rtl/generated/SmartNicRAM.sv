@@ -22,7 +22,8 @@ module SmartNicRAM #(
 
     // regs and combs
     reg[WIDTH-1:0] q_out_reg;
-    reg[((WIDTH + 'h7))/'h8-1:0][8-1:0] buffer[DEPTH];
+    (* ram_style = "block" *)
+    reg[WIDTH-1:0] buffer[DEPTH];
 
     // members
 

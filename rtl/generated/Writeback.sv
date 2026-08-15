@@ -9,7 +9,7 @@ module Writeback (
     input wire clk
 ,   input wire l2_clock
 ,   input wire reset
-,   input State state_in
+,   input wire State state_in
 ,   input wire[31:0] alu_result_in
 ,   input wire[31:0] mem_data_in
 ,   input wire[31:0] mem_data_hi_in

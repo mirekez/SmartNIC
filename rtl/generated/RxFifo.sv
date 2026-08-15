@@ -15,11 +15,11 @@ module RxFifo #(
 ,   input wire l2_clk
 ,   input wire reset
 ,   input wire[2-1:0] valid_in
-,   input RxDescriptorWord[2-1:0] data_in
+,   input wire RxDescriptorWord[2-1:0] data_in
 ,   output wire[2-1:0] ready_out
 ,   output wire[2-1:0] almost_full_out
 ,   output wire valid_out
-,   output RxDescriptorWord data_out
+,   output wire RxDescriptorWord data_out
 ,   input wire ready_in
 ,   input wire clear_in
 );

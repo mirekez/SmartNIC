@@ -2,7 +2,6 @@
 
 import Predef_pkg::*;
 import Zicsr_pkg::*;
-import Rv32ia_pkg::*;
 import Rv32im_pkg::*;
 import Rv32ic_pkg::*;
 import Rv32i_pkg::*;
@@ -12,9 +11,9 @@ import Wb_pkg::*;
 import Br_pkg::*;
 import Sys_pkg::*;
 import Trap_pkg::*;
-import Amo_pkg::*;
 import Csr_pkg::*;
 import State_pkg::*;
+import Amo_pkg::*;
 import L1CacheFsmState_pkg::*;
 import L1InputRequestComb_pkg::*;
 import L1LookupComb_pkg::*;
@@ -26,15 +25,6 @@ import L1MemDriver_pkg::*;
 import L1RequestState_pkg::*;
 import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
-import TribeCoreDebug_pkg::*;
-import TribeMmuDebug_pkg::*;
-import TribeCacheDebug_pkg::*;
-import TribeWritebackDebug_pkg::*;
-import TribeCsrDebug_pkg::*;
-import TribeIrqDebug_pkg::*;
-import TribeRegsDebug_pkg::*;
-import TribeBranchDebug_pkg::*;
-import TribeDecodeDebug_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
 import L1PeerStoreState_pkg::*;
@@ -142,23 +132,14 @@ module CPU (
     wire tribe__dmem_read_out;
     wire[31:0] tribe__dmem_addr_out;
     wire[31:0] tribe__imem_read_addr_out;
-    TribeCoreDebug tribe__debug_core_out;
-    TribeMmuDebug tribe__debug_mmu_out;
-    TribeCacheDebug tribe__debug_cache_out;
-    TribeWritebackDebug tribe__debug_wb_out;
-    TribeCsrDebug tribe__debug_csr_out;
-    TribeIrqDebug tribe__debug_irq_out;
-    TribeRegsDebug tribe__debug_regs_out;
-    TribeBranchDebug tribe__debug_branch_out;
-    TribeDecodeDebug tribe__debug_decode_out;
     wire tribe__sbi_set_timer_out;
     wire[31:0] tribe__sbi_timer_lo_out;
     wire[31:0] tribe__sbi_timer_hi_out;
     wire tribe__sbi_set_timer_per_core_out[4];
     wire[31:0] tribe__sbi_timer_lo_per_core_out[4];
     wire[31:0] tribe__sbi_timer_hi_per_core_out[4];
-    TribeSbiDebug tribe__debug_sbi_out;
-    TribePerf tribe__perf_out;
+    wire TribeSbiDebug tribe__debug_sbi_out;
+    wire TribePerf tribe__perf_out;
     wire[31:0] tribe__reset_pc_in;
     wire[31:0] tribe__boot_hartid_in;
     wire[31:0] tribe__boot_dtb_addr_in;
@@ -167,14 +148,6 @@ module CPU (
     wire[31:0] tribe__memory_base_in;
     wire[31:0] tribe__memory_size_in;
     wire[31:0] tribe__mem_region_size_in[4];
-    wire tribe__clint_msip_in;
-    wire tribe__clint_mtip_in;
-    wire[31:0] tribe__time_lo_in;
-    wire[31:0] tribe__time_hi_in;
-    wire tribe__external_irq_in;
-    wire tribe__clint_msip_per_core_in[4];
-    wire tribe__clint_mtip_per_core_in[4];
-    wire tribe__external_irq_per_core_in[4];
     wire tribe__axi_in__awvalid_in[4];
     wire tribe__axi_in__awready_out[4];
     wire[32-1:0] tribe__axi_in__awaddr_in[4];
@@ -235,15 +208,6 @@ module CPU (
 ,       .dmem_read_out(tribe__dmem_read_out)
 ,       .dmem_addr_out(tribe__dmem_addr_out)
 ,       .imem_read_addr_out(tribe__imem_read_addr_out)
-,       .debug_core_out(tribe__debug_core_out)
-,       .debug_mmu_out(tribe__debug_mmu_out)
-,       .debug_cache_out(tribe__debug_cache_out)
-,       .debug_wb_out(tribe__debug_wb_out)
-,       .debug_csr_out(tribe__debug_csr_out)
-,       .debug_irq_out(tribe__debug_irq_out)
-,       .debug_regs_out(tribe__debug_regs_out)
-,       .debug_branch_out(tribe__debug_branch_out)
-,       .debug_decode_out(tribe__debug_decode_out)
 ,       .sbi_set_timer_out(tribe__sbi_set_timer_out)
 ,       .sbi_timer_lo_out(tribe__sbi_timer_lo_out)
 ,       .sbi_timer_hi_out(tribe__sbi_timer_hi_out)
@@ -260,14 +224,6 @@ module CPU (
 ,       .memory_base_in(tribe__memory_base_in)
 ,       .memory_size_in(tribe__memory_size_in)
 ,       .mem_region_size_in(tribe__mem_region_size_in)
-,       .clint_msip_in(tribe__clint_msip_in)
-,       .clint_mtip_in(tribe__clint_mtip_in)
-,       .time_lo_in(tribe__time_lo_in)
-,       .time_hi_in(tribe__time_hi_in)
-,       .external_irq_in(tribe__external_irq_in)
-,       .clint_msip_per_core_in(tribe__clint_msip_per_core_in)
-,       .clint_mtip_per_core_in(tribe__clint_mtip_per_core_in)
-,       .external_irq_per_core_in(tribe__external_irq_per_core_in)
 ,       .axi_in__awvalid_in(tribe__axi_in__awvalid_in)
 ,       .axi_in__awready_out(tribe__axi_in__awready_out)
 ,       .axi_in__awaddr_in(tribe__axi_in__awaddr_in)
@@ -322,7 +278,6 @@ module CPU (
 
 
     generate  // _assign
-        genvar gcore;
         genvar gport;
         assign tribe__reset_pc_in = reset_pc_in;
         assign tribe__boot_hartid_in = boot_hartid_in;
@@ -340,13 +295,6 @@ module CPU (
         assign tribe__dma_line_addr_in = unsigned'(32'(unsigned'(32'h0)));
         assign tribe__dma_line_data_in = 'h0;
         assign tribe__dma_line_keep_in = 'h0;
-        assign tribe__time_lo_in = unsigned'(32'('h0));
-        assign tribe__time_hi_in = unsigned'(32'('h0));
-        for (gcore='h0;gcore < CORES;gcore=gcore+1) begin
-            assign tribe__clint_msip_per_core_in[gcore] = software_irq_in[gcore];
-            assign tribe__clint_mtip_per_core_in[gcore] = timer_irq_in[gcore];
-            assign tribe__external_irq_per_core_in[gcore] = external_irq_in[gcore];
-        end
         assign tribe__axi_in__awvalid_in['h0] = dma_in__awvalid_in;
         assign tribe__axi_in__awaddr_in['h0] = dma_in__awaddr_in;
         assign tribe__axi_in__awid_in['h0] = dma_in__awid_in;

@@ -21,7 +21,12 @@ public:
 
 private:
     reg<logic<WIDTH>> q_out_reg;
-    memory<u8, (WIDTH + 7) / 8, DEPTH> buffer;
+    // This RAM is always read and written as a complete word.  A singleton
+    // memory element emits a two-dimensional packed-word array, which Vivado
+    // can infer directly as block RAM instead of expanding a byte/word 3-D
+    // array into registers.
+    // (* ram_style = "block" *)
+    memory<logic<WIDTH>, 1, DEPTH> buffer;
 
 public:
     void SMARTNIC_NETWORK_WORK_METHOD(bool reset)

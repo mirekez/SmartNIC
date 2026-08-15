@@ -1,6 +1,6 @@
 # Out-of-tree CMake build products
 /build/
-/fpga/build/
+/fpga/build
 /fpga/open_switch.bit
 /.gen/
 /.srcs/

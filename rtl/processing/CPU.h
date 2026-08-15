@@ -19,6 +19,9 @@
 // the private L1s stay deliberately small. The packet-processing firmware
 // does not need atomics, interrupt routing, or address translation.
 #include "../../cpphdl/tribe_cpu/Config.h"
+#undef ENABLE_RV32IA
+#undef ENABLE_ISR
+#undef ENABLE_MMU_TLB
 #include "../../cpphdl/tribe_cpu/TribeTestModule.h"
 #include "../common/Axi4Master.h"
 
