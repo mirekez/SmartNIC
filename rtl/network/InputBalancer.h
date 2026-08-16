@@ -118,7 +118,7 @@ private:
     reg<u1> in_frame_reg;
     reg<u1> protocol_error_reg;
 
-    uint32_t occupancy_after_pop(size_t output)
+    uint32_t occupancy_after_pop(uint32_t output)
     {
         uint32_t count = (uint32_t)count_reg[output];
         if (count != 0 && (bool)ready_in()[output]) {
@@ -130,7 +130,7 @@ private:
         return count;
     }
 
-    bool output_eligible(size_t output)
+    bool output_eligible(uint32_t output)
     {
         return occupancy_after_pop(output) <= ELIGIBLE_WORDS;
     }
@@ -138,8 +138,8 @@ private:
     // The source can advance when the active frame has worst-case push room
     // and every SOP visible in this clock can reserve a distinct destination.
     _LAZY_COMB(input_ready_comb, bool)
-        size_t output;
-        size_t byte;
+        uint32_t output;
+        uint32_t byte;
         uint32_t eligible;
         uint32_t starts;
         uint32_t active_count;
@@ -179,8 +179,8 @@ private:
     }
 
     _LAZY_COMB(output_data_comb, logic<INPUT_BITS>)
-        size_t output;
-        size_t lane_bit;
+        uint32_t output;
+        uint32_t lane_bit;
         uint32_t logical;
         uint32_t bank;
         uint32_t row;
@@ -211,8 +211,8 @@ private:
     }
 
     _LAZY_COMB(output_keep_comb, logic<INPUT_BYTES>)
-        size_t output;
-        size_t lane_byte;
+        uint32_t output;
+        uint32_t lane_byte;
         uint32_t logical;
         uint32_t bank;
         uint32_t row;
@@ -243,8 +243,8 @@ private:
     }
 
     _LAZY_COMB(output_sop_comb, logic<INPUT_BYTES>)
-        size_t output;
-        size_t lane_byte;
+        uint32_t output;
+        uint32_t lane_byte;
         uint32_t logical;
         uint32_t bank;
         uint32_t row;
@@ -275,8 +275,8 @@ private:
     }
 
     _LAZY_COMB(output_eop_comb, logic<INPUT_BYTES>)
-        size_t output;
-        size_t lane_byte;
+        uint32_t output;
+        uint32_t lane_byte;
         uint32_t logical;
         uint32_t bank;
         uint32_t row;
@@ -307,7 +307,7 @@ private:
     }
 
     _LAZY_COMB(output_valid_comb, logic<LANES>)
-        size_t output;
+        uint32_t output;
         output_valid_comb = 0;
         for (output = 0; output < LANES; ++output) {
             output_valid_comb[output] = (uint32_t)count_reg[output] != 0;
@@ -349,9 +349,9 @@ public:
 
     void _work(bool reset)
     {
-        size_t output;
-        size_t byte;
-        size_t offset;
+        uint32_t output;
+        uint32_t byte;
+        uint32_t offset;
         uint32_t head[LANES];
         uint32_t tail[LANES];
         uint32_t count[LANES];
@@ -563,7 +563,7 @@ public:
 #ifdef SMARTNIC_TWO_CLOCKS
     void _strobe_net_clk()
     {
-        size_t output;
+        uint32_t output;
 #define INPUT_BALANCER_APPLY_BANK(output_number, bank_number) \
         data_##output_number##_##bank_number.apply(); \
         keep_##output_number##_##bank_number.apply(); \
@@ -592,7 +592,7 @@ public:
 
     void _strobe()
     {
-        size_t output;
+        uint32_t output;
 #define INPUT_BALANCER_APPLY_LEGACY_BANK(output_number, bank_number) \
         data_##output_number##_##bank_number.apply(); \
         keep_##output_number##_##bank_number.apply(); \

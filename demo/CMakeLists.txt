@@ -1,6 +1,23 @@
 set(DEMO_CAPTURE_ELF "${CMAKE_CURRENT_BINARY_DIR}/capture.elf")
 set(DEMO_VIDEO "${CMAKE_CURRENT_SOURCE_DIR}/output/smartnic_400g_long.avi")
 
+# The project deliberately uses the CppHDL Conda compiler.  Search for host
+# dependencies in that compiler environment as well; a Conda target compiler
+# does not use Ubuntu's /usr/lib/x86_64-linux-gnu by default.  Assign normal
+# variables here so a stale FindZLIB cache from a prior system-compiler build
+# cannot mix the system header with the Conda library.
+if(NOT ZLIB_ROOT)
+    set(ZLIB_ROOT "${CPPHDL_ROOT}/.conda")
+endif()
+find_path(SMARTNIC_ZLIB_INCLUDE_DIR zlib.h
+    PATHS "${ZLIB_ROOT}/include" NO_DEFAULT_PATH NO_CACHE)
+find_library(SMARTNIC_ZLIB_LIBRARY z
+    PATHS "${ZLIB_ROOT}/lib" "${ZLIB_ROOT}/lib64"
+    NO_DEFAULT_PATH NO_CACHE)
+if(SMARTNIC_ZLIB_INCLUDE_DIR AND SMARTNIC_ZLIB_LIBRARY)
+    set(ZLIB_INCLUDE_DIR "${SMARTNIC_ZLIB_INCLUDE_DIR}")
+    set(ZLIB_LIBRARY "${SMARTNIC_ZLIB_LIBRARY}")
+endif()
 find_package(ZLIB REQUIRED)
 
 find_program(DEMO_RISCV_CC NAMES riscv32-unknown-elf-gcc
