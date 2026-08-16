@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Bootstrap CppHDL before project() so a fresh SmartNIC checkout can select the
-# compiler from the exported CppHDL Conda environment.  The converter itself is
-# built once, below, as part of the SmartNIC build graph.
+# compiler from the exported CppHDL Conda environment.  SmartNIC consumes an
+# already-built converter; it does not compile the CppHDL project itself.
 set(CPPHDL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/cpphdl")
+set(CPPHDL_EXECUTABLE "${CPPHDL_ROOT}/build/cpphdl" CACHE FILEPATH
+    "Existing CppHDL converter executable")
 set(CPPHDL_GIT_REPOSITORY "https://github.com/mirekez/cpphdl.git" CACHE STRING
     "CppHDL Git repository")
 set(CPPHDL_GIT_TAG "main" CACHE STRING "CppHDL Git branch or tag")
@@ -84,11 +86,6 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND EXISTS "${CPPHDL_ROOT}/.conda/bin/clang++"
         CACHE FILEPATH "C++ compiler" FORCE)
 endif()
 
-# CppHDL is a subdirectory here, so its own CMAKE_SOURCE_DIR is SmartNIC rather
-# than cpphdl.  Pass the prepared prefix explicitly for LLVM/Clang discovery.
-set(CPPHDL_USE_LOCAL_CONDA ON CACHE BOOL "" FORCE)
-set(CPPHDL_LOCAL_CONDA_PREFIX "${CPPHDL_ROOT}/.conda" CACHE PATH "" FORCE)
-
 project(smartnic LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -126,14 +123,54 @@ elseif(NOT EXISTS "${ETH_PCS_ROOT}/CMakeLists.txt")
         "or provide a checkout in the top project folder.")
 endif()
 
-# CppHDL is kept as the project subfolder/symlink and provides both the headers
-# and the C++-to-SystemVerilog converter.  SmartNIC tests stay independent of
-# the much larger CppHDL example and CPU test suites.
-set(CPPHDL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(CPPHDL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(CPPHDL_BUILD_TRIBE OFF CACHE BOOL "" FORCE)
-set(CPPHDL_BUILD_HDLCPP OFF CACHE BOOL "" FORCE)
-add_subdirectory("${CPPHDL_ROOT}" "${CMAKE_BINARY_DIR}/cpphdl" EXCLUDE_FROM_ALL)
+# CppHDL is kept as the project subfolder/symlink and provides headers plus an
+# externally built C++-to-SystemVerilog converter.  An imported target preserves
+# $<TARGET_FILE:cpphdl> and dependency usage in the component CMake files while
+# ensuring the default SmartNIC build never compiles CppHDL or LLVM/Clang.
+if(NOT EXISTS "${CPPHDL_EXECUTABLE}")
+    message(FATAL_ERROR
+        "CppHDL converter is missing at ${CPPHDL_EXECUTABLE}. Build it in the "
+        "CppHDL checkout or configure -DCPPHDL_EXECUTABLE=/path/to/cpphdl.")
+endif()
+add_executable(cpphdl IMPORTED GLOBAL)
+set_target_properties(cpphdl PROPERTIES
+    IMPORTED_LOCATION "${CPPHDL_EXECUTABLE}")
+
+# These helpers are part of CppHDL's build API, but importing only the converter
+# means SmartNIC defines the small subset its test targets use.
+set(CPPHDL_HOST_OPT_FLAGS "" CACHE STRING
+    "Extra host CPU optimization flags for SmartNIC tests")
+file(GLOB CPPHDL_STDCXXEXP_CANDIDATES
+    "${CPPHDL_ROOT}/.conda/lib/gcc/*/*/libstdc++exp.a")
+if(CPPHDL_STDCXXEXP_CANDIDATES)
+    list(GET CPPHDL_STDCXXEXP_CANDIDATES 0 CPPHDL_STDCXXEXP)
+endif()
+
+function(cpphdl_link_stdcxxexp_if_available target)
+    if(CPPHDL_STDCXXEXP)
+        target_link_libraries(${target} PRIVATE "${CPPHDL_STDCXXEXP}")
+    endif()
+endfunction()
+
+function(cpphdl_add_host_opt_flags target)
+    if(CPPHDL_HOST_OPT_FLAGS)
+        separate_arguments(CPPHDL_HOST_OPT_FLAGS_LIST NATIVE_COMMAND
+            "${CPPHDL_HOST_OPT_FLAGS}")
+        target_compile_options(${target} PRIVATE ${CPPHDL_HOST_OPT_FLAGS_LIST})
+    endif()
+endfunction()
+
+function(cpphdl_add_converter_dependency target)
+    # Relink a host test when the externally built converter changes so its
+    # POST_BUILD RTL generation cannot remain stale.
+    add_dependencies(${target} cpphdl)
+    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
+        "${CPPHDL_EXECUTABLE}")
+endfunction()
+
+# The converter records its compiler environment when it is built, so no extra
+# implicit include flags are required by this project.
+set(CPPHDL_TOOLCHAIN_ARGS "")
 
 include(CTest)
 add_subdirectory(rtl/network)
