@@ -13,6 +13,8 @@ set(CPPHDL_BUILD_DIR "${CPPHDL_ROOT}/build" CACHE PATH
     "Standalone minimal CppHDL build directory")
 set(CPPHDL_EXECUTABLE "${CPPHDL_BUILD_DIR}/cpphdl" CACHE FILEPATH
     "CppHDL converter executable")
+set(CPPHDL_MINIFORGE_VERSION "26.3.2-2" CACHE STRING
+    "Miniforge release used when Conda is not installed on the host")
 
 function(cpphdl_run_preparation_step description)
     message(STATUS "CppHDL: ${description}")
@@ -42,6 +44,74 @@ function(cpphdl_clone repository tag destination)
         "CppHDL preparation failed while cloning ${repository} into ${destination}")
 endfunction()
 
+function(cpphdl_bootstrap_conda prefix out_executable)
+    if(EXISTS "${prefix}" AND NOT EXISTS "${prefix}/bin/conda")
+        message(FATAL_ERROR
+            "CppHDL Conda prefix ${prefix} exists but is incomplete. Remove "
+            "that incomplete directory and configure again.")
+    endif()
+
+    execute_process(
+        COMMAND uname -s
+        OUTPUT_VARIABLE host_system
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE uname_system_result)
+    execute_process(
+        COMMAND uname -m
+        OUTPUT_VARIABLE host_arch
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE uname_arch_result)
+    if(NOT uname_system_result EQUAL 0 OR NOT uname_arch_result EQUAL 0
+            OR NOT host_system STREQUAL "Linux")
+        message(FATAL_ERROR
+            "Automatic Miniforge bootstrap currently supports Linux. Install "
+            "Conda manually or provide CPPHDL_CONDA_EXECUTABLE.")
+    endif()
+
+    if(host_arch STREQUAL "x86_64")
+        set(installer_sha256
+            "42260ffe3830fb953d5eee1bbb32229ff06aa7c3833c1ed7a9a0420a95685d94")
+    elseif(host_arch STREQUAL "aarch64")
+        set(installer_sha256
+            "f4096a92482b30f04534cddb63d8bc929118318deffac71d90fb89dc52359d22")
+    elseif(host_arch STREQUAL "ppc64le")
+        set(installer_sha256
+            "8b3527cd4c70e6eb4a6c2c4c41de34c2480f0a5200de2ecb7fe385d186af0869")
+    else()
+        message(FATAL_ERROR
+            "Automatic Miniforge bootstrap does not support Linux ${host_arch}. "
+            "Install Conda manually or provide CPPHDL_CONDA_EXECUTABLE.")
+    endif()
+
+    set(installer_name
+        "Miniforge3-${CPPHDL_MINIFORGE_VERSION}-Linux-${host_arch}.sh")
+    set(installer_url
+        "https://github.com/conda-forge/miniforge/releases/download/${CPPHDL_MINIFORGE_VERSION}/${installer_name}")
+    set(installer_path "${CMAKE_BINARY_DIR}/${installer_name}")
+    message(STATUS "CppHDL: downloading Miniforge from ${installer_url}")
+    file(DOWNLOAD "${installer_url}" "${installer_path}"
+        EXPECTED_HASH "SHA256=${installer_sha256}"
+        STATUS download_status
+        TLS_VERIFY ON
+        SHOW_PROGRESS)
+    list(GET download_status 0 download_result)
+    list(GET download_status 1 download_message)
+    if(NOT download_result EQUAL 0)
+        file(REMOVE "${installer_path}")
+        message(FATAL_ERROR
+            "CppHDL Miniforge download failed: ${download_message}")
+    endif()
+
+    cpphdl_run_preparation_step("installing Miniforge into ${prefix}"
+        /bin/bash "${installer_path}" -b -p "${prefix}")
+    file(REMOVE "${installer_path}")
+    if(NOT EXISTS "${prefix}/bin/conda")
+        message(FATAL_ERROR
+            "Miniforge installation did not produce ${prefix}/bin/conda")
+    endif()
+    set(${out_executable} "${prefix}/bin/conda" PARENT_SCOPE)
+endfunction()
+
 if(CPPHDL_AUTO_PREPARE)
     if(NOT EXISTS "${CPPHDL_ROOT}/CMakeLists.txt")
         find_package(Git REQUIRED)
@@ -59,8 +129,14 @@ if(CPPHDL_AUTO_PREPARE)
     if(NOT EXISTS "${CPPHDL_CONDA_CXX}"
             OR NOT EXISTS "${CPPHDL_CONDA_CMAKE}"
             OR NOT EXISTS "${CPPHDL_CLANG_TOOLING_HEADER}")
-        find_program(CPPHDL_CONDA_EXECUTABLE NAMES conda REQUIRED
+        find_program(CPPHDL_CONDA_EXECUTABLE NAMES conda
             DOC "Conda executable used to prepare CppHDL")
+        if(NOT CPPHDL_CONDA_EXECUTABLE)
+            cpphdl_bootstrap_conda("${CPPHDL_CONDA_PREFIX}"
+                CPPHDL_CONDA_EXECUTABLE)
+            set(CPPHDL_CONDA_EXECUTABLE "${CPPHDL_CONDA_EXECUTABLE}"
+                CACHE FILEPATH "Conda executable used to prepare CppHDL" FORCE)
+        endif()
         if(EXISTS "${CPPHDL_CONDA_PREFIX}/conda-meta")
             cpphdl_run_preparation_step("updating its Conda environment"
                 "${CPPHDL_CONDA_EXECUTABLE}" env update
