@@ -27,6 +27,20 @@ function(cpphdl_run_preparation_step description)
     endif()
 endfunction()
 
+function(cpphdl_run_retryable_preparation_step description)
+    foreach(attempt RANGE 1 3)
+        message(STATUS "CppHDL: ${description} (attempt ${attempt}/3)")
+        execute_process(
+            COMMAND ${ARGN}
+            RESULT_VARIABLE step_result
+            COMMAND_ECHO STDOUT)
+        if(step_result EQUAL 0)
+            return()
+        endif()
+    endforeach()
+    message(FATAL_ERROR "CppHDL preparation failed while ${description}")
+endfunction()
+
 function(cpphdl_clone repository tag destination)
     foreach(attempt RANGE 1 3)
         message(STATUS
@@ -123,12 +137,17 @@ if(CPPHDL_AUTO_PREPARE)
     set(CPPHDL_CONDA_CC "${CPPHDL_CONDA_PREFIX}/bin/clang")
     set(CPPHDL_CONDA_CXX "${CPPHDL_CONDA_PREFIX}/bin/clang++")
     set(CPPHDL_CONDA_CMAKE "${CPPHDL_CONDA_PREFIX}/bin/cmake")
+    set(CPPHDL_CONDA_LLD "${CPPHDL_CONDA_PREFIX}/bin/ld.lld")
     set(CPPHDL_CLANG_TOOLING_HEADER
         "${CPPHDL_CONDA_PREFIX}/include/clang/Tooling/Tooling.h")
 
+    set(CPPHDL_CONDA_ENV_INCOMPLETE OFF)
     if(NOT EXISTS "${CPPHDL_CONDA_CXX}"
             OR NOT EXISTS "${CPPHDL_CONDA_CMAKE}"
             OR NOT EXISTS "${CPPHDL_CLANG_TOOLING_HEADER}")
+        set(CPPHDL_CONDA_ENV_INCOMPLETE ON)
+    endif()
+    if(CPPHDL_CONDA_ENV_INCOMPLETE OR NOT EXISTS "${CPPHDL_CONDA_LLD}")
         find_program(CPPHDL_CONDA_EXECUTABLE NAMES conda
             DOC "Conda executable used to prepare CppHDL")
         if(NOT CPPHDL_CONDA_EXECUTABLE)
@@ -137,16 +156,28 @@ if(CPPHDL_AUTO_PREPARE)
             set(CPPHDL_CONDA_EXECUTABLE "${CPPHDL_CONDA_EXECUTABLE}"
                 CACHE FILEPATH "Conda executable used to prepare CppHDL" FORCE)
         endif()
-        if(EXISTS "${CPPHDL_CONDA_PREFIX}/conda-meta")
-            cpphdl_run_preparation_step("updating its Conda environment"
-                "${CPPHDL_CONDA_EXECUTABLE}" env update
+        if(CPPHDL_CONDA_ENV_INCOMPLETE)
+            if(EXISTS "${CPPHDL_CONDA_PREFIX}/conda-meta")
+                cpphdl_run_retryable_preparation_step(
+                    "updating its Conda environment"
+                    "${CPPHDL_CONDA_EXECUTABLE}" env update
+                    --prefix "${CPPHDL_CONDA_PREFIX}"
+                    --file "${CPPHDL_ROOT}/requirements.yaml")
+            else()
+                cpphdl_run_retryable_preparation_step(
+                    "creating its Conda environment"
+                    "${CPPHDL_CONDA_EXECUTABLE}" env create --yes
+                    --prefix "${CPPHDL_CONDA_PREFIX}"
+                    --file "${CPPHDL_ROOT}/requirements.yaml")
+            endif()
+        endif()
+        if(NOT EXISTS "${CPPHDL_CONDA_LLD}")
+            cpphdl_run_retryable_preparation_step(
+                "installing its minimal RISC-V linker"
+                "${CPPHDL_CONDA_EXECUTABLE}" install --yes
+                --freeze-installed
                 --prefix "${CPPHDL_CONDA_PREFIX}"
-                --file "${CPPHDL_ROOT}/requirements.yaml")
-        else()
-            cpphdl_run_preparation_step("creating its Conda environment"
-                "${CPPHDL_CONDA_EXECUTABLE}" env create --yes
-                --prefix "${CPPHDL_CONDA_PREFIX}"
-                --file "${CPPHDL_ROOT}/requirements.yaml")
+                --channel conda-forge "lld=21.1.3")
         endif()
     endif()
 
