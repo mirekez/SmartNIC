@@ -1,16 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Bootstrap CppHDL before project() so a fresh SmartNIC checkout can select the
-# compiler from the exported CppHDL Conda environment.  SmartNIC consumes an
-# already-built converter; it does not compile the CppHDL project itself.
+# compiler from the exported CppHDL Conda environment. SmartNIC prepares only
+# the converter executable and does not add the CppHDL project target graph.
 set(CPPHDL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/cpphdl")
-set(CPPHDL_EXECUTABLE "${CPPHDL_ROOT}/build/cpphdl" CACHE FILEPATH
-    "Existing CppHDL converter executable")
 set(CPPHDL_GIT_REPOSITORY "https://github.com/mirekez/cpphdl.git" CACHE STRING
     "CppHDL Git repository")
 set(CPPHDL_GIT_TAG "main" CACHE STRING "CppHDL Git branch or tag")
 option(CPPHDL_AUTO_PREPARE
-    "Clone CppHDL and create its Conda environment when missing" ON)
+    "Clone and minimally prepare CppHDL when required" ON)
+set(CPPHDL_BUILD_DIR "${CPPHDL_ROOT}/build" CACHE PATH
+    "Standalone minimal CppHDL build directory")
+set(CPPHDL_EXECUTABLE "${CPPHDL_BUILD_DIR}/cpphdl" CACHE FILEPATH
+    "CppHDL converter executable")
 
 function(cpphdl_run_preparation_step description)
     message(STATUS "CppHDL: ${description}")
@@ -71,6 +73,38 @@ if(CPPHDL_AUTO_PREPARE)
                 --file "${CPPHDL_ROOT}/requirements.yaml")
         endif()
     endif()
+
+    # The converter is required while SmartNIC targets are built.  Prepare it
+    # as a standalone, converter-only CppHDL build so a first `cmake ..` does
+    # not rely on an already activated environment or build the CppHDL tests,
+    # examples, hdlcpp, or Tribe CPU test suite.
+    if(NOT EXISTS "${CPPHDL_EXECUTABLE}")
+        cpphdl_run_preparation_step("configuring its minimal converter build"
+            "${CPPHDL_CONDA_CMAKE}"
+            -S "${CPPHDL_ROOT}"
+            -B "${CPPHDL_BUILD_DIR}"
+            -G "Unix Makefiles"
+            "-DCMAKE_BUILD_TYPE=Release"
+            "-DCMAKE_C_COMPILER=${CPPHDL_CONDA_CC}"
+            "-DCMAKE_CXX_COMPILER=${CPPHDL_CONDA_CXX}"
+            "-DCMAKE_MAKE_PROGRAM=${CPPHDL_CONDA_PREFIX}/bin/make"
+            "-DCPPHDL_USE_LOCAL_CONDA=ON"
+            "-DCPPHDL_LOCAL_CONDA_PREFIX=${CPPHDL_CONDA_PREFIX}"
+            "-DCPPHDL_FETCH_LLVM=OFF"
+            "-DCPPHDL_BUILD_EXAMPLES=OFF"
+            "-DCPPHDL_BUILD_TESTS=OFF"
+            "-DCPPHDL_BUILD_TRIBE=OFF"
+            "-DCPPHDL_BUILD_HDLCPP=OFF"
+            "-DBUILD_TESTING=OFF")
+        cpphdl_run_preparation_step("building its converter"
+            "${CPPHDL_CONDA_CMAKE}" --build "${CPPHDL_BUILD_DIR}"
+            --target cpphdl --parallel)
+        if(NOT EXISTS "${CPPHDL_EXECUTABLE}")
+            message(FATAL_ERROR
+                "CppHDL preparation completed without producing "
+                "${CPPHDL_EXECUTABLE}")
+        endif()
+    endif()
 elseif(NOT EXISTS "${CPPHDL_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR
         "CppHDL is missing at ${CPPHDL_ROOT}. Enable CPPHDL_AUTO_PREPARE "
@@ -85,6 +119,10 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND EXISTS "${CPPHDL_ROOT}/.conda/bin/clang++"
     set(CMAKE_CXX_COMPILER "${CPPHDL_ROOT}/.conda/bin/clang++"
         CACHE FILEPATH "C++ compiler" FORCE)
 endif()
+
+# Keep the prepared prefix explicit for CppHDL-compatible project helpers.
+set(CPPHDL_USE_LOCAL_CONDA ON CACHE BOOL "" FORCE)
+set(CPPHDL_LOCAL_CONDA_PREFIX "${CPPHDL_ROOT}/.conda" CACHE PATH "" FORCE)
 
 project(smartnic LANGUAGES CXX)
 
@@ -123,23 +161,20 @@ elseif(NOT EXISTS "${ETH_PCS_ROOT}/CMakeLists.txt")
         "or provide a checkout in the top project folder.")
 endif()
 
-# CppHDL is kept as the project subfolder/symlink and provides headers plus an
-# externally built C++-to-SystemVerilog converter.  An imported target preserves
-# $<TARGET_FILE:cpphdl> and dependency usage in the component CMake files while
-# ensuring the default SmartNIC build never compiles CppHDL or LLVM/Clang.
+# CppHDL is a prepared build tool, not part of the SmartNIC target graph.
 if(NOT EXISTS "${CPPHDL_EXECUTABLE}")
     message(FATAL_ERROR
-        "CppHDL converter is missing at ${CPPHDL_EXECUTABLE}. Build it in the "
-        "CppHDL checkout or configure -DCPPHDL_EXECUTABLE=/path/to/cpphdl.")
+        "CppHDL converter is missing at ${CPPHDL_EXECUTABLE}. Enable "
+        "CPPHDL_AUTO_PREPARE or provide CPPHDL_EXECUTABLE explicitly.")
 endif()
+message(STATUS "Using prepared CppHDL converter: ${CPPHDL_EXECUTABLE}")
 add_executable(cpphdl IMPORTED GLOBAL)
 set_target_properties(cpphdl PROPERTIES
     IMPORTED_LOCATION "${CPPHDL_EXECUTABLE}")
+set(CPPHDL_CONVERTER_DEPENDENCY "${CPPHDL_EXECUTABLE}")
 
-# These helpers are part of CppHDL's build API, but importing only the converter
-# means SmartNIC defines the small subset its test targets use.
 set(CPPHDL_HOST_OPT_FLAGS "" CACHE STRING
-    "Extra host CPU optimization flags for SmartNIC tests")
+    "Optional optimization flags for SmartNIC host simulations")
 file(GLOB CPPHDL_STDCXXEXP_CANDIDATES
     "${CPPHDL_ROOT}/.conda/lib/gcc/*/*/libstdc++exp.a")
 if(CPPHDL_STDCXXEXP_CANDIDATES)
@@ -156,20 +191,19 @@ function(cpphdl_add_host_opt_flags target)
     if(CPPHDL_HOST_OPT_FLAGS)
         separate_arguments(CPPHDL_HOST_OPT_FLAGS_LIST NATIVE_COMMAND
             "${CPPHDL_HOST_OPT_FLAGS}")
-        target_compile_options(${target} PRIVATE ${CPPHDL_HOST_OPT_FLAGS_LIST})
+        target_compile_options(${target} PRIVATE
+            ${CPPHDL_HOST_OPT_FLAGS_LIST})
     endif()
 endfunction()
 
 function(cpphdl_add_converter_dependency target)
-    # Relink a host test when the externally built converter changes so its
+    # Relink the owning simulation if the external converter changes so its
     # POST_BUILD RTL generation cannot remain stale.
-    add_dependencies(${target} cpphdl)
-    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
-        "${CPPHDL_EXECUTABLE}")
+    set_property(TARGET ${target} APPEND PROPERTY
+        LINK_DEPENDS "${CPPHDL_EXECUTABLE}")
 endfunction()
 
-# The converter records its compiler environment when it is built, so no extra
-# implicit include flags are required by this project.
+# The selected compiler already knows its implicit system include paths.
 set(CPPHDL_TOOLCHAIN_ARGS "")
 
 include(CTest)
