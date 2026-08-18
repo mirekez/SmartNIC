@@ -1,11 +1,14 @@
 set(CAPTURE_ELF "${CMAKE_CURRENT_BINARY_DIR}/capture.elf")
-find_program(CAPTURE_RISCV_CC NAMES riscv32-unknown-elf-gcc
+find_program(CAPTURE_RISCV_GCC NAMES riscv32-unknown-elf-gcc
     HINTS "$ENV{RISCV_HOME}/bin" "/home/me/riscv/bin")
 set(CAPTURE_RISCV_CC_ARGS)
-if(NOT CAPTURE_RISCV_CC)
-    find_program(CAPTURE_RISCV_CC NAMES clang
+if(CAPTURE_RISCV_GCC)
+    set(CAPTURE_RISCV_CC "${CAPTURE_RISCV_GCC}")
+else()
+    find_program(CAPTURE_RISCV_CLANG NAMES clang
         HINTS "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin"
         NO_DEFAULT_PATH REQUIRED)
+    set(CAPTURE_RISCV_CC "${CAPTURE_RISCV_CLANG}")
     set(CAPTURE_RISCV_CC_ARGS
         --target=riscv32-unknown-elf
         -fuse-ld=lld)

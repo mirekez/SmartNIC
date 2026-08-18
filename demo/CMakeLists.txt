@@ -20,12 +20,27 @@ if(SMARTNIC_ZLIB_INCLUDE_DIR AND SMARTNIC_ZLIB_LIBRARY)
 endif()
 find_package(ZLIB REQUIRED)
 
-find_program(DEMO_RISCV_CC NAMES riscv32-unknown-elf-gcc
-    HINTS "$ENV{RISCV_HOME}/bin" "/home/me/riscv/bin" REQUIRED)
+find_program(DEMO_RISCV_GCC NAMES riscv32-unknown-elf-gcc
+    HINTS "$ENV{RISCV_HOME}/bin" "/home/me/riscv/bin")
+set(DEMO_RISCV_CC_ARGS)
+if(DEMO_RISCV_GCC)
+    set(DEMO_RISCV_CC "${DEMO_RISCV_GCC}")
+else()
+    find_program(DEMO_RISCV_CLANG NAMES clang
+        HINTS "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin"
+        NO_DEFAULT_PATH REQUIRED)
+    set(DEMO_RISCV_CC "${DEMO_RISCV_CLANG}")
+    set(DEMO_RISCV_CC_ARGS
+        --target=riscv32-unknown-elf
+        -fuse-ld=lld)
+    message(STATUS
+        "RISC-V GCC not found; building demo firmware with Clang/LLD")
+endif()
 
 add_custom_command(
     OUTPUT "${DEMO_CAPTURE_ELF}"
     COMMAND "${DEMO_RISCV_CC}"
+        ${DEMO_RISCV_CC_ARGS}
         -march=rv32im_zicsr -mabi=ilp32
         -nostdlib
         -Wl,--no-relax
