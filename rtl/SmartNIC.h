@@ -14,7 +14,8 @@ using namespace cpphdl;
     M(0) M(1)
 
 template<size_t LANE_WIDTH = NET_LANE_WIDTH, size_t BANK_DEPTH = 4096,
-    size_t RX_FIFO_DEPTH = 64, size_t TX_FIFO_WORDS = 2048>
+    size_t RX_FIFO_DEPTH = 64, size_t TX_FIFO_WORDS = 2048,
+    bool ENABLE_RAW = true>
 class SmartNIC : public Module
 {
 public:
@@ -86,7 +87,7 @@ public:
 
 private:
     Network<LANE_WIDTH, READ_PORTS, BANK_DEPTH, RX_FIFO_DEPTH,
-        TX_FIFO_WORDS> network;
+        TX_FIFO_WORDS, ENABLE_RAW> network;
     PacketStream<LANE_WIDTH, L2_WIDTH> rx_stream[READ_PORTS];
     PacketStream<L2_WIDTH, LANE_WIDTH> tx_stream[STREAMS];
 

@@ -28,47 +28,44 @@ module OutputMerger #(
 ,   input wire ready_in
 ,   output wire protocol_error_out
 );
-    parameter  STREAMS = 64'h2;
-    parameter  WINDOW_WORDS = 64'h8;
-    parameter  LANE_BYTES = LANE_WIDTH/'h8;
-    parameter  OUTPUT_BITS = STREAMS*LANE_WIDTH;
-    parameter  OUTPUT_BYTES = STREAMS*LANE_BYTES;
-    parameter  OFFSET_BITS = $clog2(LANE_BYTES);
-    parameter  GAP_BITS = $clog2(MIN_IPG_BYTES + 'h1);
-    parameter  FIFO_DATA_BITS = (STREAMS*WINDOW_WORDS)*LANE_WIDTH;
-    parameter  FIFO_KEEP_BITS = (STREAMS*WINDOW_WORDS)*LANE_BYTES;
-    parameter  FIFO_FLAG_BITS = 64'h10;
-    parameter  READ_COUNT_BITS = 64'h8;
-    parameter  RESULT_DATA = 64'h0;
-    parameter  RESULT_KEEP = RESULT_DATA + OUTPUT_BITS;
-    parameter  RESULT_SOP = RESULT_KEEP + OUTPUT_BYTES;
-    parameter  RESULT_EOP = RESULT_SOP + OUTPUT_BYTES;
-    parameter  RESULT_VALID = RESULT_EOP + OUTPUT_BYTES;
-    parameter  RESULT_NEXT_RR = RESULT_VALID + 'h1;
-    parameter  RESULT_NEXT_ACTIVE = RESULT_NEXT_RR + 'h3;
-    parameter  RESULT_NEXT_STREAM = RESULT_NEXT_ACTIVE + 'h1;
-    parameter  RESULT_NEXT_GAP = RESULT_NEXT_STREAM + 'h3;
-    parameter  RESULT_NEXT_CARRY_VALID = RESULT_NEXT_GAP + GAP_BITS;
-    parameter  RESULT_NEXT_CARRY_OFFSET = RESULT_NEXT_CARRY_VALID + 'h1;
-    parameter  RESULT_NEXT_CARRY_DATA = RESULT_NEXT_CARRY_OFFSET + OFFSET_BITS;
-    parameter  RESULT_NEXT_CARRY_KEEP = RESULT_NEXT_CARRY_DATA + LANE_WIDTH;
-    parameter  RESULT_NEXT_CARRY_SOP = RESULT_NEXT_CARRY_KEEP + LANE_BYTES;
-    parameter  RESULT_NEXT_CARRY_EOP = RESULT_NEXT_CARRY_SOP + 'h1;
-    parameter  RESULT_ERROR = RESULT_NEXT_CARRY_EOP + 'h1;
-    parameter  RESULT_BITS = RESULT_ERROR + 'h1;
-    parameter  MAX_LANE_WIDTH = 64'h40;
-    parameter  MAX_LANE_BYTES = 64'h8;
-    parameter  MAX_FIFO_DATA_BITS = 64'h400;
-    parameter  MAX_FIFO_KEEP_BITS = 64'h80;
+    localparam  STREAMS = 64'h2;
+    localparam  WINDOW_WORDS = 64'h2;
+    localparam  LANE_BYTES = LANE_WIDTH/'h8;
+    localparam  OUTPUT_BITS = STREAMS*LANE_WIDTH;
+    localparam  OUTPUT_BYTES = STREAMS*LANE_BYTES;
+    localparam  GAP_BITS = $clog2(MIN_IPG_BYTES + 'h1);
+    localparam  FIFO_DATA_BITS = (STREAMS*WINDOW_WORDS)*LANE_WIDTH;
+    localparam  FIFO_KEEP_BITS = (STREAMS*WINDOW_WORDS)*LANE_BYTES;
+    localparam  RESULT_DATA = 64'h0;
+    localparam  RESULT_KEEP = RESULT_DATA + OUTPUT_BITS;
+    localparam  RESULT_SOP = RESULT_KEEP + OUTPUT_BYTES;
+    localparam  RESULT_EOP = RESULT_SOP + OUTPUT_BYTES;
+    localparam  RESULT_VALID = RESULT_EOP + OUTPUT_BYTES;
+    localparam  RESULT_NEXT_RR = RESULT_VALID + 'h1;
+    localparam  RESULT_NEXT_ACTIVE = RESULT_NEXT_RR + 'h1;
+    localparam  RESULT_NEXT_STREAM = RESULT_NEXT_ACTIVE + 'h1;
+    localparam  RESULT_NEXT_GAP = RESULT_NEXT_STREAM + 'h1;
+    localparam  RESULT_NEXT_CARRY_VALID = RESULT_NEXT_GAP + GAP_BITS;
+    localparam  RESULT_NEXT_CARRY_DATA = RESULT_NEXT_CARRY_VALID + 'h1;
+    localparam  RESULT_NEXT_CARRY_KEEP = RESULT_NEXT_CARRY_DATA + LANE_WIDTH;
+    localparam  RESULT_NEXT_CARRY_SOP = RESULT_NEXT_CARRY_KEEP + LANE_BYTES;
+    localparam  RESULT_NEXT_CARRY_EOP = RESULT_NEXT_CARRY_SOP + 'h1;
+    localparam  RESULT_ERROR = RESULT_NEXT_CARRY_EOP + 'h1;
+    localparam  RESULT_BITS = RESULT_ERROR + 'h1;
+    localparam  MAX_LANE_WIDTH = 64'h40;
+    localparam  MAX_LANE_BYTES = 64'h8;
+    localparam  FIFO_FLAG_BITS = 64'h4;
+    localparam  MAX_FIFO_DATA_BITS = 64'h100;
+    localparam  MAX_FIFO_KEEP_BITS = 64'h20;
+    localparam  READ_COUNT_BITS = 64'h8;
 
 
     // regs and combs
-    reg[3-1:0] rr_reg;
+    reg rr_reg;
     reg active_reg;
-    reg[3-1:0] stream_reg;
+    reg stream_reg;
     reg[GAP_BITS-1:0] gap_reg;
     reg carry_valid_reg;
-    reg[OFFSET_BITS-1:0] carry_offset_reg;
     reg[LANE_WIDTH-1:0] carry_data_reg;
     reg[LANE_BYTES-1:0] carry_keep_reg;
     reg carry_sop_reg;
@@ -86,11 +83,11 @@ module OutputMerger #(
 ;
     logic[FIFO_KEEP_BITS-1:0] fifo_keep_comb;
 ;
-    logic[16-1:0] fifo_sop_comb;
+    logic[4-1:0] fifo_sop_comb;
 ;
-    logic[16-1:0] fifo_eop_comb;
+    logic[4-1:0] fifo_eop_comb;
 ;
-    logic[16-1:0] fifo_valid_comb;
+    logic[4-1:0] fifo_valid_comb;
 ;
     logic[RESULT_BITS-1:0] merge_result_comb;
 ;
@@ -111,11 +108,11 @@ module OutputMerger #(
     wire fifos__sop_in[2];
     wire fifos__eop_in[2];
     wire fifos__ready_out[2];
-    wire[64'h8*LANE_WIDTH-1:0] fifos__data_out[2];
-    wire[64'h8*(LANE_WIDTH/'h8)-1:0] fifos__keep_out[2];
-    wire[8-1:0] fifos__sop_out[2];
-    wire[8-1:0] fifos__eop_out[2];
-    wire[8-1:0] fifos__valid_out[2];
+    wire[64'h2*LANE_WIDTH-1:0] fifos__data_out[2];
+    wire[64'h2*(LANE_WIDTH/'h8)-1:0] fifos__keep_out[2];
+    wire[2-1:0] fifos__sop_out[2];
+    wire[2-1:0] fifos__eop_out[2];
+    wire[2-1:0] fifos__valid_out[2];
     wire[4-1:0] fifos__read_count_in[2];
     wire fifos__clear_in[2];
     wire fifos__almost_full_out[2];
@@ -149,12 +146,11 @@ module OutputMerger #(
     endgenerate
 
     // tmp variables
-    logic[3-1:0] rr_reg_tmp;
+    logic rr_reg_tmp;
     logic active_reg_tmp;
-    logic[3-1:0] stream_reg_tmp;
+    logic stream_reg_tmp;
     logic[GAP_BITS-1:0] gap_reg_tmp;
     logic carry_valid_reg_tmp;
-    logic[OFFSET_BITS-1:0] carry_offset_reg_tmp;
     logic[LANE_WIDTH-1:0] carry_data_reg_tmp;
     logic[LANE_BYTES-1:0] carry_keep_reg_tmp;
     logic carry_sop_reg_tmp;
@@ -217,7 +213,7 @@ module OutputMerger #(
     always_comb begin : fifo_data_comb_func  // fifo_data_comb_func
         logic[63:0] stream;
         logic[63:0] _bit;
-        logic[512-1:0] value;
+        logic[128-1:0] value;
         fifo_data_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             value = fifos__data_out[stream];
@@ -230,7 +226,7 @@ module OutputMerger #(
     always_comb begin : fifo_keep_comb_func  // fifo_keep_comb_func
         logic[63:0] stream;
         logic[63:0] _bit;
-        logic[64-1:0] value;
+        logic[16-1:0] value;
         fifo_keep_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             value = fifos__keep_out[stream];
@@ -243,7 +239,7 @@ module OutputMerger #(
     always_comb begin : fifo_sop_comb_func  // fifo_sop_comb_func
         logic[63:0] stream;
         logic[63:0] slot;
-        logic[8-1:0] value;
+        logic[2-1:0] value;
         fifo_sop_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             value = fifos__sop_out[stream];
@@ -256,7 +252,7 @@ module OutputMerger #(
     always_comb begin : fifo_eop_comb_func  // fifo_eop_comb_func
         logic[63:0] stream;
         logic[63:0] slot;
-        logic[8-1:0] value;
+        logic[2-1:0] value;
         fifo_eop_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             value = fifos__eop_out[stream];
@@ -269,7 +265,7 @@ module OutputMerger #(
     always_comb begin : fifo_valid_comb_func  // fifo_valid_comb_func
         logic[63:0] stream;
         logic[63:0] slot;
-        logic[8-1:0] value;
+        logic[2-1:0] value;
         fifo_valid_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             value = fifos__valid_out[stream];
@@ -280,48 +276,61 @@ module OutputMerger #(
     end
 
     always_comb begin : merge_result_comb_func  // merge_result_comb_func
-        logic[63:0] output_byte;
-        logic[63:0] _bit;
-        logic[63:0] scan;
-        logic[63:0] remaining;
-        logic[31:0] rr;
-        logic[31:0] selected;
-        logic[31:0] candidate;
-        logic[31:0] slot;
-        logic[31:0] byte_index;
-        logic[31:0] gap;
+        logic[63:0] piece;
+        logic[7:0] rr;
+        logic[7:0] selected;
+        logic[7:0] slot;
+        logic[7:0] slot0;
+        logic[7:0] slot1;
+        logic[7:0] gap;
+        logic[7:0] position;
+        logic[7:0] space;
+        logic[7:0] bytes;
+        logic[7:0] take;
+        logic[7:0] keep_mask;
+        logic[63:0] data_mask;
         logic active;
         logic loaded;
         logic found;
         logic any_data;
-        logic last_byte;
         logic error;
         logic blocked;
         logic expect_sop;
+        logic available0;
+        logic available1;
         logic word_sop;
         logic word_eop;
         logic[8-1:0] read_counts;
         logic[64-1:0] word_data;
         logic[8-1:0] word_keep;
-        logic[1024-1:0] all_data;
-        logic[128-1:0] all_keep;
-        logic[16-1:0] all_sop;
-        logic[16-1:0] all_eop;
-        logic[16-1:0] all_valid;
+        logic[256-1:0] all_data;
+        logic[32-1:0] all_keep;
+        logic[4-1:0] all_sop;
+        logic[4-1:0] all_eop;
+        logic[4-1:0] all_valid;
+        logic[128-1:0] output_data;
+        logic[16-1:0] output_keep;
+        logic[16-1:0] output_sop;
+        logic[16-1:0] output_eop;
         merge_result_comb = 'h0;
-        read_counts = 'h0;
         merge_read_counts_comb = 'h0;
+        read_counts = 'h0;
+        output_data = 'h0;
+        output_keep = 'h0;
+        output_sop = 'h0;
+        output_eop = 'h0;
+        all_data = fifo_data_comb;
+        all_keep = fifo_keep_comb;
+        all_sop = fifo_sop_comb;
+        all_eop = fifo_eop_comb;
         all_valid = fifo_valid_comb;
-        rr=unsigned'(32'(rr_reg));
-        selected=unsigned'(32'(stream_reg));
-        candidate='h0;
-        slot='h0;
-        last_byte=0;
+        rr=unsigned'(8'(rr_reg));
+        selected=unsigned'(8'(stream_reg));
+        gap=unsigned'(8'(gap_reg));
+        position='h0;
         active=active_reg;
         expect_sop=!active;
-        gap=unsigned'(32'(gap_reg));
         loaded=carry_valid_reg;
-        byte_index=unsigned'(32'(carry_offset_reg));
         word_data = carry_data_reg;
         word_keep = carry_keep_reg;
         word_sop=carry_sop_reg;
@@ -329,39 +338,37 @@ module OutputMerger #(
         any_data=0;
         error=0;
         blocked=0;
+        slot='h0;
+        slot0='h0;
+        slot1='h0;
+        space='h0;
+        bytes='h0;
+        take='h0;
+        keep_mask='h0;
+        data_mask='h0;
         found=0;
-        for (scan='h0;scan < FIFO_FLAG_BITS;scan=scan+1) begin
-            if (all_valid[scan]) begin
-                found=1;
-            end
-        end
-        if ((!active && (gap == 'h0)) && !found) begin
-            disable merge_result_comb_func;
-        end
-        all_data = fifo_data_comb;
-        all_keep = fifo_keep_comb;
-        all_sop = fifo_sop_comb;
-        all_eop = fifo_eop_comb;
-        for (output_byte='h0;output_byte < OUTPUT_BYTES;output_byte=output_byte+1) begin
-            if (!blocked) begin
+        available0=0;
+        available1=0;
+        for (piece='h0;piece < 'h3;piece=piece+1) begin
+            if (!blocked && (position < OUTPUT_BYTES)) begin
                 if (gap != 'h0) begin
-                    --gap;
+                    space=OUTPUT_BYTES - position;
+                    take=(gap < space) ? (gap) : (space);
+                    position+=take;
+                    gap-=take;
                 end
-                else begin
+                if ((gap == 'h0) && (position < OUTPUT_BYTES)) begin
                     if (!active) begin
-                        found=0;
-                        for (scan='h0;scan < STREAMS;scan=scan+1) begin
-                            candidate=((rr + scan)) & ((STREAMS - 'h1));
-                            slot='h0;
-                            for (_bit='h0;_bit < 'h4;_bit=_bit+1) begin
-                                if (read_counts[(candidate*'h4) + _bit]) begin
-                                    slot|='h1 <<< _bit;
-                                end
-                            end
-                            if ((!found && (slot < WINDOW_WORDS)) && all_valid[((candidate*WINDOW_WORDS) + slot)]) begin
-                                selected=candidate;
-                                found=1;
-                            end
+                        slot0=unsigned'(8'(unsigned'(64'(read_counts['h0 +:4]))));
+                        slot1=unsigned'(8'(unsigned'(64'(read_counts['h4 +:4]))));
+                        available0=(slot0 < WINDOW_WORDS) && (((slot0 == 'h0)) ? (all_valid['h0]) : (all_valid['h1]));
+                        available1=(slot1 < WINDOW_WORDS) && (((slot1 == 'h0)) ? (all_valid['h2]) : (all_valid['h3]));
+                        found=available0 || available1;
+                        if (rr == 'h0) begin
+                            selected=(available0) ? ('h0) : ('h1);
+                        end
+                        else begin
+                            selected=(available1) ? ('h1) : ('h0);
                         end
                         if (!found) begin
                             blocked=1;
@@ -373,31 +380,45 @@ module OutputMerger #(
                         end
                     end
                     if (!blocked && !loaded) begin
-                        slot='h0;
-                        for (_bit='h0;_bit < 'h4;_bit=_bit+1) begin
-                            if (read_counts[(selected*'h4) + _bit]) begin
-                                slot|='h1 <<< _bit;
-                            end
-                        end
-                        if (slot>=WINDOW_WORDS || !all_valid[((selected*WINDOW_WORDS) + slot)]) begin
-                            error=1;
+                        slot=(selected == 'h0) ? (unsigned'(8'(unsigned'(64'(read_counts['h0 +:4]))))) : (unsigned'(8'(unsigned'(64'(read_counts['h4 +:4])))));
+                        if (slot>=WINDOW_WORDS || (((selected == 'h0)) ? ((((slot == 'h0)) ? (!all_valid['h0]) : (!all_valid['h1]))) : ((((slot == 'h0)) ? (!all_valid['h2]) : (!all_valid['h3]))))) begin
                             blocked=1;
                         end
                         else begin
-                            word_data = 'h0;
-                            word_keep = 'h0;
-                            for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-                                word_data[_bit] = all_data[((((selected*WINDOW_WORDS) + slot))*LANE_WIDTH) + _bit];
+                            if ((selected == 'h0) && (slot == 'h0)) begin
+                                word_data = all_data['h0 +:64];
+                                word_keep = all_keep['h0 +:8];
+                                word_sop=all_sop['h0];
+                                word_eop=all_eop['h0];
                             end
-                            for (_bit='h0;_bit < LANE_BYTES;_bit=_bit+1) begin
-                                word_keep[_bit] = all_keep[((((selected*WINDOW_WORDS) + slot))*LANE_BYTES) + _bit];
+                            else begin
+                                if (selected == 'h0) begin
+                                    word_data = all_data['h40 +:64];
+                                    word_keep = all_keep['h8 +:8];
+                                    word_sop=all_sop['h1];
+                                    word_eop=all_eop['h1];
+                                end
+                                else begin
+                                    if (slot == 'h0) begin
+                                        word_data = all_data['h80 +:64];
+                                        word_keep = all_keep['h10 +:8];
+                                        word_sop=all_sop['h2];
+                                        word_eop=all_eop['h2];
+                                    end
+                                    else begin
+                                        word_data = all_data['hC0 +:64];
+                                        word_keep = all_keep['h18 +:8];
+                                        word_sop=all_sop['h3];
+                                        word_eop=all_eop['h3];
+                                    end
+                                end
                             end
-                            word_sop=all_sop[(selected*WINDOW_WORDS) + slot];
-                            word_eop=all_eop[(selected*WINDOW_WORDS) + slot];
-                            for (_bit='h0;_bit < 'h4;_bit=_bit+1) begin
-                                read_counts[(selected*'h4) + _bit] = ((((slot + 'h1)) >>> _bit)) & 'h1;
+                            if (selected == 'h0) begin
+                                read_counts['h0 +:4] = slot + 'h1;
                             end
-                            byte_index='h0;
+                            else begin
+                                read_counts['h4 +:4] = slot + 'h1;
+                            end
                             loaded=1;
                             if (word_sop != expect_sop) begin
                                 error=1;
@@ -405,56 +426,98 @@ module OutputMerger #(
                             expect_sop=0;
                         end
                     end
-                    if (!blocked && !word_keep[byte_index]) begin
-                        error=1;
-                        blocked=1;
-                    end
-                    if (!blocked) begin
-                        for (_bit='h0;_bit < 'h8;_bit=_bit+1) begin
-                            merge_result_comb[(RESULT_DATA + (output_byte*'h8)) + _bit] = word_data[(byte_index*'h8) + _bit];
-                        end
-                        merge_result_comb[RESULT_KEEP + output_byte] = 'h1;
-                        merge_result_comb[RESULT_SOP + output_byte] = word_sop && (byte_index == 'h0);
-                        any_data=1;
-                        last_byte=1;
-                        for (remaining='h0;remaining < LANE_BYTES;remaining=remaining+1) begin
-                            if ((remaining > byte_index) && word_keep[remaining]) begin
-                                last_byte=0;
-                            end
-                        end
-                        if (word_eop && last_byte) begin
-                            merge_result_comb[RESULT_EOP + output_byte] = 'h1;
-                            active=0;
-                            expect_sop=1;
-                            loaded=0;
-                            byte_index='h0;
-                            gap=MIN_IPG_BYTES;
-                            rr=((selected + 'h1)) & ((STREAMS - 'h1));
+                    if (!blocked && loaded) begin
+                        bytes='h0;
+                        if (word_keep['h7]) begin
+                            bytes='h8;
                         end
                         else begin
-                            byte_index=byte_index+1;
-                            if (byte_index == LANE_BYTES) begin
-                                loaded=0;
-                                byte_index='h0;
+                            if (word_keep['h6]) begin
+                                bytes='h7;
+                            end
+                            else begin
+                                if (word_keep['h5]) begin
+                                    bytes='h6;
+                                end
+                                else begin
+                                    if (word_keep['h4]) begin
+                                        bytes='h5;
+                                    end
+                                    else begin
+                                        if (word_keep['h3]) begin
+                                            bytes='h4;
+                                        end
+                                        else begin
+                                            if (word_keep['h2]) begin
+                                                bytes='h3;
+                                            end
+                                            else begin
+                                                if (word_keep['h1]) begin
+                                                    bytes='h2;
+                                                end
+                                                else begin
+                                                    if (word_keep['h0]) begin
+                                                        bytes='h1;
+                                                    end
+                                                end
+                                            end
+                                        end
+                                    end
+                                end
                             end
                         end
-                    end
-                    if (blocked && !any_data) begin
-                        loaded=0;
+                        if (bytes == 'h0) begin
+                            error=1;
+                            blocked=1;
+                        end
+                        else begin
+                            space=OUTPUT_BYTES - position;
+                            take=(bytes < space) ? (bytes) : (space);
+                            data_mask=(take == LANE_BYTES) ? (~unsigned'(64'('h0))) : ((((unsigned'(64'('h1)) <<< ((take*'h8)))) - 'h1));
+                            keep_mask=(('h1 <<< take)) - 'h1;
+                            output_data = output_data | ((word_data & data_mask) << (position*'h8));
+                            output_keep = output_keep | (keep_mask <<< position);
+                            if (word_sop) begin
+                                output_sop[position] = 'h1;
+                            end
+                            any_data=1;
+                            position+=take;
+                            if (take < bytes) begin
+                                word_data = word_data >> (take*'h8);
+                                word_keep = word_keep >> take;
+                                word_sop=0;
+                                loaded=1;
+                            end
+                            else begin
+                                loaded=0;
+                                if (word_eop) begin
+                                    output_eop[position - 'h1] = 'h1;
+                                    active=0;
+                                    expect_sop=1;
+                                    gap=MIN_IPG_BYTES;
+                                    rr=((selected + 'h1)) & ((STREAMS - 'h1));
+                                    space=OUTPUT_BYTES - position;
+                                    take=(gap < space) ? (gap) : (space);
+                                    position+=take;
+                                    gap-=take;
+                                end
+                            end
+                        end
                     end
                 end
             end
         end
-        for (_bit='h0;_bit < READ_COUNT_BITS;_bit=_bit+1) begin
-            merge_read_counts_comb[_bit] = read_counts[_bit];
-        end
+        merge_read_counts_comb = read_counts;
+        merge_result_comb[RESULT_DATA +:(RESULT_DATA + OUTPUT_BITS) - 'h1 - RESULT_DATA + 1] = output_data;
+        merge_result_comb[RESULT_KEEP +:(RESULT_KEEP + OUTPUT_BYTES) - 'h1 - RESULT_KEEP + 1] = output_keep;
+        merge_result_comb[RESULT_SOP +:(RESULT_SOP + OUTPUT_BYTES) - 'h1 - RESULT_SOP + 1] = output_sop;
+        merge_result_comb[RESULT_EOP +:(RESULT_EOP + OUTPUT_BYTES) - 'h1 - RESULT_EOP + 1] = output_eop;
         merge_result_comb[RESULT_VALID] = any_data;
-        merge_result_comb[RESULT_NEXT_RR +:RESULT_NEXT_RR + 'h2 - RESULT_NEXT_RR + 1] = rr;
+        merge_result_comb[RESULT_NEXT_RR] = rr;
         merge_result_comb[RESULT_NEXT_ACTIVE] = active;
-        merge_result_comb[RESULT_NEXT_STREAM +:RESULT_NEXT_STREAM + 'h2 - RESULT_NEXT_STREAM + 1] = selected;
+        merge_result_comb[RESULT_NEXT_STREAM] = selected;
         merge_result_comb[RESULT_NEXT_GAP +:(RESULT_NEXT_GAP + GAP_BITS) - 'h1 - RESULT_NEXT_GAP + 1] = gap;
         merge_result_comb[RESULT_NEXT_CARRY_VALID] = loaded;
-        merge_result_comb[RESULT_NEXT_CARRY_OFFSET +:(RESULT_NEXT_CARRY_OFFSET + OFFSET_BITS) - 'h1 - RESULT_NEXT_CARRY_OFFSET + 1] = byte_index;
         if (loaded) begin
             merge_result_comb[RESULT_NEXT_CARRY_DATA +:(RESULT_NEXT_CARRY_DATA + LANE_WIDTH) - 'h1 - RESULT_NEXT_CARRY_DATA + 1] = word_data;
             merge_result_comb[RESULT_NEXT_CARRY_KEEP +:(RESULT_NEXT_CARRY_KEEP + LANE_BYTES) - 'h1 - RESULT_NEXT_CARRY_KEEP + 1] = word_keep;
@@ -537,7 +600,6 @@ module OutputMerger #(
             stream_reg_tmp = '0;
             gap_reg_tmp = '0;
             carry_valid_reg_tmp = '0;
-            carry_offset_reg_tmp = '0;
             carry_data_reg_tmp = '0;
             carry_keep_reg_tmp = '0;
             carry_sop_reg_tmp = '0;
@@ -548,12 +610,11 @@ module OutputMerger #(
             disable _work_net_clk;
         end
         if (merge_result_comb[RESULT_VALID] && ready_in) begin
-            rr_reg_tmp = merge_result_comb[RESULT_NEXT_RR +:RESULT_NEXT_RR + 'h2 - RESULT_NEXT_RR + 1];
+            rr_reg_tmp = unsigned'(1'(merge_result_comb[RESULT_NEXT_RR]));
             active_reg_tmp = unsigned'(1'(merge_result_comb[RESULT_NEXT_ACTIVE]));
-            stream_reg_tmp = merge_result_comb[RESULT_NEXT_STREAM +:RESULT_NEXT_STREAM + 'h2 - RESULT_NEXT_STREAM + 1];
+            stream_reg_tmp = unsigned'(1'(merge_result_comb[RESULT_NEXT_STREAM]));
             gap_reg_tmp = merge_result_comb[RESULT_NEXT_GAP +:(RESULT_NEXT_GAP + GAP_BITS) - 'h1 - RESULT_NEXT_GAP + 1];
             carry_valid_reg_tmp = unsigned'(1'(merge_result_comb[RESULT_NEXT_CARRY_VALID]));
-            carry_offset_reg_tmp = merge_result_comb[RESULT_NEXT_CARRY_OFFSET +:(RESULT_NEXT_CARRY_OFFSET + OFFSET_BITS) - 'h1 - RESULT_NEXT_CARRY_OFFSET + 1];
             carry_data_reg_tmp = merge_result_comb[RESULT_NEXT_CARRY_DATA +:(RESULT_NEXT_CARRY_DATA + LANE_WIDTH) - 'h1 - RESULT_NEXT_CARRY_DATA + 1];
             carry_keep_reg_tmp = merge_result_comb[RESULT_NEXT_CARRY_KEEP +:(RESULT_NEXT_CARRY_KEEP + LANE_BYTES) - 'h1 - RESULT_NEXT_CARRY_KEEP + 1];
             carry_sop_reg_tmp = unsigned'(1'(merge_result_comb[RESULT_NEXT_CARRY_SOP]));
@@ -584,7 +645,6 @@ module OutputMerger #(
         stream_reg_tmp = stream_reg;
         gap_reg_tmp = gap_reg;
         carry_valid_reg_tmp = carry_valid_reg;
-        carry_offset_reg_tmp = carry_offset_reg;
         carry_data_reg_tmp = carry_data_reg;
         carry_keep_reg_tmp = carry_keep_reg;
         carry_sop_reg_tmp = carry_sop_reg;
@@ -598,7 +658,6 @@ module OutputMerger #(
         stream_reg <= stream_reg_tmp;
         gap_reg <= gap_reg_tmp;
         carry_valid_reg <= carry_valid_reg_tmp;
-        carry_offset_reg <= carry_offset_reg_tmp;
         carry_data_reg <= carry_data_reg_tmp;
         carry_keep_reg <= carry_keep_reg_tmp;
         carry_sop_reg <= carry_sop_reg_tmp;

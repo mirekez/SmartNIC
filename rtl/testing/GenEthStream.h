@@ -1,13 +1,13 @@
 #pragma once
 
-// Generic Ethernet aggregate-stream generator used by network-level tests.
-// Frames are serialized in wire order with explicit IPG bytes, then each
-// aggregate word is laid out as two adjacent IEEE-ordered lane slices:
-// lane 0 byte 0 is earliest, followed by the rest of lane 0, then lane 1.
+// Generic two-channel Ethernet AXI-stream generator used by network tests.
+// Frames are assigned round-robin to independent 64-bit MAC channels.  Each
+// channel starts packets at byte zero; physical IPG becomes idle AXI clocks.
 
 #include <cpphdl.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -48,17 +48,21 @@ private:
         bool eop = false;
     };
 
-    std::vector<WireByte> wire;
+    std::array<std::vector<WireByte>, LANES> wire;
     std::vector<Beat> beats;
     size_t cursor = 0;
+    size_t next_lane = 0;
     bool finalized = false;
 
 public:
     void clear(size_t initial_idle_bytes = 0)
     {
-        wire.assign(initial_idle_bytes, WireByte{});
+        size_t initial_idle = (initial_idle_bytes + LANE_BYTES - 1)
+            / LANE_BYTES * LANE_BYTES;
+        for (auto& lane : wire) lane.assign(initial_idle, WireByte{});
         beats.clear();
         cursor = 0;
+        next_lane = 0;
         finalized = false;
     }
 
@@ -67,11 +71,15 @@ public:
         if (finalized || packet.empty()) {
             return;
         }
+        auto& lane = wire[next_lane];
+        next_lane = (next_lane + 1) % LANES;
         for (size_t byte = 0; byte < packet.size(); ++byte) {
-            wire.push_back({packet[byte], true, byte == 0,
+            lane.push_back({packet[byte], true, byte == 0,
                 byte + 1 == packet.size()});
         }
-        wire.resize(wire.size() + ipg_bytes);
+        lane.resize((lane.size() + LANE_BYTES - 1) / LANE_BYTES * LANE_BYTES);
+        size_t idle_words = (ipg_bytes + LANE_BYTES - 1) / LANE_BYTES;
+        lane.resize(lane.size() + idle_words * LANE_BYTES);
     }
 
     void finalize()
@@ -80,16 +88,22 @@ public:
         if (finalized) {
             return;
         }
-        word_count = (wire.size() + WORD_BYTES - 1) / WORD_BYTES;
+        word_count = 0;
+        for (const auto& lane : wire) {
+            word_count = std::max(word_count,
+                (lane.size() + LANE_BYTES - 1) / LANE_BYTES);
+        }
         beats.assign(word_count, Beat{});
-        for (size_t index = 0; index < wire.size(); ++index) {
-            size_t word = index / WORD_BYTES;
-            size_t flat = index % WORD_BYTES;
-            beats[word].data.bits(flat * 8 + 7, flat * 8) =
-                wire[index].data;
-            beats[word].keep[flat] = wire[index].keep;
-            beats[word].sop[flat] = wire[index].sop;
-            beats[word].eop[flat] = wire[index].eop;
+        for (size_t channel = 0; channel < LANES; ++channel) {
+            for (size_t index = 0; index < wire[channel].size(); ++index) {
+                size_t word = index / LANE_BYTES;
+                size_t flat = channel * LANE_BYTES + index % LANE_BYTES;
+                beats[word].data.bits(flat * 8 + 7, flat * 8) =
+                    wire[channel][index].data;
+                beats[word].keep[flat] = wire[channel][index].keep;
+                beats[word].sop[flat] = wire[channel][index].sop;
+                beats[word].eop[flat] = wire[channel][index].eop;
+            }
         }
         finalized = true;
     }

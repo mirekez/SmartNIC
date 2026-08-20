@@ -1,31 +1,32 @@
 #pragma once
 
 // Packet-committed transmit FIFO with one 160/320-bit DMA write port and an
-// eight-word read window.  Eight interleaved banks let OutputMerger consume a
+// two-word read window. Two interleaved banks let OutputMerger consume a
 // complete aggregate output word per clock.  Words remain invisible until an
 // EOP commits the complete packet, so a DMA pause cannot underflow the wire.
 
 #include <cpphdl.h>
 #include "../common/ClockDomains.h"
+#include "../common/Memory.cpp"
 
 using namespace cpphdl;
 
-#define TX_FIFO_FOR_EACH_BANK(M) M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
+#define TX_FIFO_FOR_EACH_BANK(M) M(0) M(1)
 
 template<size_t LANE_WIDTH = 64, size_t FIFO_WORDS = 2048>
-#ifdef SMARTNIC_TWO_CLOCKS
-class [[clang::annotate("CPPHDL_REPLACEMENT_FILE=TxFifoReplacement.sv;")]]
-TxFifo : public Module
-#else
 class TxFifo : public Module
-#endif
 {
 public:
-    static constexpr size_t WINDOW_WORDS = 8;
+    static constexpr size_t WINDOW_WORDS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t MAX_LANE_WIDTH = 64;
     static constexpr size_t MAX_LANE_BYTES = MAX_LANE_WIDTH / 8;
     static constexpr size_t BANK_DEPTH = FIFO_WORDS / WINDOW_WORDS;
+    static constexpr size_t ENTRY_BYTES = 10;
+    static constexpr size_t ENTRY_BITS = ENTRY_BYTES * 8;
+    static constexpr size_t KEEP_OFFSET = LANE_WIDTH;
+    static constexpr size_t SOP_OFFSET = KEEP_OFFSET + LANE_BYTES;
+    static constexpr size_t EOP_OFFSET = SOP_OFFSET + 1;
     static constexpr size_t POINTER_BITS = clog2(FIFO_WORDS);
     static constexpr size_t COUNT_BITS = clog2(FIFO_WORDS + 1);
 
@@ -44,7 +45,7 @@ public:
     _PORT(bool) eop_in;
     _PORT(bool) ready_out;
 
-    // Prefix-valid show-ahead window.  read_count_in consumes 0..8 words.
+    // Prefix-valid show-ahead window. read_count_in consumes 0..2 words.
     _PORT(logic<WINDOW_WORDS * LANE_WIDTH>) data_out;
     _PORT(logic<WINDOW_WORDS * LANE_BYTES>) keep_out;
     _PORT(logic<WINDOW_WORDS>) sop_out;
@@ -57,13 +58,11 @@ public:
     _PORT(bool) protocol_error_out;
 
 private:
-#define TX_FIFO_DECLARE_BANK(number) \
-    memory<logic<MAX_LANE_WIDTH>, 1, BANK_DEPTH> data_bank_##number; \
-    memory<logic<MAX_LANE_BYTES>, 1, BANK_DEPTH> keep_bank_##number; \
-    memory<logic<1>, 1, BANK_DEPTH> sop_bank_##number; \
-    memory<logic<1>, 1, BANK_DEPTH> eop_bank_##number;
-    TX_FIFO_FOR_EACH_BANK(TX_FIFO_DECLARE_BANK)
-#undef TX_FIFO_DECLARE_BANK
+    // The control and bank mapping stay in CppHDL.  Each physical bank is a
+    // synchronous-read RAM; bank_read_row() prefetches the row that becomes
+    // current after this cycle's dequeue.  This maps the 1K x 80-bit banks to
+    // BRAM instead of building an asynchronous 1K-deep mux from LUTRAM.
+    SmartNicMemory<ENTRY_BYTES, BANK_DEPTH, false, true> banks[WINDOW_WORDS];
 
     reg<u<POINTER_BITS>> head_reg;
     reg<u<POINTER_BITS>> tail_reg;
@@ -72,6 +71,55 @@ private:
     reg<u<COUNT_BITS>> pending_count_reg;
     reg<u1> in_packet_reg;
     reg<u1> protocol_error_reg;
+
+    logic<ENTRY_BITS> input_entry_comb;
+    logic<ENTRY_BITS>& input_entry_comb_func()
+    {
+        input_entry_comb = 0;
+        input_entry_comb.bits(LANE_WIDTH - 1, 0) = data_in();
+        input_entry_comb.bits(KEEP_OFFSET + LANE_BYTES - 1,
+            KEEP_OFFSET) = keep_in();
+        input_entry_comb[SOP_OFFSET] = sop_in();
+        input_entry_comb[EOP_OFFSET] = eop_in();
+        return input_entry_comb;
+    }
+
+    uint32_t bank_read_row(size_t bank)
+    {
+        uint32_t head = (uint32_t)head_reg;
+        uint32_t pop = (uint32_t)read_count_in();
+        if (pop <= WINDOW_WORDS
+            && pop <= (uint32_t)committed_count_reg) {
+            head = (head + pop) & (FIFO_WORDS - 1);
+        }
+        const uint32_t head_bank = head & (WINDOW_WORDS - 1);
+        return ((head >> 1) + (bank < head_bank ? 1 : 0))
+            & (BANK_DEPTH - 1);
+    }
+
+    u<clog2(BANK_DEPTH)> bank_write_addr_comb;
+    u<clog2(BANK_DEPTH)>& bank_write_addr_comb_func()
+    {
+        bank_write_addr_comb = (uint32_t)tail_reg >> 1;
+        return bank_write_addr_comb;
+    }
+
+#define TX_FIFO_DECLARE_BANK_COMBS(number) \
+    bool bank_write_##number##_comb; \
+    bool& bank_write_##number##_comb_func() \
+    { \
+        bank_write_##number##_comb = valid_in() && ready_comb_func() \
+            && (((uint32_t)tail_reg & (WINDOW_WORDS - 1)) == number); \
+        return bank_write_##number##_comb; \
+    } \
+    u<clog2(BANK_DEPTH)> bank_read_addr_##number##_comb; \
+    u<clog2(BANK_DEPTH)>& bank_read_addr_##number##_comb_func() \
+    { \
+        bank_read_addr_##number##_comb = bank_read_row(number); \
+        return bank_read_addr_##number##_comb; \
+    }
+    TX_FIFO_FOR_EACH_BANK(TX_FIFO_DECLARE_BANK_COMBS)
+#undef TX_FIFO_DECLARE_BANK_COMBS
 
     _LAZY_COMB(ready_comb, bool)
         uint32_t count;
@@ -99,18 +147,12 @@ private:
         size_t bit;
         uint32_t logical;
         uint32_t bank;
-        uint32_t row;
-        logic<MAX_LANE_WIDTH> entry;
+        logic<ENTRY_BITS> entry;
         window_data_comb = 0;
         for (slot = 0; slot < WINDOW_WORDS; ++slot) {
             logical = ((uint32_t)head_reg + slot) & (FIFO_WORDS - 1);
             bank = logical & (WINDOW_WORDS - 1);
-            row = logical >> 3;
-            entry = 0;
-#define TX_FIFO_READ_DATA(number) \
-            if (bank == number) entry = data_bank_##number[row];
-            TX_FIFO_FOR_EACH_BANK(TX_FIFO_READ_DATA)
-#undef TX_FIFO_READ_DATA
+            entry = banks[bank].read_data_out();
             for (bit = 0; bit < LANE_WIDTH; ++bit) {
                 window_data_comb[slot * LANE_WIDTH + bit] = entry[bit];
             }
@@ -123,20 +165,15 @@ private:
         size_t byte;
         uint32_t logical;
         uint32_t bank;
-        uint32_t row;
-        logic<MAX_LANE_BYTES> entry;
+        logic<ENTRY_BITS> entry;
         window_keep_comb = 0;
         for (slot = 0; slot < WINDOW_WORDS; ++slot) {
             logical = ((uint32_t)head_reg + slot) & (FIFO_WORDS - 1);
             bank = logical & (WINDOW_WORDS - 1);
-            row = logical >> 3;
-            entry = 0;
-#define TX_FIFO_READ_KEEP(number) \
-            if (bank == number) entry = keep_bank_##number[row];
-            TX_FIFO_FOR_EACH_BANK(TX_FIFO_READ_KEEP)
-#undef TX_FIFO_READ_KEEP
+            entry = banks[bank].read_data_out();
             for (byte = 0; byte < LANE_BYTES; ++byte) {
-                window_keep_comb[slot * LANE_BYTES + byte] = entry[byte];
+                window_keep_comb[slot * LANE_BYTES + byte] =
+                    entry[KEEP_OFFSET + byte];
             }
         }
         return window_keep_comb;
@@ -146,19 +183,13 @@ private:
         size_t slot;
         uint32_t logical;
         uint32_t bank;
-        uint32_t row;
-        logic<1> entry;
+        logic<ENTRY_BITS> entry;
         window_sop_comb = 0;
         for (slot = 0; slot < WINDOW_WORDS; ++slot) {
             logical = ((uint32_t)head_reg + slot) & (FIFO_WORDS - 1);
             bank = logical & (WINDOW_WORDS - 1);
-            row = logical >> 3;
-            entry = 0;
-#define TX_FIFO_READ_SOP(number) \
-            if (bank == number) entry = sop_bank_##number[row];
-            TX_FIFO_FOR_EACH_BANK(TX_FIFO_READ_SOP)
-#undef TX_FIFO_READ_SOP
-            window_sop_comb[slot] = entry;
+            entry = banks[bank].read_data_out();
+            window_sop_comb[slot] = entry[SOP_OFFSET];
         }
         return window_sop_comb;
     }
@@ -167,19 +198,13 @@ private:
         size_t slot;
         uint32_t logical;
         uint32_t bank;
-        uint32_t row;
-        logic<1> entry;
+        logic<ENTRY_BITS> entry;
         window_eop_comb = 0;
         for (slot = 0; slot < WINDOW_WORDS; ++slot) {
             logical = ((uint32_t)head_reg + slot) & (FIFO_WORDS - 1);
             bank = logical & (WINDOW_WORDS - 1);
-            row = logical >> 3;
-            entry = 0;
-#define TX_FIFO_READ_EOP(number) \
-            if (bank == number) entry = eop_bank_##number[row];
-            TX_FIFO_FOR_EACH_BANK(TX_FIFO_READ_EOP)
-#undef TX_FIFO_READ_EOP
-            window_eop_comb[slot] = entry;
+            entry = banks[bank].read_data_out();
+            window_eop_comb[slot] = entry[EOP_OFFSET];
         }
         return window_eop_comb;
     }
@@ -193,6 +218,23 @@ private:
 public:
     void _assign()
     {
+#define TX_FIFO_BIND_BANK(number) \
+        banks[number].write_addr_in = \
+            _ASSIGN_COMB(bank_write_addr_comb_func()); \
+        banks[number].write_in = \
+            _ASSIGN_COMB(bank_write_##number##_comb_func()); \
+        banks[number].write_data_in = \
+            _ASSIGN_COMB(input_entry_comb_func()); \
+        banks[number].write_mask_in = _ASSIGN(~logic<ENTRY_BYTES>(0)); \
+        banks[number].read_addr_in = \
+            _ASSIGN_COMB(bank_read_addr_##number##_comb_func()); \
+        banks[number].read_in = _ASSIGN(true); \
+        banks[number].__inst_name = __inst_name + "/bank" \
+            + std::to_string(number); \
+        banks[number]._assign();
+        TX_FIFO_FOR_EACH_BANK(TX_FIFO_BIND_BANK)
+#undef TX_FIFO_BIND_BANK
+
         ready_out = _ASSIGN_COMB(ready_comb_func());
         data_out = _ASSIGN_COMB(window_data_comb_func());
         keep_out = _ASSIGN_COMB(window_keep_comb_func());
@@ -206,20 +248,21 @@ public:
     void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         size_t byte;
+        size_t bank_index;
         uint32_t pop;
         uint32_t head;
         uint32_t tail;
         uint32_t total;
         uint32_t committed;
         uint32_t pending;
-        uint32_t bank;
-        uint32_t row;
         bool in_packet;
         bool seen_zero;
         bool malformed_keep;
         bool incomplete_keep;
-        logic<MAX_LANE_WIDTH> data_entry;
-        logic<MAX_LANE_BYTES> keep_entry;
+
+        for (bank_index = 0; bank_index < WINDOW_WORDS; ++bank_index) {
+            banks[bank_index]._work(reset);
+        }
 
         if (reset) {
             head_reg.clr();
@@ -268,25 +311,6 @@ public:
                 protocol_error_reg._next = 1;
             }
 
-            data_entry = 0;
-            keep_entry = 0;
-            for (byte = 0; byte < LANE_WIDTH; ++byte) {
-                data_entry[byte] = data_in()[byte];
-            }
-            for (byte = 0; byte < LANE_BYTES; ++byte) {
-                keep_entry[byte] = keep_in()[byte];
-            }
-            bank = tail & (WINDOW_WORDS - 1);
-            row = tail >> 3;
-#define TX_FIFO_WRITE_BANK(number) \
-            if (bank == number) { \
-                data_bank_##number[row] = data_entry; \
-                keep_bank_##number[row] = keep_entry; \
-                sop_bank_##number[row] = sop_in(); \
-                eop_bank_##number[row] = eop_in(); \
-            }
-            TX_FIFO_FOR_EACH_BANK(TX_FIFO_WRITE_BANK)
-#undef TX_FIFO_WRITE_BANK
             tail = (tail + 1) & (FIFO_WORDS - 1);
             ++total;
             if (eop_in()) {
@@ -319,13 +343,9 @@ public:
 #ifdef SMARTNIC_TWO_CLOCKS
     void _strobe_net_clk()
     {
-#define TX_FIFO_APPLY_BANK(number) \
-        data_bank_##number.apply(); \
-        keep_bank_##number.apply(); \
-        sop_bank_##number.apply(); \
-        eop_bank_##number.apply();
-        TX_FIFO_FOR_EACH_BANK(TX_FIFO_APPLY_BANK)
-#undef TX_FIFO_APPLY_BANK
+        for (size_t bank = 0; bank < WINDOW_WORDS; ++bank) {
+            banks[bank]._strobe();
+        }
         head_reg.strobe();
         tail_reg.strobe();
         total_count_reg.strobe();
@@ -338,11 +358,9 @@ public:
 
     void _strobe()
     {
-#define TX_FIFO_APPLY_LEGACY_BANK(number) \
-        data_bank_##number.apply(); keep_bank_##number.apply(); \
-        sop_bank_##number.apply(); eop_bank_##number.apply();
-        TX_FIFO_FOR_EACH_BANK(TX_FIFO_APPLY_LEGACY_BANK)
-#undef TX_FIFO_APPLY_LEGACY_BANK
+        for (size_t bank = 0; bank < WINDOW_WORDS; ++bank) {
+            banks[bank]._strobe();
+        }
         head_reg.strobe(); tail_reg.strobe(); total_count_reg.strobe();
         committed_count_reg.strobe(); pending_count_reg.strobe();
         in_packet_reg.strobe(); protocol_error_reg.strobe();

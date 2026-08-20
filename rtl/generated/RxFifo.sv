@@ -23,9 +23,9 @@ module RxFifo #(
 ,   input wire ready_in
 ,   input wire clear_in
 );
-    parameter  STREAMS = 64'h2;
-    parameter  DESCRIPTOR_BYTES = 64'hA0;
-    parameter  DESCRIPTOR_BITS = 64'h500;
+    localparam  STREAMS = 64'h2;
+    localparam  DESCRIPTOR_BYTES = 64'hA0;
+    localparam  DESCRIPTOR_BITS = 64'h500;
 
 
     // regs and combs
@@ -54,7 +54,7 @@ module RxFifo #(
         DESCRIPTOR_BYTES
 ,       FIFO_DEPTH
 ,       1
-,       0
+,       1
         ) fifos (
             .net_clk(net_clk)
         ,           .l2_clk(l2_clk)

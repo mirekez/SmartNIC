@@ -20,17 +20,17 @@ module InterruptController (
 ,   output wire[31:0] interrupt_cause_out
 ,   output wire interrupt_to_supervisor_out
 );
-    parameter  MSTATUS_SIE = 'h2;
-    parameter  MSTATUS_MIE = 'h8;
-    parameter  PRIV_S = 'h1;
-    parameter  PRIV_M = 'h3;
-    parameter  IRQ_SSIP = 'h1;
-    parameter  IRQ_MSIP = 'h3;
-    parameter  IRQ_STIP = 'h5;
-    parameter  IRQ_MTIP = 'h7;
-    parameter  IRQ_SEIP = 'h9;
-    parameter  IRQ_MEIP = 'hB;
-    parameter  MIP_SOFTWARE_WRITABLE_MASK = 'h2;
+    localparam  MSTATUS_SIE = 'h2;
+    localparam  MSTATUS_MIE = 'h8;
+    localparam  PRIV_S = 'h1;
+    localparam  PRIV_M = 'h3;
+    localparam  IRQ_SSIP = 'h1;
+    localparam  IRQ_MSIP = 'h3;
+    localparam  IRQ_STIP = 'h5;
+    localparam  IRQ_MTIP = 'h7;
+    localparam  IRQ_SEIP = 'h9;
+    localparam  IRQ_MEIP = 'hB;
+    localparam  MIP_SOFTWARE_WRITABLE_MASK = 'h2;
 
 
     // regs and combs

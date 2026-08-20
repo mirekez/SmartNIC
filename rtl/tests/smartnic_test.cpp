@@ -44,6 +44,7 @@ static constexpr size_t LANE_WIDTH = NET_LANE_WIDTH;
 static constexpr size_t STREAMS = 2;
 static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
 static constexpr size_t NET_BYTES = NET_BITS / 8;
+static constexpr size_t MAC_BYTES = LANE_WIDTH / 8;
 static constexpr size_t L2_WIDTH = 256;
 static constexpr size_t L2_BYTES = L2_WIDTH / 8;
 static constexpr size_t READ_PORTS = 1;
@@ -262,47 +263,46 @@ static DecodedFrames unpack_pcs_frames(const std::vector<XgmiiBeat>& beats)
 static std::vector<NetworkBeat> pcs_to_network(const std::vector<XgmiiBeat>& beats,
     bool& ok)
 {
-    std::vector<NetworkBeat> result(beats.size());
-    bool in_frame = false;
-    bool need_sop = false;
-    std::optional<size_t> last_data;
+    // The PCS stress source above is a convenient serialized frame generator;
+    // the board, however, has two independent 64-bit MAC AXI interfaces.
+    // Recreate those interfaces by assigning complete decoded frames
+    // round-robin and never allowing a frame to cross a channel boundary.
+    DecodedFrames decoded = unpack_pcs_frames(beats);
+    ok &= decoded.ok;
+    std::array<std::vector<NetworkBeat>, STREAMS> channels;
+    for (size_t index = 0; index < decoded.frames.size(); ++index) {
+        size_t channel = index % STREAMS;
+        const auto& frame = decoded.frames[index];
+        for (size_t offset = 0; offset < frame.size(); offset += MAC_BYTES) {
+            NetworkBeat beat;
+            size_t count = std::min(MAC_BYTES, frame.size() - offset);
+            for (size_t byte = 0; byte < count; ++byte) {
+                size_t flat = channel * MAC_BYTES + byte;
+                set_byte(beat.data, flat, frame[offset + byte]);
+                beat.keep[flat] = 1;
+            }
+            beat.sop[channel * MAC_BYTES] = offset == 0;
+            if (offset + count == frame.size())
+                beat.eop[channel * MAC_BYTES + count - 1] = 1;
+            channels[channel].push_back(beat);
+        }
+    }
 
-    for (size_t beat = 0; beat < beats.size(); ++beat) {
-        for (size_t byte = 0; byte < NET_BYTES; ++byte) {
-            uint8_t value = byte_at(beats[beat].data, byte);
-            bool control = (bool)beats[beat].control[byte];
-            size_t flat = beat * NET_BYTES + byte;
-            if (!control) {
-                if (!in_frame) ok = false;
-                set_byte(result[beat].data, byte, value);
-                result[beat].keep[byte] = 1;
-                if (need_sop) {
-                    result[beat].sop[byte] = 1;
-                    need_sop = false;
-                }
-                last_data = flat;
-            }
-            else if (value == XGMII_START) {
-                if (in_frame) ok = false;
-                in_frame = true;
-                need_sop = true;
-                last_data.reset();
-            }
-            else if (value == XGMII_TERM) {
-                if (!in_frame || !last_data) ok = false;
-                else {
-                    result[*last_data / NET_BYTES].eop[*last_data % NET_BYTES] = 1;
-                }
-                in_frame = false;
-                need_sop = false;
-                last_data.reset();
-            }
-            else if (value != XGMII_IDLE) {
-                ok = false;
+    size_t cycles = 0;
+    for (const auto& channel : channels) cycles = std::max(cycles, channel.size());
+    std::vector<NetworkBeat> result(cycles);
+    for (size_t channel = 0; channel < STREAMS; ++channel) {
+        for (size_t cycle = 0; cycle < channels[channel].size(); ++cycle) {
+            for (size_t byte = 0; byte < MAC_BYTES; ++byte) {
+                size_t flat = channel * MAC_BYTES + byte;
+                set_byte(result[cycle].data, flat,
+                    byte_at(channels[channel][cycle].data, flat));
+                result[cycle].keep[flat] = channels[channel][cycle].keep[flat];
+                result[cycle].sop[flat] = channels[channel][cycle].sop[flat];
+                result[cycle].eop[flat] = channels[channel][cycle].eop[flat];
             }
         }
     }
-    if (in_frame) ok = false;
     return result;
 }
 
@@ -1146,7 +1146,7 @@ static bool build_verilator_model(const char* source_file, const char* program_f
         project_root.string()};
     const std::vector<std::string> modules = {
         "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
-        "PacketParserCursor_pkg", "PacketParserFlags_pkg", "RxRAMWritePair_pkg",
+        "PacketParserHeaderId_pkg", "PacketParserFlags_pkg", "RxRAMWritePair_pkg",
         "RxDescriptor_pkg", "RxDescriptorWord_pkg", "RxDescriptorFlags_pkg",
         "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser", "RxRAM",
         "RxFifo", "TxFifo", "OutputMerger", "Network", "PacketStream"};

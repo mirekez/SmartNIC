@@ -52,19 +52,19 @@ module DescriptorFetcher #(
 ,   output wire prefetch_enabled_out
 ,   output wire protocol_error_out
 );
-    parameter  DESCRIPTOR_BITS = 64'h500;
-    parameter  DESCRIPTOR_WORD_BITS = 64'h100;
-    parameter  DESCRIPTOR_WORDS = 64'h5;
-    parameter  PTR_BITS = (DEPTH<='h1) ? ('h1) : ($clog2(DEPTH));
-    parameter  COUNT_BITS = $clog2(DEPTH + 'h1);
-    parameter  CONTROL_ENABLE = 'h1;
-    parameter  ACTION_NEXT = 'h1;
-    parameter  ACTION_DMA_DISCARD = 'h2;
-    parameter  ACTION_DMA_SYSTEM = 'h4;
-    parameter  STATUS_AVAILABLE = 'h1;
-    parameter  STATUS_PREFETCH_ENABLED = 'h2;
-    parameter  STATUS_PROTOCOL_ERROR = 'h4;
-    parameter  STATUS_DMA_READY = 'h8;
+    localparam  DESCRIPTOR_BITS = 64'h500;
+    localparam  DESCRIPTOR_WORD_BITS = 64'h100;
+    localparam  DESCRIPTOR_WORDS = 64'h5;
+    localparam  PTR_BITS = (DEPTH<='h1) ? ('h1) : ($clog2(DEPTH));
+    localparam  COUNT_BITS = $clog2(DEPTH + 'h1);
+    localparam  CONTROL_ENABLE = 'h1;
+    localparam  ACTION_NEXT = 'h1;
+    localparam  ACTION_DMA_DISCARD = 'h2;
+    localparam  ACTION_DMA_SYSTEM = 'h4;
+    localparam  STATUS_AVAILABLE = 'h1;
+    localparam  STATUS_PREFETCH_ENABLED = 'h2;
+    localparam  STATUS_PROTOCOL_ERROR = 'h4;
+    localparam  STATUS_DMA_READY = 'h8;
 
 
     // regs and combs

@@ -35,7 +35,6 @@ module File #(
     typedef logic[31:0] DTYPE;
 
     // regs and combs
-    reg[MEM_WIDTH/'h20-1:0][32-1:0] buffer[MEM_DEPTH];
     logic[31:0] data0_out_comb;
 ;
     logic[31:0] data1_out_comb;
@@ -52,33 +51,73 @@ module File #(
 ;
 
     // members
+    wire[7:0] storage__write_addr_in;
+    wire storage__write_in;
+    wire[31:0] storage__write_data_in;
+    wire[7:0] storage__write2_addr_in;
+    wire storage__write2_in;
+    wire[31:0] storage__write2_data_in;
+    wire[7:0] storage__read_addr0_in;
+    wire[7:0] storage__read_addr1_in;
+    wire[31:0] storage__reset_x10_in;
+    wire[31:0] storage__reset_x11_in;
+    wire[31:0] storage__read_data0_out;
+    wire[31:0] storage__read_data1_out;
+    wire[31:0] storage__x1_out;
+    wire[31:0] storage__x10_out;
+    wire[31:0] storage__x11_out;
+    wire[31:0] storage__x16_out;
+    wire[31:0] storage__x17_out;
+    FileStorage #(
+        MEM_WIDTH
+,       MEM_DEPTH
+    ) storage (
+        .clk(clk)
+,       .l2_clock(l2_clock)
+,       .reset(reset)
+,       .write_addr_in(storage__write_addr_in)
+,       .write_in(storage__write_in)
+,       .write_data_in(storage__write_data_in)
+,       .write2_addr_in(storage__write2_addr_in)
+,       .write2_in(storage__write2_in)
+,       .write2_data_in(storage__write2_data_in)
+,       .read_addr0_in(storage__read_addr0_in)
+,       .read_addr1_in(storage__read_addr1_in)
+,       .reset_x10_in(storage__reset_x10_in)
+,       .reset_x11_in(storage__reset_x11_in)
+,       .read_data0_out(storage__read_data0_out)
+,       .read_data1_out(storage__read_data1_out)
+,       .x1_out(storage__x1_out)
+,       .x10_out(storage__x10_out)
+,       .x11_out(storage__x11_out)
+,       .x16_out(storage__x16_out)
+,       .x17_out(storage__x17_out)
+    );
 
     // tmp variables
 
 
     task _work (input logic reset);
     begin: _work
-        logic[7:0] i;
-        if (reset) begin
-            for (i='h0;i < MEM_DEPTH;i=i+1) begin
-                buffer[i] <= 'h0;
-            end
-            buffer['hA] <= reset_x10_in;
-            buffer['hB] <= reset_x11_in;
-        end
         if (debugen_in) begin
             $write("%m: port0: @%x(%x)%08x, port1: @%x(%x)%08x @%x(%x)%08x\n", write_addr_in, signed'(32'(write_in)), write_data_in, read_addr0_in, signed'(32'(read_in)), read_data0_out, read_addr1_in, signed'(32'(read_in)), read_data1_out);
         end
         if (write_in) begin
-            buffer[write_addr_in] <= write_data_in;
-        end
-        if (write2_in) begin
-            buffer[write2_addr_in] <= write2_data_in;
         end
     end
     endtask
 
     generate  // _assign
+        assign storage__write_addr_in = write_addr_in;
+        assign storage__write_in = write_in;
+        assign storage__write_data_in = write_data_in;
+        assign storage__write2_addr_in = write2_addr_in;
+        assign storage__write2_in = write2_in;
+        assign storage__write2_data_in = write2_data_in;
+        assign storage__read_addr0_in = read_addr0_in;
+        assign storage__read_addr1_in = read_addr1_in;
+        assign storage__reset_x10_in = reset_x10_in;
+        assign storage__reset_x11_in = reset_x11_in;
     endgenerate
 
     always_comb begin : data0_out_comb_func  // data0_out_comb_func
@@ -90,7 +129,7 @@ module File #(
                 data0_out_comb=write2_data_in;
             end
             else begin
-                data0_out_comb=buffer[read_addr0_in];
+                data0_out_comb=storage__read_data0_out;
             end
         end
     end
@@ -104,61 +143,69 @@ module File #(
                 data1_out_comb=write2_data_in;
             end
             else begin
-                data1_out_comb=buffer[read_addr1_in];
+                data1_out_comb=storage__read_data1_out;
             end
         end
     end
 
     always_comb begin : x1_comb_func  // x1_comb_func
-        x1_comb=buffer['h1];
+        x1_comb=storage__x1_out;
     end
 
     always_comb begin : x10_comb_func  // x10_comb_func
         if (write_in && (write_addr_in == 'hA)) begin
             x10_comb=write_data_in;
-            disable x10_comb_func;
         end
-        if (write2_in && (write2_addr_in == 'hA)) begin
-            x10_comb=write2_data_in;
-            disable x10_comb_func;
+        else begin
+            if (write2_in && (write2_addr_in == 'hA)) begin
+                x10_comb=write2_data_in;
+            end
+            else begin
+                x10_comb=storage__x10_out;
+            end
         end
-        x10_comb=buffer['hA];
     end
 
     always_comb begin : x11_comb_func  // x11_comb_func
         if (write_in && (write_addr_in == 'hB)) begin
             x11_comb=write_data_in;
-            disable x11_comb_func;
         end
-        if (write2_in && (write2_addr_in == 'hB)) begin
-            x11_comb=write2_data_in;
-            disable x11_comb_func;
+        else begin
+            if (write2_in && (write2_addr_in == 'hB)) begin
+                x11_comb=write2_data_in;
+            end
+            else begin
+                x11_comb=storage__x11_out;
+            end
         end
-        x11_comb=buffer['hB];
     end
 
     always_comb begin : x16_comb_func  // x16_comb_func
         if (write_in && (write_addr_in == 'h10)) begin
             x16_comb=write_data_in;
-            disable x16_comb_func;
         end
-        if (write2_in && (write2_addr_in == 'h10)) begin
-            x16_comb=write2_data_in;
-            disable x16_comb_func;
+        else begin
+            if (write2_in && (write2_addr_in == 'h10)) begin
+                x16_comb=write2_data_in;
+            end
+            else begin
+                x16_comb=storage__x16_out;
+            end
         end
-        x16_comb=buffer['h10];
     end
 
     always_comb begin : x17_comb_func  // x17_comb_func
         if (write_in && (write_addr_in == 'h11)) begin
             x17_comb=write_data_in;
-            disable x17_comb_func;
         end
-        if (write2_in && (write2_addr_in == 'h11)) begin
-            x17_comb=write2_data_in;
-            disable x17_comb_func;
+        else begin
+            if (write2_in && (write2_addr_in == 'h11)) begin
+                x17_comb=write2_data_in;
+            end
+            else begin
+                x17_comb=storage__x17_out;
+            end
         end
-        x17_comb=buffer['h11];
     end
 
     task _work_l2_clock (input logic reset);

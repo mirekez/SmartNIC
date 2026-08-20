@@ -27,6 +27,31 @@ import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
+import Axi4WriteAddressReady_pkg::*;
+import Axi4WriteDataReady_pkg::*;
+import Axi4WriteResponse4_pkg::*;
+import Axi4ReadAddressReady_pkg::*;
+import Axi4ReadData4_256_pkg::*;
+import Axi4Responder4_256_pkg::*;
+import Axi4WriteAddress32_4_pkg::*;
+import Axi4WriteData256_pkg::*;
+import Axi4WriteResponseReady_pkg::*;
+import Axi4ReadAddress32_4_pkg::*;
+import Axi4ReadDataReady_pkg::*;
+import Axi4Driver32_4_256_pkg::*;
+import L2CacheFsmState_pkg::*;
+import L2HitLookupComb_pkg::*;
+import L2RequestGeometryComb_pkg::*;
+import L2WordPairComb_pkg::*;
+import CacheRequest_pkg::*;
+import L2ActiveRequestComb_pkg::*;
+import L2EvictCandidateComb_pkg::*;
+import L2CpuWaitComb_pkg::*;
+import L2IoWritePayloadComb_pkg::*;
+import L2AxiRouteComb_pkg::*;
+import L2AxiRequestNoveltyComb_pkg::*;
+import CacheResponse_pkg::*;
+import L2AxiAddressState_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 
@@ -107,18 +132,18 @@ module CPU (
 ,   input wire timer_irq_in[4]
 ,   input wire external_irq_in[4]
 );
-    parameter  CORES = 64'h4;
-    parameter  DATA_WIDTH = 64'h100;
-    parameter  ID_WIDTH = 64'h4;
-    parameter  MEMORY_BYTES = 64'h40000000;
-    parameter  IO_BYTES = 64'h400000;
-    parameter  EXTERNAL_ADDR_WIDTH = 64'h1F;
-    parameter  L1I_BYTES = 64'h800;
-    parameter  L1D_BYTES = 64'h400;
-    parameter  L2_BYTES = 64'h10000;
-    parameter  CACHE_LINE_BYTES = 64'h20;
-    parameter  L1_WAYS = 64'h2;
-    parameter  L2_WAYS = 64'h4;
+    localparam  CORES = 64'h4;
+    localparam  DATA_WIDTH = 64'h100;
+    localparam  ID_WIDTH = 64'h4;
+    localparam  MEMORY_BYTES = 64'h40000000;
+    localparam  IO_BYTES = 64'h400000;
+    localparam  EXTERNAL_ADDR_WIDTH = 64'h1F;
+    localparam  L1I_BYTES = 64'h800;
+    localparam  L1D_BYTES = 64'h400;
+    localparam  L2_BYTES = 64'h10000;
+    localparam  CACHE_LINE_BYTES = 64'h20;
+    localparam  L1_WAYS = 64'h2;
+    localparam  L2_WAYS = 64'h4;
 
 
     // regs and combs

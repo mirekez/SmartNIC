@@ -36,21 +36,21 @@ module RxRAM #(
 ,   output wire protocol_error_out
 ,   output wire storage_full_out
 );
-    parameter  STREAMS = 64'h2;
-    parameter  SUBBANKS = 64'h2;
-    parameter  PHYSICAL_BANKS = 64'h4;
-    parameter  LANE_BYTES = LANE_WIDTH/'h8;
-    parameter  INPUT_BITS = STREAMS*LANE_WIDTH;
-    parameter  INPUT_BYTES = STREAMS*LANE_BYTES;
-    parameter  LOGICAL_ROWS = BANK_DEPTH*SUBBANKS;
-    parameter  PHYSICAL_ROW_BITS = $clog2(BANK_DEPTH);
-    parameter  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
-    parameter  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
-    parameter  READ_RR_BITS = (READ_PORTS<='h1) ? ('h1) : ($clog2(READ_PORTS));
-    parameter  FRAME_LENGTH_BITS = 64'hE;
-    parameter  COMPLETION_FIFO_WORDS = 64'h4;
-    parameter  RELEASE_SLOTS = READ_PORTS*'h4;
-    parameter  MAX_PACKET_ROWS = ((((((((('h1 <<< FRAME_LENGTH_BITS)) - 'h1) + LANE_BYTES) - 'h1))/LANE_BYTES) + 'h1)) & ~'h1;
+    localparam  STREAMS = 64'h2;
+    localparam  SUBBANKS = 64'h2;
+    localparam  PHYSICAL_BANKS = 64'h4;
+    localparam  LANE_BYTES = LANE_WIDTH/'h8;
+    localparam  INPUT_BITS = STREAMS*LANE_WIDTH;
+    localparam  INPUT_BYTES = STREAMS*LANE_BYTES;
+    localparam  LOGICAL_ROWS = BANK_DEPTH*SUBBANKS;
+    localparam  PHYSICAL_ROW_BITS = $clog2(BANK_DEPTH);
+    localparam  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
+    localparam  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
+    localparam  READ_RR_BITS = (READ_PORTS<='h1) ? ('h1) : ($clog2(READ_PORTS));
+    localparam  FRAME_LENGTH_BITS = 64'hE;
+    localparam  COMPLETION_FIFO_WORDS = 64'h4;
+    localparam  RELEASE_SLOTS = READ_PORTS*'h4;
+    localparam  MAX_PACKET_ROWS = ((((((((('h1 <<< FRAME_LENGTH_BITS)) - 'h1) + LANE_BYTES) - 'h1))/LANE_BYTES) + 'h1)) & ~'h1;
 
 
     // regs and combs

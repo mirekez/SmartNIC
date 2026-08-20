@@ -8,6 +8,7 @@ module SmartNIC #(
 ,   parameter BANK_DEPTH = 'h1000
 ,   parameter RX_FIFO_DEPTH = 'h40
 ,   parameter TX_FIFO_WORDS = 'h800
+,   parameter ENABLE_RAW = 1
  )
  (
     input wire net_clk
@@ -51,19 +52,19 @@ module SmartNIC #(
 ,   output wire protocol_error_out
 ,   output wire storage_full_out
 );
-    parameter  STREAMS = 64'h2;
-    parameter  READ_PORTS = 64'h1;
-    parameter  L2_WIDTH = 64'h100;
-    parameter  L2_BYTES = 64'h20;
-    parameter  LANE_BYTES = LANE_WIDTH/'h8;
-    parameter  NET_BITS = STREAMS*LANE_WIDTH;
-    parameter  NET_BYTES = STREAMS*LANE_BYTES;
-    parameter  LOGICAL_ROWS = BANK_DEPTH*'h2;
-    parameter  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
-    parameter  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
-    parameter  FRAME_LENGTH_BITS = 64'hE;
-    parameter  READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
-    parameter  READ_META_DEPTH = 64'h8;
+    localparam  STREAMS = 64'h2;
+    localparam  READ_PORTS = 64'h1;
+    localparam  L2_WIDTH = 64'h100;
+    localparam  L2_BYTES = 64'h20;
+    localparam  LANE_BYTES = LANE_WIDTH/'h8;
+    localparam  NET_BITS = STREAMS*LANE_WIDTH;
+    localparam  NET_BYTES = STREAMS*LANE_BYTES;
+    localparam  LOGICAL_ROWS = BANK_DEPTH*'h2;
+    localparam  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
+    localparam  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
+    localparam  FRAME_LENGTH_BITS = 64'hE;
+    localparam  READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
+    localparam  READ_META_DEPTH = 64'h8;
 
 
     // regs and combs
@@ -151,6 +152,7 @@ module SmartNIC #(
 ,       BANK_DEPTH
 ,       RX_FIFO_DEPTH
 ,       TX_FIFO_WORDS
+,       ENABLE_RAW
     ) network (
         .net_clk(net_clk)
 ,       .l2_clk(l2_clk)

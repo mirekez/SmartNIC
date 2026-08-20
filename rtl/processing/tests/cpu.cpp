@@ -335,9 +335,9 @@ static bool build_verilator()
             / "cpphdl" / "tribe_cpu" / "cache").string(),
         (source.parent_path().parent_path().parent_path().parent_path()
             / "cpphdl" / "tribe_cpu" / "devices").string()};
-    std::vector<std::string> modules = {"File", "RAM", "L1Cache",
+    std::vector<std::string> modules = {"FileStorage", "File", "RAM", "L1Cache",
         "Axi4SlowToFastCdc", "Axi4FastToSlowCdc", "L1MemFastToSlowCdc",
-        "L2Cache", "Tribe", "BranchPredictor", "InterruptController",
+        "L2CacheRamBank", "L2Cache", "Tribe", "BranchPredictor", "InterruptController",
         "Decode", "Execute", "ExecuteMem", "CSR", "MMU_TLB",
         "Writeback", "WritebackMem", "TribeTest"};
     return VerilatorCompileInExactFolderFromGenerated(source.string(),

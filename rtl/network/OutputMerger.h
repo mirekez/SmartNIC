@@ -18,13 +18,12 @@ class OutputMerger : public Module
 {
 public:
     static constexpr size_t STREAMS = 2;
-    static constexpr size_t WINDOW_WORDS = 8;
+    static constexpr size_t WINDOW_WORDS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t OUTPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t OUTPUT_BYTES = STREAMS * LANE_BYTES;
     static constexpr size_t MAX_LANE_WIDTH = 64;
     static constexpr size_t MAX_LANE_BYTES = MAX_LANE_WIDTH / 8;
-    static constexpr size_t OFFSET_BITS = clog2(LANE_BYTES);
     static constexpr size_t GAP_BITS = clog2(MIN_IPG_BYTES + 1);
 
     _PORT(logic<STREAMS>) tx_valid_in;
@@ -62,15 +61,13 @@ private:
     static constexpr size_t RESULT_EOP = RESULT_SOP + OUTPUT_BYTES;
     static constexpr size_t RESULT_VALID = RESULT_EOP + OUTPUT_BYTES;
     static constexpr size_t RESULT_NEXT_RR = RESULT_VALID + 1;
-    static constexpr size_t RESULT_NEXT_ACTIVE = RESULT_NEXT_RR + 3;
+    static constexpr size_t RESULT_NEXT_ACTIVE = RESULT_NEXT_RR + 1;
     static constexpr size_t RESULT_NEXT_STREAM = RESULT_NEXT_ACTIVE + 1;
-    static constexpr size_t RESULT_NEXT_GAP = RESULT_NEXT_STREAM + 3;
+    static constexpr size_t RESULT_NEXT_GAP = RESULT_NEXT_STREAM + 1;
     static constexpr size_t RESULT_NEXT_CARRY_VALID =
         RESULT_NEXT_GAP + GAP_BITS;
-    static constexpr size_t RESULT_NEXT_CARRY_OFFSET =
-        RESULT_NEXT_CARRY_VALID + 1;
     static constexpr size_t RESULT_NEXT_CARRY_DATA =
-        RESULT_NEXT_CARRY_OFFSET + OFFSET_BITS;
+        RESULT_NEXT_CARRY_VALID + 1;
     static constexpr size_t RESULT_NEXT_CARRY_KEEP =
         RESULT_NEXT_CARRY_DATA + LANE_WIDTH;
     static constexpr size_t RESULT_NEXT_CARRY_SOP =
@@ -82,12 +79,11 @@ private:
 
     TxFifo<LANE_WIDTH, FIFO_WORDS> fifos[STREAMS];
 
-    reg<u<3>> rr_reg;
+    reg<u1> rr_reg;
     reg<u1> active_reg;
-    reg<u<3>> stream_reg;
+    reg<u1> stream_reg;
     reg<u<GAP_BITS>> gap_reg;
     reg<u1> carry_valid_reg;
-    reg<u<OFFSET_BITS>> carry_offset_reg;
     reg<logic<LANE_WIDTH>> carry_data_reg;
     reg<logic<LANE_BYTES>> carry_keep_reg;
     reg<u1> carry_sop_reg;
@@ -221,24 +217,28 @@ private:
     }
 
     _LAZY_COMB(merge_result_comb, logic<RESULT_BITS>)
-        size_t output_byte;
-        size_t bit;
-        size_t scan;
-        size_t remaining;
-        uint32_t rr;
-        uint32_t selected;
-        uint32_t candidate;
-        uint32_t slot;
-        uint32_t byte_index;
-        uint32_t gap;
+        size_t piece;
+        uint8_t rr;
+        uint8_t selected;
+        uint8_t slot;
+        uint8_t slot0;
+        uint8_t slot1;
+        uint8_t gap;
+        uint8_t position;
+        uint8_t space;
+        uint8_t bytes;
+        uint8_t take;
+        uint8_t keep_mask;
+        uint64_t data_mask;
         bool active;
         bool loaded;
         bool found;
         bool any_data;
-        bool last_byte;
         bool error;
         bool blocked;
         bool expect_sop;
+        bool available0;
+        bool available1;
         bool word_sop;
         bool word_eop;
         logic<READ_COUNT_BITS> read_counts;
@@ -249,70 +249,75 @@ private:
         logic<FIFO_FLAG_BITS> all_sop;
         logic<FIFO_FLAG_BITS> all_eop;
         logic<FIFO_FLAG_BITS> all_valid;
+        logic<OUTPUT_BITS> output_data;
+        logic<OUTPUT_BYTES> output_keep;
+        logic<OUTPUT_BYTES> output_sop;
+        logic<OUTPUT_BYTES> output_eop;
 
         merge_result_comb = 0;
-        read_counts = 0;
         merge_read_counts_comb = 0;
-        all_valid = fifo_valid_comb_func();
-        rr = (uint32_t)rr_reg;
-        selected = (uint32_t)stream_reg;
-        candidate = 0;
-        slot = 0;
-        last_byte = false;
-        active = (bool)active_reg;
-        expect_sop = !active;
-        gap = (uint32_t)gap_reg;
-        loaded = (bool)carry_valid_reg;
-        byte_index = (uint32_t)carry_offset_reg;
-        word_data = carry_data_reg;
-        word_keep = carry_keep_reg;
-        word_sop = (bool)carry_sop_reg;
-        word_eop = (bool)carry_eop_reg;
-        any_data = false;
-        error = false;
-        blocked = false;
-
-        // RX-only operation should not pay for copying the very wide TX read
-        // windows.  With no active packet or committed FIFO word, valid_out is
-        // simply low and no state can advance.
-        found = false;
-        for (scan = 0; scan < FIFO_FLAG_BITS; ++scan) {
-            if ((bool)all_valid[scan]) found = true;
-        }
-        if (!active && gap == 0 && !found) {
-            return merge_result_comb;
-        }
+        read_counts = 0;
+        output_data = 0;
+        output_keep = 0;
+        output_sop = 0;
+        output_eop = 0;
         all_data = fifo_data_comb_func();
         all_keep = fifo_keep_comb_func();
         all_sop = fifo_sop_comb_func();
         all_eop = fifo_eop_comb_func();
+        all_valid = fifo_valid_comb_func();
+        rr = (uint8_t)rr_reg;
+        selected = (uint8_t)stream_reg;
+        gap = (uint8_t)gap_reg;
+        position = 0;
+        active = active_reg;
+        expect_sop = !active;
+        loaded = carry_valid_reg;
+        word_data = carry_data_reg;
+        word_keep = carry_keep_reg;
+        word_sop = carry_sop_reg;
+        word_eop = carry_eop_reg;
+        any_data = false;
+        error = false;
+        blocked = false;
+        slot = 0;
+        slot0 = 0;
+        slot1 = 0;
+        space = 0;
+        bytes = 0;
+        take = 0;
+        keep_mask = 0;
+        data_mask = 0;
+        found = false;
+        available0 = false;
+        available1 = false;
 
-        for (output_byte = 0; output_byte < OUTPUT_BYTES; ++output_byte) {
-            if (!blocked) {
+        // At most three packet-word fragments can contribute to one 16-byte
+        // aggregate word: an old carry, two aligned words, or a post-IPG
+        // prefix.  Keeping this loop at three prevents a byte-serial path.
+        for (piece = 0; piece < 3; ++piece) {
+            if (!blocked && position < OUTPUT_BYTES) {
                 if (gap != 0) {
-                    --gap;
+                    space = OUTPUT_BYTES - position;
+                    take = gap < space ? gap : space;
+                    position += take;
+                    gap -= take;
                 }
-                else {
+
+                if (gap == 0 && position < OUTPUT_BYTES) {
                     if (!active) {
-                        found = false;
-                        for (scan = 0; scan < STREAMS; ++scan) {
-                            candidate = (rr + scan) & (STREAMS - 1);
-                            slot = 0;
-                            for (bit = 0; bit < 4; ++bit) {
-                                if ((bool)read_counts[candidate * 4 + bit]) {
-                                    slot |= 1u << bit;
-                                }
-                            }
-                            if (!found && slot < WINDOW_WORDS
-                                && (bool)all_valid[
-                                    candidate * WINDOW_WORDS + slot]) {
-                                selected = candidate;
-                                found = true;
-                            }
-                        }
-                        if (!found) {
-                            blocked = true;
-                        }
+                        slot0 = (uint8_t)(uint64_t)read_counts.bits(3, 0);
+                        slot1 = (uint8_t)(uint64_t)read_counts.bits(7, 4);
+                        available0 = slot0 < WINDOW_WORDS
+                            && (slot0 == 0 ? (bool)all_valid[0]
+                                : (bool)all_valid[1]);
+                        available1 = slot1 < WINDOW_WORDS
+                            && (slot1 == 0 ? (bool)all_valid[2]
+                                : (bool)all_valid[3]);
+                        found = available0 || available1;
+                        if (rr == 0) selected = available0 ? 0 : 1;
+                        else selected = available1 ? 1 : 0;
+                        if (!found) blocked = true;
                         else {
                             active = true;
                             expect_sop = true;
@@ -321,110 +326,129 @@ private:
                     }
 
                     if (!blocked && !loaded) {
-                        slot = 0;
-                        for (bit = 0; bit < 4; ++bit) {
-                            if ((bool)read_counts[selected * 4 + bit]) {
-                                slot |= 1u << bit;
-                            }
-                        }
+                        slot = selected == 0
+                            ? (uint8_t)(uint64_t)read_counts.bits(3, 0)
+                            : (uint8_t)(uint64_t)read_counts.bits(7, 4);
                         if (slot >= WINDOW_WORDS
-                            || !(bool)all_valid[
-                                selected * WINDOW_WORDS + slot]) {
-                            error = true;
+                            || (selected == 0
+                                ? (slot == 0 ? !(bool)all_valid[0]
+                                    : !(bool)all_valid[1])
+                                : (slot == 0 ? !(bool)all_valid[2]
+                                    : !(bool)all_valid[3]))) {
                             blocked = true;
                         }
                         else {
-                            word_data = 0;
-                            word_keep = 0;
-                            for (bit = 0; bit < LANE_WIDTH; ++bit) {
-                                word_data[bit] = all_data[
-                                    (selected * WINDOW_WORDS + slot)
-                                    * LANE_WIDTH + bit];
+                            if (selected == 0 && slot == 0) {
+                                word_data = all_data.bits(63, 0);
+                                word_keep = all_keep.bits(7, 0);
+                                word_sop = all_sop[0];
+                                word_eop = all_eop[0];
                             }
-                            for (bit = 0; bit < LANE_BYTES; ++bit) {
-                                word_keep[bit] = all_keep[
-                                    (selected * WINDOW_WORDS + slot)
-                                    * LANE_BYTES + bit];
+                            else if (selected == 0) {
+                                word_data = all_data.bits(127, 64);
+                                word_keep = all_keep.bits(15, 8);
+                                word_sop = all_sop[1];
+                                word_eop = all_eop[1];
                             }
-                            word_sop = (bool)all_sop[
-                                selected * WINDOW_WORDS + slot];
-                            word_eop = (bool)all_eop[
-                                selected * WINDOW_WORDS + slot];
-                            for (bit = 0; bit < 4; ++bit) {
-                                read_counts[selected * 4 + bit] =
-                                    ((slot + 1) >> bit) & 1;
+                            else if (slot == 0) {
+                                word_data = all_data.bits(191, 128);
+                                word_keep = all_keep.bits(23, 16);
+                                word_sop = all_sop[2];
+                                word_eop = all_eop[2];
                             }
-                            byte_index = 0;
+                            else {
+                                word_data = all_data.bits(255, 192);
+                                word_keep = all_keep.bits(31, 24);
+                                word_sop = all_sop[3];
+                                word_eop = all_eop[3];
+                            }
+                            if (selected == 0)
+                                read_counts.bits(3, 0) = slot + 1;
+                            else
+                                read_counts.bits(7, 4) = slot + 1;
                             loaded = true;
                             if (word_sop != expect_sop) error = true;
                             expect_sop = false;
                         }
                     }
 
-                    if (!blocked && !(bool)word_keep[byte_index]) {
-                        error = true;
-                        blocked = true;
-                    }
-                    if (!blocked) {
-                        for (bit = 0; bit < 8; ++bit) {
-                            merge_result_comb[
-                                RESULT_DATA + output_byte * 8 + bit] =
-                                word_data[byte_index * 8 + bit];
-                        }
-                        merge_result_comb[RESULT_KEEP + output_byte] = 1;
-                        merge_result_comb[RESULT_SOP + output_byte] =
-                            word_sop && byte_index == 0;
-                        any_data = true;
-
-                        last_byte = true;
-                        // Keep the loop's initialization and trip count static
-                        // so Vivado can unroll it.  A data-dependent initial
-                        // value makes the synthesizer's convergence check fail.
-                        for (remaining = 0;
-                             remaining < LANE_BYTES; ++remaining) {
-                            if (remaining > byte_index
-                                && (bool)word_keep[remaining]) {
-                                last_byte = false;
-                            }
-                        }
-                        if (word_eop && last_byte) {
-                            merge_result_comb[RESULT_EOP + output_byte] = 1;
-                            active = false;
-                            expect_sop = true;
-                            loaded = false;
-                            byte_index = 0;
-                            gap = MIN_IPG_BYTES;
-                            rr = (selected + 1) & (STREAMS - 1);
+                    if (!blocked && loaded) {
+                        bytes = 0;
+                        if (word_keep[7]) bytes = 8;
+                        else if (word_keep[6]) bytes = 7;
+                        else if (word_keep[5]) bytes = 6;
+                        else if (word_keep[4]) bytes = 5;
+                        else if (word_keep[3]) bytes = 4;
+                        else if (word_keep[2]) bytes = 3;
+                        else if (word_keep[1]) bytes = 2;
+                        else if (word_keep[0]) bytes = 1;
+                        if (bytes == 0) {
+                            error = true;
+                            blocked = true;
                         }
                         else {
-                            ++byte_index;
-                            if (byte_index == LANE_BYTES) {
+                            space = OUTPUT_BYTES - position;
+                            take = bytes < space ? bytes : space;
+                            data_mask = take == LANE_BYTES ? ~uint64_t(0)
+                                : ((uint64_t(1) << (take * 8)) - 1);
+                            keep_mask = (1u << take) - 1;
+                            output_data = output_data
+                                | ((logic<OUTPUT_BITS>)(word_data & data_mask)
+                                    << (position * 8));
+                            output_keep = output_keep
+                                | (logic<OUTPUT_BYTES>)(keep_mask << position);
+                            if (word_sop) output_sop[position] = 1;
+                            any_data = true;
+                            position += take;
+
+                            if (take < bytes) {
+                                word_data = word_data >> (take * 8);
+                                word_keep = word_keep >> take;
+                                word_sop = false;
+                                loaded = true;
+                            }
+                            else {
                                 loaded = false;
-                                byte_index = 0;
+                                if (word_eop) {
+                                    output_eop[position - 1] = 1;
+                                    active = false;
+                                    expect_sop = true;
+                                    gap = MIN_IPG_BYTES;
+                                    rr = (selected + 1) & (STREAMS - 1);
+
+                                    // Consume as much of the mandatory gap as
+                                    // fits in this aggregate word immediately.
+                                    // Otherwise an EOP handled by the final
+                                    // piece would add an unnecessary whole
+                                    // output word to the inter-packet gap.
+                                    space = OUTPUT_BYTES - position;
+                                    take = gap < space ? gap : space;
+                                    position += take;
+                                    gap -= take;
+                                }
                             }
                         }
-                    }
-                    if (blocked && !any_data) {
-                        loaded = false;
                     }
                 }
             }
         }
 
-        for (bit = 0; bit < READ_COUNT_BITS; ++bit) {
-            merge_read_counts_comb[bit] = read_counts[bit];
-        }
+        merge_read_counts_comb = read_counts;
+        merge_result_comb.bits(RESULT_DATA + OUTPUT_BITS - 1,
+            RESULT_DATA) = output_data;
+        merge_result_comb.bits(RESULT_KEEP + OUTPUT_BYTES - 1,
+            RESULT_KEEP) = output_keep;
+        merge_result_comb.bits(RESULT_SOP + OUTPUT_BYTES - 1,
+            RESULT_SOP) = output_sop;
+        merge_result_comb.bits(RESULT_EOP + OUTPUT_BYTES - 1,
+            RESULT_EOP) = output_eop;
         merge_result_comb[RESULT_VALID] = any_data;
-        merge_result_comb.bits(RESULT_NEXT_RR + 2, RESULT_NEXT_RR) = rr;
+        merge_result_comb[RESULT_NEXT_RR] = rr;
         merge_result_comb[RESULT_NEXT_ACTIVE] = active;
-        merge_result_comb.bits(RESULT_NEXT_STREAM + 2,
-            RESULT_NEXT_STREAM) = selected;
+        merge_result_comb[RESULT_NEXT_STREAM] = selected;
         merge_result_comb.bits(RESULT_NEXT_GAP + GAP_BITS - 1,
             RESULT_NEXT_GAP) = gap;
         merge_result_comb[RESULT_NEXT_CARRY_VALID] = loaded;
-        merge_result_comb.bits(
-            RESULT_NEXT_CARRY_OFFSET + OFFSET_BITS - 1,
-            RESULT_NEXT_CARRY_OFFSET) = byte_index;
         if (loaded) {
             merge_result_comb.bits(RESULT_NEXT_CARRY_DATA + LANE_WIDTH - 1,
                 RESULT_NEXT_CARRY_DATA) = word_data;
@@ -536,7 +560,6 @@ public:
             stream_reg.clr();
             gap_reg.clr();
             carry_valid_reg.clr();
-            carry_offset_reg.clr();
             carry_data_reg.clr();
             carry_keep_reg.clr();
             carry_sop_reg.clr();
@@ -549,21 +572,16 @@ public:
         }
 
         if ((bool)merge_result_comb_func()[RESULT_VALID] && ready_in()) {
-            rr_reg._next = merge_result_comb_func().bits(
-                RESULT_NEXT_RR + 2, RESULT_NEXT_RR);
+            rr_reg._next = (bool)merge_result_comb_func()[RESULT_NEXT_RR];
             active_reg._next = (bool)merge_result_comb_func()[
                 RESULT_NEXT_ACTIVE];
-            stream_reg._next = merge_result_comb_func().bits(
-                RESULT_NEXT_STREAM + 2,
-                RESULT_NEXT_STREAM);
+            stream_reg._next = (bool)merge_result_comb_func()[
+                RESULT_NEXT_STREAM];
             gap_reg._next = merge_result_comb_func().bits(
                 RESULT_NEXT_GAP + GAP_BITS - 1,
                 RESULT_NEXT_GAP);
             carry_valid_reg._next = (bool)merge_result_comb_func()[
                 RESULT_NEXT_CARRY_VALID];
-            carry_offset_reg._next = merge_result_comb_func().bits(
-                RESULT_NEXT_CARRY_OFFSET + OFFSET_BITS - 1,
-                RESULT_NEXT_CARRY_OFFSET);
             carry_data_reg._next = merge_result_comb_func().bits(
                 RESULT_NEXT_CARRY_DATA + LANE_WIDTH - 1,
                 RESULT_NEXT_CARRY_DATA);
@@ -595,7 +613,6 @@ public:
         stream_reg.strobe();
         gap_reg.strobe();
         carry_valid_reg.strobe();
-        carry_offset_reg.strobe();
         carry_data_reg.strobe();
         carry_keep_reg.strobe();
         carry_sop_reg.strobe();
@@ -609,7 +626,7 @@ public:
         size_t stream;
         for (stream = 0; stream < STREAMS; ++stream) fifos[stream]._strobe();
         rr_reg.strobe(); active_reg.strobe(); stream_reg.strobe();
-        gap_reg.strobe(); carry_valid_reg.strobe(); carry_offset_reg.strobe();
+        gap_reg.strobe(); carry_valid_reg.strobe();
         carry_data_reg.strobe(); carry_keep_reg.strobe(); carry_sop_reg.strobe();
         carry_eop_reg.strobe(); protocol_error_reg.strobe();
     }
