@@ -72,11 +72,11 @@ module Tribe (
 ,   output wire TribePerf perf_out
 ,   input wire debugen_in
 );
-    parameter  SBI_EXT_BASE = 'h10;
-    parameter  SBI_EXT_TIME = 'h54494D45;
-    parameter  SBI_EXT_RFENCE = 'h52464E43;
-    parameter  SBI_EXT_IPI = 'h735049;
-    parameter  SBI_SUCCESS = 'h0;
+    localparam  SBI_EXT_BASE = 'h10;
+    localparam  SBI_EXT_TIME = 'h54494D45;
+    localparam  SBI_EXT_RFENCE = 'h52464E43;
+    localparam  SBI_EXT_IPI = 'h735049;
+    localparam  SBI_SUCCESS = 'h0;
 
 
     // regs and combs

@@ -7,8 +7,14 @@
 
 using namespace cpphdl;
 
-template<size_t MEM_WIDTH_BYTES, size_t MEM_DEPTH, bool SHOWAHEAD = true>
+template<size_t MEM_WIDTH_BYTES, size_t MEM_DEPTH, bool SHOWAHEAD = true,
+    bool FULL_WORD_WRITE = false>
+#ifdef SMARTNIC_TWO_CLOCKS
+class [[clang::annotate("CPPHDL_REPLACEMENT_FILE=SmartNicMemoryPrimitive.sv;")]]
+SmartNicMemory : public Module
+#else
 class SmartNicMemory : public Module
+#endif
 {
 public:
     _PORT(u<clog2(MEM_DEPTH)>) write_addr_in;
@@ -56,14 +62,19 @@ public:
             return;
         }
         if (write_in()) {
-            write_mask_comb = 0;
-            for (byte = 0; byte < MEM_WIDTH_BYTES; ++byte) {
-                write_mask_comb.bits(byte * 8 + 7, byte * 8) =
-                    (bool)write_mask_in()[byte] ? 0xff : 0;
+            if (FULL_WORD_WRITE) {
+                buffer[write_addr_in()] = write_data_in();
             }
-            buffer[write_addr_in()] =
-                (buffer[write_addr_in()] & ~write_mask_comb)
-                | (write_data_in() & write_mask_comb);
+            else {
+                write_mask_comb = 0;
+                for (byte = 0; byte < MEM_WIDTH_BYTES; ++byte) {
+                    write_mask_comb.bits(byte * 8 + 7, byte * 8) =
+                        (bool)write_mask_in()[byte] ? 0xff : 0;
+                }
+                buffer[write_addr_in()] =
+                    (buffer[write_addr_in()] & ~write_mask_comb)
+                    | (write_data_in() & write_mask_comb);
+            }
         }
         if (!SHOWAHEAD && read_in()) {
             data_out_reg._next = buffer[read_addr_in()];
@@ -87,4 +98,4 @@ public:
     SMARTNIC_NETWORK_CLOCK_METHODS()
 };
 
-template class SmartNicMemory<160, 64, true>;
+template class SmartNicMemory<160, 64, true, false>;

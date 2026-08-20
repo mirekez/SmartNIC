@@ -18,8 +18,12 @@ class Fifo : public Module
             && (FIFO_DEPTH & (FIFO_DEPTH - 1)) == 0,
         "Fifo depth must be a power of two greater than one");
 
+    // Registered-output FIFOs use the memory's synchronous read register
+    // directly. Keeping the register inside SmartNicMemory lets FPGA tools
+    // infer block RAM instead of expanding an asynchronous array read into
+    // LUTs or flip-flops.
     SmartNicMemory<FIFO_WIDTH_BYTES, FIFO_DEPTH,
-        OUTPUT_REG ? true : SHOWAHEAD> mem;
+        OUTPUT_REG ? false : SHOWAHEAD, true> mem;
 
 public:
     _PORT(bool) write_in;
@@ -37,7 +41,6 @@ private:
     reg<u1> full_reg;
     reg<u1> afull_reg;
     reg<u1> read_valid_reg;
-    reg<logic<FIFO_WIDTH_BYTES * 8>> read_data_reg;
 
     bool full_comb;
     bool empty_comb;
@@ -70,7 +73,7 @@ private:
 
     logic<FIFO_WIDTH_BYTES * 8>& read_data_comb_func()
     {
-        read_data_comb = OUTPUT_REG ? read_data_reg : mem.read_data_out();
+        read_data_comb = mem.read_data_out();
         return read_data_comb;
     }
 
@@ -145,7 +148,6 @@ public:
             full_reg.clr();
             afull_reg.clr();
             read_valid_reg.clr();
-            read_data_reg.clr();
             return;
         }
 
@@ -158,7 +160,6 @@ public:
             }
             if (mem_read) {
                 rp_reg._next = rp_reg + 1;
-                read_data_reg._next = mem.read_data_out();
                 read_valid_reg._next = 1;
             }
             else if (output_read) {
@@ -216,7 +217,6 @@ public:
         full_reg.strobe();
         afull_reg.strobe();
         read_valid_reg.strobe();
-        read_data_reg.strobe();
     }
 #endif
 
@@ -228,7 +228,6 @@ public:
         full_reg.strobe();
         afull_reg.strobe();
         read_valid_reg.strobe();
-        read_data_reg.strobe();
     }
 
     SMARTNIC_NETWORK_CLOCK_METHODS()

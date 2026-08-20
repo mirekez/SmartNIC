@@ -27,6 +27,31 @@ import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
+import Axi4WriteAddressReady_pkg::*;
+import Axi4WriteDataReady_pkg::*;
+import Axi4WriteResponse4_pkg::*;
+import Axi4ReadAddressReady_pkg::*;
+import Axi4ReadData4_256_pkg::*;
+import Axi4Responder4_256_pkg::*;
+import Axi4WriteAddress32_4_pkg::*;
+import Axi4WriteData256_pkg::*;
+import Axi4WriteResponseReady_pkg::*;
+import Axi4ReadAddress32_4_pkg::*;
+import Axi4ReadDataReady_pkg::*;
+import Axi4Driver32_4_256_pkg::*;
+import L2CacheFsmState_pkg::*;
+import L2HitLookupComb_pkg::*;
+import L2RequestGeometryComb_pkg::*;
+import L2WordPairComb_pkg::*;
+import CacheRequest_pkg::*;
+import L2ActiveRequestComb_pkg::*;
+import L2EvictCandidateComb_pkg::*;
+import L2CpuWaitComb_pkg::*;
+import L2IoWritePayloadComb_pkg::*;
+import L2AxiRouteComb_pkg::*;
+import L2AxiRequestNoveltyComb_pkg::*;
+import CacheResponse_pkg::*;
+import L2AxiAddressState_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 import DescriptorFetcher_Register_pkg::*;
@@ -107,13 +132,13 @@ module Processing #(
 ,   input wire external_irq_in[CPU_COUNT*CPU_pkg::CORES]
 ,   input wire cache_invalidate_in[CPU_COUNT]
 );
-    parameter  READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
-    parameter  RX_STREAM_BITS = 64'h122;
-    parameter  TARGET_BITS = (CPU_COUNT<='h1) ? ('h1) : ($clog2(CPU_COUNT));
-    parameter  FETCHER_BASE = 'h0;
-    parameter  FETCHER_SIZE = 'h1000;
-    parameter  DMA_BASE = 'h1000;
-    parameter  DMA_SIZE = 'h1000;
+    localparam  READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
+    localparam  RX_STREAM_BITS = 64'h122;
+    localparam  TARGET_BITS = (CPU_COUNT<='h1) ? ('h1) : ($clog2(CPU_COUNT));
+    localparam  FETCHER_BASE = 'h0;
+    localparam  FETCHER_SIZE = 'h1000;
+    localparam  DMA_BASE = 'h1000;
+    localparam  DMA_SIZE = 'h1000;
 
 
     // regs and combs

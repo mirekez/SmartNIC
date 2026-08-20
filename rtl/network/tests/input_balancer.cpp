@@ -1,10 +1,9 @@
 // Native CppHDL and generated-SystemVerilog/Verilator tests for InputBalancer.
 //
-// Fixed-size cases cover every significant 64-bit lane boundary.
-// words.  A mixed minimum/jumbo bulk then drives one aggregate word on every
-// source clock with the minimum 12-byte Ethernet IPG.  The scoreboard rebuilds
-// frames independently on both outputs, checks byte-exact contents and
-// verifies that 2x10G never backpressures the wire source.
+// Fixed-size cases cover every significant 64-bit lane boundary.  A mixed
+// minimum/jumbo bulk then drives both independent MAC channels concurrently
+// with the minimum 12-byte Ethernet IPG.  The scoreboard rebuilds frames on
+// their corresponding outputs and verifies byte-exact 2x10G wire-speed flow.
 
 #include "../InputBalancer.h"
 
@@ -292,47 +291,60 @@ class InputBalancerTest
         }
     }
 
-    std::vector<WireByte> make_wire(const std::vector<size_t>& sizes)
+    std::array<std::vector<WireByte>, LANES> make_wires(
+        const std::vector<size_t>& sizes)
     {
-        std::vector<WireByte> wire;
+        std::array<std::vector<WireByte>, LANES> wires;
         expected.clear();
         for (size_t index = 0; index < sizes.size(); ++index) {
+            size_t lane = index & (LANES - 1);
             uint32_t id = (uint32_t)index + 1;
             std::vector<uint8_t> frame = make_frame(id, sizes[index]);
             expected.emplace(id, frame);
             for (size_t byte = 0; byte < frame.size(); ++byte) {
-                wire.push_back({frame[byte], true, byte == 0, byte + 1 == frame.size()});
+                wires[lane].push_back(
+                    {frame[byte], true, byte == 0, byte + 1 == frame.size()});
             }
-            for (size_t byte = 0; byte < IPG_BYTES; ++byte) {
-                wire.push_back({0, false, false, false});
+            // AXI MAC words always start a frame at byte zero; physical IPG is
+            // represented by deasserted-valid clocks rather than holes before
+            // an SOP within a beat.  Round to the next word and leave two idle
+            // clocks (at least the 12-byte Ethernet minimum).
+            size_t idle = (LANE_BYTES - (frame.size() % LANE_BYTES)) % LANE_BYTES;
+            idle += ((IPG_BYTES + LANE_BYTES - 1) / LANE_BYTES) * LANE_BYTES;
+            for (size_t byte = 0; byte < idle; ++byte) {
+                wires[lane].push_back({0, false, false, false});
             }
         }
-        return wire;
+        return wires;
     }
 
-    void drive_word(const std::vector<WireByte>& wire, size_t position)
+    void drive_word(const std::array<std::vector<WireByte>, LANES>& wires,
+        const std::array<size_t, LANES>& position)
     {
         input_data = 0;
         input_keep = 0;
         input_sop = 0;
         input_eop = 0;
         valid = false;
-        bool saw_eop = false;
-        for (size_t byte = 0; byte < INPUT_BYTES; ++byte) {
-            if (position + byte >= wire.size()) {
-                break;
-            }
-            const WireByte& item = wire[position + byte];
-            input_data.bits(byte * 8 + 7, byte * 8) = item.data;
-            input_keep[byte] = item.keep;
-            input_sop[byte] = item.sop;
-            input_eop[byte] = item.eop;
-            valid |= item.keep;
-            if (item.sop && saw_eop) {
-                input_boundary_pair_seen = true;
-            }
-            if (item.eop) {
-                saw_eop = true;
+        for (size_t lane = 0; lane < LANES; ++lane) {
+            bool saw_eop = false;
+            for (size_t byte = 0; byte < LANE_BYTES; ++byte) {
+                if (position[lane] + byte >= wires[lane].size()) {
+                    break;
+                }
+                const WireByte& item = wires[lane][position[lane] + byte];
+                size_t flat = lane * LANE_BYTES + byte;
+                input_data.bits(flat * 8 + 7, flat * 8) = item.data;
+                input_keep[flat] = item.keep;
+                input_sop[flat] = item.sop;
+                input_eop[flat] = item.eop;
+                valid |= item.keep;
+                if (item.sop && saw_eop) {
+                    input_boundary_pair_seen = true;
+                }
+                if (item.eop) {
+                    saw_eop = true;
+                }
             }
         }
     }
@@ -340,9 +352,13 @@ class InputBalancerTest
     bool run_case(const std::string& name, const std::vector<size_t>& sizes,
         bool require_boundary_pair, bool require_wire_speed, bool require_equal_distribution)
     {
-        std::vector<WireByte> wire = make_wire(sizes);
-        size_t position = 0;
-        size_t source_cycles = (wire.size() + INPUT_BYTES - 1) / INPUT_BYTES;
+        auto wires = make_wires(sizes);
+        std::array<size_t, LANES> position{};
+        size_t source_cycles = 0;
+        for (size_t lane = 0; lane < LANES; ++lane) {
+            source_cycles = std::max(source_cycles,
+                (wires[lane].size() + LANE_BYTES - 1) / LANE_BYTES);
+        }
         size_t driven_cycles = 0;
         size_t drain_cycles = 0;
 
@@ -366,8 +382,14 @@ class InputBalancerTest
             rising_edge(true);
         }
 
-        while (position < wire.size() && !error) {
-            drive_word(wire, position);
+        auto source_done = [&]() {
+            for (size_t lane = 0; lane < LANES; ++lane) {
+                if (position[lane] < wires[lane].size()) return false;
+            }
+            return true;
+        };
+        while (!source_done() && !error) {
+            drive_word(wires, position);
             eval_low(false);
             sample_outputs();
             if (!input_ready_value()) {
@@ -376,7 +398,10 @@ class InputBalancerTest
                 }
             }
             else {
-                position += INPUT_BYTES;
+                for (size_t lane = 0; lane < LANES; ++lane) {
+                    position[lane] = std::min(
+                        position[lane] + LANE_BYTES, wires[lane].size());
+                }
             }
             rising_edge(false);
             ++driven_cycles;
@@ -408,7 +433,7 @@ class InputBalancerTest
             fail("EOP+SOP was not observed in both input and output clocks");
         }
         if (require_wire_speed && driven_cycles != source_cycles) {
-            fail("source consumed more than one clock per aggregate wire word");
+            fail("source consumed more than one clock per 2x10G MAC word");
         }
         if (require_equal_distribution) {
             auto [low, high] = std::minmax_element(output_frames.begin(), output_frames.end());
@@ -489,7 +514,8 @@ int main(int argc, char** argv)
             (source.parent_path().parent_path()).string(),
             (project_root / "cpphdl" / "include").string()};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "InputBalancer_64",
-            "InputBalancer", generated, {"Predef_pkg"}, includes, 64);
+            "InputBalancer", generated,
+            {"Predef_pkg", "SmartNicMemory", "Fifo"}, includes, 64);
         if (ok) {
             ok &= std::system("InputBalancer_64/obj_dir/VInputBalancer 64") == 0;
         }

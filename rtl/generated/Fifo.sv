@@ -30,7 +30,6 @@ module Fifo #(
     reg full_reg;
     reg afull_reg;
     reg read_valid_reg;
-    reg[FIFO_WIDTH_BYTES*'h8-1:0] read_data_reg;
     logic full_comb;
     logic empty_comb;
     logic mem_read_comb;
@@ -48,7 +47,8 @@ module Fifo #(
     SmartNicMemory #(
         FIFO_WIDTH_BYTES
 ,       FIFO_DEPTH
-,       (OUTPUT_REG) ? (1) : (SHOWAHEAD)
+,       (OUTPUT_REG) ? (0) : (SHOWAHEAD)
+,       1
     ) mem (
         .net_clk(net_clk)
 ,       .l2_clk(l2_clk)
@@ -68,7 +68,6 @@ module Fifo #(
     logic full_reg_tmp;
     logic afull_reg_tmp;
     logic read_valid_reg_tmp;
-    logic[FIFO_WIDTH_BYTES*'h8-1:0] read_data_reg_tmp;
 
 
     always_comb begin : full_comb_func  // full_comb_func
@@ -90,7 +89,7 @@ module Fifo #(
     end
 
     always_comb begin : read_data_comb_func  // read_data_comb_func
-        read_data_comb = (OUTPUT_REG) ? (read_data_reg) : (mem__read_data_out);
+        read_data_comb = mem__read_data_out;
     end
 
     always_comb begin : mem_read_comb_func  // mem_read_comb_func
@@ -142,7 +141,6 @@ module Fifo #(
             full_reg_tmp = '0;
             afull_reg_tmp = '0;
             read_valid_reg_tmp = '0;
-            read_data_reg_tmp = '0;
             disable _work_net_clk;
         end
         if (OUTPUT_REG) begin
@@ -154,7 +152,6 @@ module Fifo #(
             end
             if (mem_read) begin
                 rp_reg_tmp = rp_reg + 'h1;
-                read_data_reg_tmp = mem__read_data_out;
                 read_valid_reg_tmp = unsigned'(1'h1);
             end
             else begin
@@ -215,7 +212,6 @@ module Fifo #(
         full_reg_tmp = full_reg;
         afull_reg_tmp = afull_reg;
         read_valid_reg_tmp = read_valid_reg;
-        read_data_reg_tmp = read_data_reg;
 
         _work_net_clk(reset);
 
@@ -224,7 +220,6 @@ module Fifo #(
         full_reg <= full_reg_tmp;
         afull_reg <= afull_reg_tmp;
         read_valid_reg <= read_valid_reg_tmp;
-        read_data_reg <= read_data_reg_tmp;
     end
 
     always_ff @(posedge l2_clk) begin

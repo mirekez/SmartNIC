@@ -1,7 +1,7 @@
 // Native CppHDL and generated-SystemVerilog/Verilator tests for PacketParser.
 // Packet construction is a recursive fold of Ethernet, VLAN, MPLS, IP,
-// extension/option and transport layers.  Eight independent byte timelines use
-// unrelated initial offsets and IPGs so SOP/EOP exercise every lane position.
+// extension/option and transport layers.  The byte timeline uses unrelated
+// initial offsets and IPGs so SOP/EOP exercise every lane position.
 
 #include "../PacketParser.h"
 
@@ -253,6 +253,7 @@ static PacketCase make_packet(uint32_t id, bool ipv6, bool tcp,
         packet.fields.vlan_tci[i] = u16(0x100 + id + i * 0x111);
     }
 #endif
+
 #if PACKET_PARSER_ENABLE_MPLS
     for (uint32_t i = 0; i < std::min(mpls_count,
              (uint32_t)PACKET_PARSER_OUTPUT_MPLS_LABELS); ++i) {
@@ -306,10 +307,7 @@ static PacketCase make_stack_limit_packet(uint32_t id, bool vlan_limit)
 template<size_t LANE_WIDTH>
 class PacketParserTest
 {
-    static constexpr size_t STREAMS = 2;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
-    static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
-    static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
 
 #ifdef VERILATOR
     VERILATOR_MODEL dut;
@@ -317,16 +315,16 @@ class PacketParserTest
     PacketParser<LANE_WIDTH> dut;
 #endif
 
-    logic<STREAMS> valid;
-    logic<INPUT_BITS> data;
-    logic<INPUT_BYTES> keep;
-    logic<INPUT_BYTES> sop;
-    logic<INPUT_BYTES> eop;
-    logic<STREAMS> raw;
-    logic<STREAMS> output_ready;
-    std::array<std::vector<WireByte>, STREAMS> wire;
-    std::array<size_t, STREAMS> position{};
-    std::array<std::deque<ExpectedWord>, STREAMS> expected;
+    bool valid = false;
+    logic<LANE_WIDTH> data;
+    logic<LANE_BYTES> keep;
+    logic<LANE_BYTES> sop;
+    logic<LANE_BYTES> eop;
+    bool raw = false;
+    bool output_ready = false;
+    std::vector<WireByte> wire;
+    size_t position = 0;
+    std::deque<ExpectedWord> expected;
     bool error = false;
     size_t received = 0;
     size_t total_expected = 0;
@@ -366,13 +364,13 @@ class PacketParserTest
 #ifdef VERILATOR
         dut.clk = 0;
         dut.reset = reset;
-        dut.valid_in = (uint8_t)(uint64_t)valid;
+        dut.valid_in = valid;
         copy_to_verilator(dut.data_in, data);
         copy_to_verilator(dut.keep_in, keep);
         copy_to_verilator(dut.sop_in, sop);
         copy_to_verilator(dut.eop_in, eop);
-        dut.raw_in = (uint8_t)(uint64_t)raw;
-        dut.ready_in = (uint8_t)(uint64_t)output_ready;
+        dut.raw_in = raw;
+        dut.ready_in = output_ready;
         dut.eval();
 #else
         (void)reset;
@@ -392,65 +390,58 @@ class PacketParserTest
         ++_system_clock;
     }
 
-    logic<STREAMS> input_ready_value()
+    bool input_ready_value()
     {
 #ifdef VERILATOR
-        return logic<STREAMS>(dut.ready_out);
+        return dut.ready_out;
 #else
         return dut.ready_out();
 #endif
     }
 
-    logic<STREAMS> output_valid_value()
+    bool output_valid_value()
     {
 #ifdef VERILATOR
-        return logic<STREAMS>(dut.valid_out);
+        return dut.valid_out;
 #else
         return dut.valid_out();
 #endif
     }
 
-    logic<STREAMS> output_last_value()
+    bool output_last_value()
     {
 #ifdef VERILATOR
-        return logic<STREAMS>(dut.last_out);
+        return dut.last_out;
 #else
         return dut.last_out();
 #endif
     }
 
-    logic<STREAMS> output_raw_value()
+    bool output_raw_value()
     {
 #ifdef VERILATOR
-        return logic<STREAMS>(dut.raw_out);
+        return dut.raw_out;
 #else
         return dut.raw_out();
 #endif
     }
 
-    logic<STREAMS * 64> output_keep_value()
+    logic<64> output_keep_value()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<decltype(dut.keep_out), logic<STREAMS * 64>>(dut.keep_out);
+        return copy_from_verilator<decltype(dut.keep_out), logic<64>>(dut.keep_out);
 #else
         return dut.keep_out();
 #endif
     }
 
-    logic<STREAMS * 512> output_data_value()
+    logic<512> output_data_value()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<decltype(dut.data_out), logic<STREAMS * 512>>(dut.data_out);
+        return copy_from_verilator<decltype(dut.data_out), logic<512>>(dut.data_out);
 #else
-        PacketParserOutputBus bus = dut.data_out();
-        logic<STREAMS * 512> flattened = 0;
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            PacketParserWord word = bus[stream];
-            for (size_t bit = 0; bit < 512; ++bit) {
-                flattened[stream * 512 + bit] = word.raw[bit];
-            }
-        }
-        return flattened;
+        PacketParserWord word = dut.data_out();
+        return word.raw;
 #endif
     }
 
@@ -471,14 +462,14 @@ class PacketParserTest
         error = true;
     }
 
-    void append_case(size_t stream, const PacketCase& packet, size_t ipg)
+    void append_case(const PacketCase& packet, size_t ipg)
     {
         for (size_t i = 0; i < packet.frame.size(); ++i) {
-            wire[stream].push_back({packet.frame[i], true, i == 0,
+            wire.push_back({packet.frame[i], true, i == 0,
                 i + 1 == packet.frame.size(), packet.raw});
         }
         for (size_t i = 0; i < ipg; ++i) {
-            wire[stream].push_back({});
+            wire.push_back({});
         }
 
         if (packet.raw) {
@@ -494,7 +485,7 @@ class PacketParserTest
                         output.keep[byte] = 1;
                     }
                 }
-                expected[stream].push_back(output);
+                expected.push_back(output);
                 ++total_expected;
             }
         }
@@ -507,7 +498,7 @@ class PacketParserTest
             output.last = true;
             output.raw = false;
             output.name = packet.name;
-            expected[stream].push_back(output);
+            expected.push_back(output);
             ++total_expected;
         }
     }
@@ -516,25 +507,23 @@ class PacketParserTest
     {
         static constexpr std::array<size_t, 11> ipgs = {0, 1, 2, 3, 7, 11, 12, 19, 31, 47, 65};
         uint32_t id = 1;
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            // A distinct leading hole is the explicit realignment stress.
-            wire[stream].resize((stream * 7 + 3) % LANE_BYTES);
-            for (size_t item = 0; item < 12; ++item, ++id) {
-                bool ipv6 = ((item + stream) & 1) != 0;
-                bool tcp = ((item + stream * 3) & 2) != 0;
-                uint32_t vlan_count = (uint32_t)((item + stream) % 4);
-                uint32_t mpls_count = (uint32_t)((item / 2 + stream) % 3);
-                bool ip_options = !ipv6 && (item % 3 == 0);
-                bool transport_options = tcp && (item % 2 == 0);
-                bool extensions = ipv6 && (item % 3 != 0);
-                bool raw_mode = (item == 2 || item == 9);
-                PacketCase packet = make_packet(id, ipv6, tcp, vlan_count,
-                    mpls_count, ip_options, transport_options, extensions, raw_mode);
-                append_case(stream, packet, ipgs[(item * 3 + stream) % ipgs.size()]);
-            }
-            PacketCase limited = make_stack_limit_packet(id++, (stream & 1) == 0);
-            append_case(stream, limited, ipgs[(stream * 5 + 1) % ipgs.size()]);
+        // A leading hole is the explicit realignment stress.
+        wire.resize(3 % LANE_BYTES);
+        for (size_t item = 0; item < 12; ++item, ++id) {
+            bool ipv6 = (item & 1) != 0;
+            bool tcp = (item & 2) != 0;
+            uint32_t vlan_count = (uint32_t)(item % 4);
+            uint32_t mpls_count = (uint32_t)((item / 2) % 3);
+            bool ip_options = !ipv6 && (item % 3 == 0);
+            bool transport_options = tcp && (item % 2 == 0);
+            bool extensions = ipv6 && (item % 3 != 0);
+            bool raw_mode = (item == 2 || item == 9);
+            PacketCase packet = make_packet(id, ipv6, tcp, vlan_count,
+                mpls_count, ip_options, transport_options, extensions, raw_mode);
+            append_case(packet, ipgs[(item * 3) % ipgs.size()]);
         }
+        PacketCase limited = make_stack_limit_packet(id++, true);
+        append_case(limited, ipgs[1]);
     }
 
     void drive_inputs()
@@ -545,50 +534,59 @@ class PacketParserTest
         eop = 0;
         valid = 0;
         raw = 0;
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            for (size_t byte = 0; byte < LANE_BYTES; ++byte) {
-                if (position[stream] + byte >= wire[stream].size()) {
-                    break;
-                }
-                const WireByte& item = wire[stream][position[stream] + byte];
-                size_t flat = stream * LANE_BYTES + byte;
-                data.bits(flat * 8 + 7, flat * 8) = item.data;
-                keep[flat] = item.keep;
-                sop[flat] = item.sop;
-                eop[flat] = item.eop;
-                valid[stream] = (bool)valid[stream] || item.keep;
-                if (item.sop) {
-                    raw[stream] = item.raw;
-                }
+        for (size_t byte = 0; byte < LANE_BYTES; ++byte) {
+            if (position + byte >= wire.size()) break;
+            const WireByte& item = wire[position + byte];
+            data.bits(byte * 8 + 7, byte * 8) = item.data;
+            keep[byte] = item.keep;
+            sop[byte] = item.sop;
+            eop[byte] = item.eop;
+            valid = valid || item.keep;
+            if (item.sop) {
+                raw = item.raw;
             }
         }
     }
 
     void sample_outputs()
     {
-        logic<STREAMS> out_valid = output_valid_value();
-        logic<STREAMS> out_last = output_last_value();
-        logic<STREAMS> out_raw = output_raw_value();
-        logic<STREAMS * 64> out_keep = output_keep_value();
-        logic<STREAMS * 512> out_data = output_data_value();
+        bool out_valid = output_valid_value();
+        bool out_last = output_last_value();
+        bool out_raw = output_raw_value();
+        logic<64> got_keep = output_keep_value();
+        logic<512> got_data = output_data_value();
 
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            if (!(bool)out_valid[stream] || !(bool)output_ready[stream]) {
-                continue;
+        if (out_valid && output_ready) {
+            if (expected.empty()) {
+                fail("unexpected parser output");
+                return;
             }
-            if (expected[stream].empty()) {
-                fail("unexpected output on stream " + std::to_string(stream));
-                continue;
-            }
-            ExpectedWord reference = expected[stream].front();
-            expected[stream].pop_front();
-            logic<512> got_data = out_data.bits(stream * 512 + 511, stream * 512);
-            logic<64> got_keep = out_keep.bits(stream * 64 + 63, stream * 64);
+            ExpectedWord reference = expected.front();
+            expected.pop_front();
             if (got_data != reference.data || got_keep != reference.keep
-                || (bool)out_last[stream] != reference.last
-                || (bool)out_raw[stream] != reference.raw) {
-                fail("output mismatch on stream " + std::to_string(stream)
-                    + " for " + reference.name);
+                || out_last != reference.last || out_raw != reference.raw) {
+                fail("output mismatch for " + reference.name);
+                for (size_t byte = 0; byte < 64; ++byte) {
+                    uint8_t got_byte = (uint8_t)got_data.bits(byte * 8 + 7, byte * 8);
+                    uint8_t expected_byte = (uint8_t)reference.data.bits(
+                        byte * 8 + 7, byte * 8);
+                    if (got_byte != expected_byte) {
+                        std::print("    first data difference at byte {}: {:02x} != {:02x}\n",
+                            byte, got_byte, expected_byte);
+                        break;
+                    }
+                }
+                std::print("    flags={:02x} reserved={:02x}\n",
+                    (uint8_t)got_data.bits(50 * 8 + 7, 50 * 8),
+                    (uint8_t)got_data.bits(63 * 8 + 7, 63 * 8));
+                std::print("    ports={:04x}/{:04x} expected={:04x}/{:04x}\n",
+                    (uint16_t)got_data.bits(45 * 8 + 7, 44 * 8),
+                    (uint16_t)got_data.bits(47 * 8 + 7, 46 * 8),
+                    (uint16_t)reference.data.bits(45 * 8 + 7, 44 * 8),
+                    (uint16_t)reference.data.bits(47 * 8 + 7, 46 * 8));
+                std::print("    protocol={:02x} expected={:02x}\n",
+                    (uint8_t)got_data.bits(48 * 8 + 7, 48 * 8),
+                    (uint8_t)reference.data.bits(48 * 8 + 7, 48 * 8));
             }
             ++received;
         }
@@ -604,7 +602,7 @@ public:
 #endif
         bind_native();
         build_traffic();
-        output_ready = 0xff;
+        output_ready = true;
         for (size_t cycle = 0; cycle < 2; ++cycle) {
             eval_low(true);
             rising_edge(true);
@@ -613,18 +611,12 @@ public:
         size_t cycles = 0;
         while (!error && received < total_expected && cycles < 20000) {
             drive_inputs();
-            // Independent, bounded stalls exercise output holding and RAW's
-            // two-word reservation without starving any stream.
-            output_ready = 0xff;
-            if ((cycles % 13) < 2) output_ready[cycles % STREAMS] = 0;
-            if ((cycles % 29) == 7) output_ready[(cycles / 3) % STREAMS] = 0;
+            // Bounded stalls exercise output holding and RAW's reservation.
+            output_ready = !((cycles % 13) < 2 || (cycles % 29) == 7);
             eval_low(false);
             sample_outputs();
-            logic<STREAMS> input_ready = input_ready_value();
-            for (size_t stream = 0; stream < STREAMS; ++stream) {
-                if ((bool)input_ready[stream] && position[stream] < wire[stream].size()) {
-                    position[stream] += LANE_BYTES;
-                }
+            if (input_ready_value() && position < wire.size()) {
+                position += LANE_BYTES;
             }
             rising_edge(false);
             ++cycles;
@@ -636,10 +628,8 @@ public:
         if (received != total_expected) {
             fail("timed out before receiving every parser word");
         }
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            if (!expected[stream].empty()) {
-                fail("stream " + std::to_string(stream) + " retained expected outputs");
-            }
+        if (!expected.empty()) {
+            fail("parser retained expected outputs");
         }
         std::print("    words={} cycles={} {}\n", received, cycles,
             error ? "FAILED" : "PASSED");
@@ -649,6 +639,7 @@ public:
 
 int main(int argc, char** argv)
 {
+    try {
     bool noveril = false;
     std::vector<std::string> positional;
     for (int i = 1; i < argc; ++i) {
@@ -674,7 +665,9 @@ int main(int argc, char** argv)
             project_root.string()};
         const std::vector<std::string> packages = {
             "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
-            "PacketParserCursor_pkg", "PacketParserFlags_pkg"};
+            "PacketParserProgress_pkg", "PacketParserPipeWord_pkg",
+            "PacketParserCall_pkg", "PacketParserHeaderId_pkg",
+            "PacketParserFlags_pkg"};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "PacketParser_64",
             "PacketParser", generated, packages, includes, 64);
         if (ok) {
@@ -692,7 +685,12 @@ int main(int argc, char** argv)
         return 1;
     }
     ok = ok && PacketParserTest<64>().run();
-    return ok ? 0 : 1;
+        return ok ? 0 : 1;
+    }
+    catch (const cpphdl_exception& exception) {
+        std::print("CppHDL exception: {}\n", exception.text);
+        return 1;
+    }
 }
 
 #endif

@@ -1,7 +1,8 @@
 #pragma once
 
-// Single-clock packet-preserving byte-width gearbox.  It deliberately has no
-// asynchronous FIFO: source and destination are both clocked at 156.25 MHz.
+// Fixed-ratio, single-clock packet gearbox. SmartNIC only uses 64<->256;
+// expressing those four fixed lanes directly avoids synthesizing a general
+// byte-compacting barrel shifter.
 
 #include <cpphdl.h>
 
@@ -13,13 +14,15 @@ class PacketStream : public Module
 public:
     static constexpr size_t SRC_BYTES = SRC_WIDTH / 8;
     static constexpr size_t DST_BYTES = DST_WIDTH / 8;
-    static constexpr size_t BUFFER_BYTES = 64;
-    static constexpr size_t BUFFER_BITS = BUFFER_BYTES * 8;
+    static constexpr size_t WIDE_WIDTH = 256;
+    static constexpr size_t WIDE_BYTES = WIDE_WIDTH / 8;
+    static constexpr size_t LANE_WIDTH = 64;
+    static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
+    static constexpr size_t LANES = WIDE_WIDTH / LANE_WIDTH;
 
-    static_assert(SRC_WIDTH % 8 == 0 && DST_WIDTH % 8 == 0,
-        "PacketStream widths must contain whole bytes");
-    static_assert(SRC_BYTES <= BUFFER_BYTES && DST_BYTES <= BUFFER_BYTES,
-        "PacketStream endpoint width exceeds its buffer");
+    static_assert((SRC_WIDTH == LANE_WIDTH && DST_WIDTH == WIDE_WIDTH)
+            || (SRC_WIDTH == WIDE_WIDTH && DST_WIDTH == LANE_WIDTH),
+        "PacketStream supports the SmartNIC 64<->256 gearboxes");
 
     _PORT(bool) valid_in;
     _PORT(logic<SRC_WIDTH>) data_in;
@@ -36,67 +39,89 @@ public:
     _PORT(bool) ready_in;
 
 private:
-    reg<logic<BUFFER_BITS>> data_reg;
-    reg<u<7>> count_reg;
+    reg<logic<WIDE_WIDTH>> data_reg;
+    reg<logic<WIDE_BYTES>> keep_reg;
+    reg<u<2>> lane_reg;
+    reg<u<2>> last_lane_reg;
+    reg<u1> valid_reg;
     reg<u1> sop_reg;
     reg<u1> eop_reg;
 
-    bool output_valid_value()
-    {
-        return (uint32_t)count_reg >= DST_BYTES
-            || ((bool)eop_reg && (uint32_t)count_reg != 0);
-    }
-
-    bool& ready_comb_func()
-    {
-        uint32_t count = (uint32_t)count_reg;
-        bool eop = eop_reg;
-        if (output_valid_value() && ready_in()) {
-            count -= count > DST_BYTES ? DST_BYTES : count;
-            if (count == 0) eop = false;
-        }
-        ready_comb = !eop && count + SRC_BYTES <= BUFFER_BYTES;
-        return ready_comb;
-    }
-
     bool ready_comb;
     bool valid_comb;
+    bool sop_comb;
     bool eop_comb;
     logic<DST_WIDTH> data_comb;
     logic<DST_BYTES> keep_comb;
 
+    bool last_output_lane()
+    {
+        if (SRC_WIDTH < DST_WIDTH) return true;
+        return (uint32_t)lane_reg == (uint32_t)last_lane_reg;
+    }
+
+    bool& ready_comb_func()
+    {
+        ready_comb = !(bool)valid_reg
+            || (ready_in() && last_output_lane());
+        return ready_comb;
+    }
+
+    bool& valid_comb_func()
+    {
+        valid_comb = valid_reg;
+        return valid_comb;
+    }
+
     logic<DST_WIDTH>& data_comb_func()
     {
-        uint32_t byte;
         data_comb = 0;
-        for (byte = 0; byte < DST_BYTES; ++byte) {
-            if (byte < (uint32_t)count_reg) {
-                data_comb.bits(byte * 8 + 7, byte * 8) =
-                    data_reg.bits(byte * 8 + 7, byte * 8);
-            }
+        if (SRC_WIDTH < DST_WIDTH) {
+            data_comb = data_reg;
+        }
+        else {
+            if ((uint32_t)lane_reg == 0)
+                data_comb = data_reg.bits(63, 0);
+            else if ((uint32_t)lane_reg == 1)
+                data_comb = data_reg.bits(127, 64);
+            else if ((uint32_t)lane_reg == 2)
+                data_comb = data_reg.bits(191, 128);
+            else
+                data_comb = data_reg.bits(255, 192);
         }
         return data_comb;
     }
 
     logic<DST_BYTES>& keep_comb_func()
     {
-        uint32_t byte;
         keep_comb = 0;
-        for (byte = 0; byte < DST_BYTES; ++byte) {
-            keep_comb[byte] = byte < (uint32_t)count_reg;
+        if (SRC_WIDTH < DST_WIDTH) {
+            keep_comb = keep_reg;
+        }
+        else {
+            if ((uint32_t)lane_reg == 0)
+                keep_comb = keep_reg.bits(7, 0);
+            else if ((uint32_t)lane_reg == 1)
+                keep_comb = keep_reg.bits(15, 8);
+            else if ((uint32_t)lane_reg == 2)
+                keep_comb = keep_reg.bits(23, 16);
+            else
+                keep_comb = keep_reg.bits(31, 24);
         }
         return keep_comb;
     }
 
-    bool& valid_comb_func()
+    bool& sop_comb_func()
     {
-        valid_comb = output_valid_value();
-        return valid_comb;
+        if (SRC_WIDTH < DST_WIDTH) sop_comb = sop_reg;
+        else sop_comb = sop_reg && (uint32_t)lane_reg == 0;
+        return sop_comb;
     }
 
     bool& eop_comb_func()
     {
-        eop_comb = (bool)eop_reg && (uint32_t)count_reg <= DST_BYTES;
+        if (SRC_WIDTH < DST_WIDTH) eop_comb = eop_reg;
+        else eop_comb = eop_reg && last_output_lane();
         return eop_comb;
     }
 
@@ -107,53 +132,91 @@ public:
         valid_out = _ASSIGN_COMB(valid_comb_func());
         data_out = _ASSIGN_COMB(data_comb_func());
         keep_out = _ASSIGN_COMB(keep_comb_func());
-        sop_out = _ASSIGN_REG(sop_reg);
+        sop_out = _ASSIGN_COMB(sop_comb_func());
         eop_out = _ASSIGN_COMB(eop_comb_func());
     }
 
     void _work(bool reset)
     {
-        logic<BUFFER_BITS> data = data_reg;
-        uint32_t count = (uint32_t)count_reg;
-        uint32_t remove;
-        uint32_t byte;
-        bool sop = sop_reg;
-        bool eop = eop_reg;
+        bool output_fire;
+        bool input_fire;
+        bool word_complete;
+        uint32_t lane;
+        uint32_t last_lane;
+        logic<WIDE_WIDTH> data;
+        logic<WIDE_BYTES> keep;
 
-        if (output_valid_value() && ready_in()) {
-            remove = count > DST_BYTES ? DST_BYTES : count;
-            for (byte = 0; byte < BUFFER_BYTES; ++byte) {
-                if (byte + remove < count) {
-                    data.bits(byte * 8 + 7, byte * 8) =
-                        data.bits((byte + remove) * 8 + 7,
-                            (byte + remove) * 8);
-                }
-                else data.bits(byte * 8 + 7, byte * 8) = 0;
+        output_fire = (bool)valid_reg && ready_in();
+        input_fire = valid_in() && ready_comb_func();
+
+        if (SRC_WIDTH < DST_WIDTH) {
+            lane = output_fire ? 0 : (uint32_t)lane_reg;
+            data = output_fire ? (logic<WIDE_WIDTH>)0 : data_reg;
+            keep = output_fire ? (logic<WIDE_BYTES>)0 : keep_reg;
+
+            if (output_fire) {
+                valid_reg._next = false;
+                // SOP/EOP describe the buffered wide word, not the packet as
+                // a whole.  Clear them when that word is consumed so a
+                // following word cannot inherit its framing markers.
+                sop_reg._next = false;
+                eop_reg._next = false;
             }
-            count -= remove;
-            sop = false;
-            if (count == 0) eop = false;
+            if (input_fire) {
+                if (lane == 0) {
+                    data.bits(63, 0) = data_in();
+                    keep.bits(7, 0) = keep_in();
+                }
+                else if (lane == 1) {
+                    data.bits(127, 64) = data_in();
+                    keep.bits(15, 8) = keep_in();
+                }
+                else if (lane == 2) {
+                    data.bits(191, 128) = data_in();
+                    keep.bits(23, 16) = keep_in();
+                }
+                else {
+                    data.bits(255, 192) = data_in();
+                    keep.bits(31, 24) = keep_in();
+                }
+                if (sop_in()) sop_reg._next = true;
+                word_complete = eop_in() || lane == LANES - 1;
+                if (word_complete) {
+                    valid_reg._next = true;
+                    eop_reg._next = eop_in();
+                    lane_reg._next = 0;
+                }
+                else lane_reg._next = lane + 1;
+                data_reg._next = data;
+                keep_reg._next = keep;
+            }
+        }
+        else {
+            if (output_fire) {
+                if (last_output_lane()) valid_reg._next = false;
+                else lane_reg._next = lane_reg + 1;
+            }
+            if (input_fire) {
+                last_lane = 0;
+                if ((uint64_t)keep_in().bits(31, 24) != 0) last_lane = 3;
+                else if ((uint64_t)keep_in().bits(23, 16) != 0) last_lane = 2;
+                else if ((uint64_t)keep_in().bits(15, 8) != 0) last_lane = 1;
+                data_reg._next = data_in();
+                keep_reg._next = keep_in();
+                lane_reg._next = 0;
+                last_lane_reg._next = last_lane;
+                valid_reg._next = (uint64_t)keep_in() != 0;
+                sop_reg._next = sop_in();
+                eop_reg._next = eop_in();
+            }
         }
 
-        if (valid_in() && ready_comb_func()) {
-            for (byte = 0; byte < SRC_BYTES; ++byte) {
-                if ((bool)keep_in()[byte]) {
-                    data.bits(count * 8 + 7, count * 8) =
-                        data_in().bits(byte * 8 + 7, byte * 8);
-                    ++count;
-                }
-            }
-            if (sop_in()) sop = true;
-            if (eop_in()) eop = true;
-        }
-
-        data_reg._next = data;
-        count_reg._next = count;
-        sop_reg._next = sop;
-        eop_reg._next = eop;
         if (reset) {
             data_reg.clr();
-            count_reg.clr();
+            keep_reg.clr();
+            lane_reg.clr();
+            last_lane_reg.clr();
+            valid_reg.clr();
             sop_reg.clr();
             eop_reg.clr();
         }
@@ -162,7 +225,10 @@ public:
     void _strobe()
     {
         data_reg.strobe();
-        count_reg.strobe();
+        keep_reg.strobe();
+        lane_reg.strobe();
+        last_lane_reg.strobe();
+        valid_reg.strobe();
         sop_reg.strobe();
         eop_reg.strobe();
     }

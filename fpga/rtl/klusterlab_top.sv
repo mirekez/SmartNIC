@@ -22,7 +22,7 @@ module klusterlab_top (
     wire startup_locked;
 
     IBUFDS #(.DIFF_TERM("FALSE"), .IBUF_LOW_PWR("FALSE"),
-             .IOSTANDARD("LVDS_25")) sys_clk_ibuf (
+             .IOSTANDARD("LVDS")) sys_clk_ibuf (
         .I(sys_clk_200_p), .IB(sys_clk_200_n), .O(sys_clk_200_ibuf));
     BUFG sys_clk_bufg (.I(sys_clk_200_ibuf), .O(sys_clk_200));
 
@@ -70,6 +70,18 @@ module klusterlab_top (
     wire [1:0]  mac_tx_last;
     wire [1:0]  mac_tx_valid;
     wire [1:0]  mac_tx_ready;
+
+    // Heartbeats make the otherwise clock-like startup and TX-user domains
+    // observable from ILAs clocked by net_clk without routing clocks as data.
+    reg [7:0] dclk_heartbeat = 8'd0;
+    reg [7:0] txusr_heartbeat = 8'd0;
+    reg [15:0] net_heartbeat = 16'd0;
+    always @(posedge startup_clk_50)
+        if (startup_reset) dclk_heartbeat <= 8'd0;
+        else dclk_heartbeat <= dclk_heartbeat + 1'b1;
+    always @(posedge eth_txusrclk2)
+        if (startup_reset) txusr_heartbeat <= 8'd0;
+        else txusr_heartbeat <= txusr_heartbeat + 1'b1;
 
     // Configuration-vector bit 1 enables each MAC; VLAN/custom-preamble and
     // PCS loopback remain disabled.  FCS is generated/checked by the MAC.
@@ -163,6 +175,10 @@ module klusterlab_top (
             (startup_reset | ~eth_reset_done | ~cpu_clk_locked)};
     wire design_reset = net_reset_sync[3];
 
+    always @(posedge net_clk)
+        if (design_reset) net_heartbeat <= 16'd0;
+        else net_heartbeat <= net_heartbeat + 1'b1;
+
     reg [1:0] rx_in_frame = 2'b00;
     always @(posedge net_clk) begin
         if (design_reset)
@@ -225,9 +241,11 @@ module klusterlab_top (
     wire [1:0] l2_tx_valid, l2_tx_ready, l2_tx_sop, l2_tx_eop;
     wire [511:0] l2_tx_data;
     wire [63:0] l2_tx_keep;
+    wire nic_protocol_error;
+    wire nic_storage_full;
 
     SmartNIC #(.BANK_DEPTH(4096), .RX_FIFO_DEPTH(64),
-               .TX_FIFO_WORDS(2048)) nic (
+               .TX_FIFO_WORDS(2048), .ENABLE_RAW(0)) nic (
         .net_clk(net_clk), .l2_clk(net_clk), .reset(design_reset),
         .net_rx_valid_in(net_rx_valid), .net_rx_data_in(net_rx_data),
         .net_rx_keep_in(net_rx_keep), .net_rx_sop_in(net_rx_sop),
@@ -252,7 +270,8 @@ module klusterlab_top (
         .l2_tx_valid_in(l2_tx_valid), .l2_tx_data_in(l2_tx_data),
         .l2_tx_keep_in(l2_tx_keep), .l2_tx_sop_in(l2_tx_sop),
         .l2_tx_eop_in(l2_tx_eop), .l2_tx_ready_out(l2_tx_ready),
-        .protocol_error_out(), .storage_full_out());
+        .protocol_error_out(nic_protocol_error),
+        .storage_full_out(nic_storage_full));
 
     wire proc_tx_valid;
     wire [255:0] proc_tx_data;
@@ -265,12 +284,24 @@ module klusterlab_top (
     assign l2_tx_eop = {1'b0, proc_tx_eop};
     assign proc_tx_ready = l2_tx_ready[0];
 
+    wire ddr_awvalid [0:0];
     wire ddr_awready [0:0];
+    wire [30:0] ddr_awaddr [0:0];
+    wire [3:0] ddr_awid [0:0];
+    wire ddr_wvalid [0:0];
     wire ddr_wready [0:0];
+    wire [255:0] ddr_wdata [0:0];
+    wire [31:0] ddr_wstrb [0:0];
+    wire ddr_wlast [0:0];
     wire ddr_bvalid [0:0];
+    wire ddr_bready [0:0];
     wire [3:0] ddr_bid [0:0];
+    wire ddr_arvalid [0:0];
     wire ddr_arready [0:0];
+    wire [30:0] ddr_araddr [0:0];
+    wire [3:0] ddr_arid [0:0];
     wire ddr_rvalid [0:0];
+    wire ddr_rready [0:0];
     wire [255:0] ddr_rdata [0:0];
     wire ddr_rlast [0:0];
     wire [3:0] ddr_rid [0:0];
@@ -278,15 +309,23 @@ module klusterlab_top (
     wire timer_irq [0:3];
     wire external_irq [0:3];
     wire cache_invalidate [0:0];
-    assign ddr_awready[0] = 1'b0;
-    assign ddr_wready[0] = 1'b0;
-    assign ddr_bvalid[0] = 1'b0;
-    assign ddr_bid[0] = 4'd0;
-    assign ddr_arready[0] = 1'b0;
-    assign ddr_rvalid[0] = 1'b0;
-    assign ddr_rdata[0] = 256'd0;
-    assign ddr_rlast[0] = 1'b0;
-    assign ddr_rid[0] = 4'd0;
+    // The board has no CPU program-loading protocol yet.  This AXI BRAM is
+    // initialized from capture.elf by build.sh, so the reset-vector fetch at
+    // address zero succeeds as soon as the CPU leaves reset.
+    axi_boot_bram #(
+        .BYTES(65536), .INIT_FILE("capture.mem")
+    ) boot_memory (
+        .clk(cpu_clk), .reset(design_reset),
+        .awvalid(ddr_awvalid[0]), .awready(ddr_awready[0]),
+        .awaddr(ddr_awaddr[0]), .awid(ddr_awid[0]),
+        .wvalid(ddr_wvalid[0]), .wready(ddr_wready[0]),
+        .wdata(ddr_wdata[0]), .wstrb(ddr_wstrb[0]),
+        .wlast(ddr_wlast[0]), .bvalid(ddr_bvalid[0]),
+        .bready(ddr_bready[0]), .bid(ddr_bid[0]),
+        .arvalid(ddr_arvalid[0]), .arready(ddr_arready[0]),
+        .araddr(ddr_araddr[0]), .arid(ddr_arid[0]),
+        .rvalid(ddr_rvalid[0]), .rready(ddr_rready[0]),
+        .rdata(ddr_rdata[0]), .rlast(ddr_rlast[0]), .rid(ddr_rid[0]));
     genvar irq_i;
     generate for (irq_i = 0; irq_i < 4; irq_i = irq_i + 1) begin : irq_tieoff
         assign software_irq[irq_i] = 1'b0;
@@ -313,13 +352,68 @@ module klusterlab_top (
         .to_network_data_out(proc_tx_data), .to_network_keep_out(proc_tx_keep),
         .to_network_sop_out(proc_tx_sop), .to_network_eop_out(proc_tx_eop),
         .to_network_ready_in(proc_tx_ready),
-        .ddr__awready_in(ddr_awready), .ddr__wready_in(ddr_wready),
-        .ddr__bvalid_in(ddr_bvalid), .ddr__bid_in(ddr_bid),
-        .ddr__arready_in(ddr_arready), .ddr__rvalid_in(ddr_rvalid),
+        .ddr__awvalid_out(ddr_awvalid), .ddr__awready_in(ddr_awready),
+        .ddr__awaddr_out(ddr_awaddr), .ddr__awid_out(ddr_awid),
+        .ddr__wvalid_out(ddr_wvalid), .ddr__wready_in(ddr_wready),
+        .ddr__wdata_out(ddr_wdata), .ddr__wstrb_out(ddr_wstrb),
+        .ddr__wlast_out(ddr_wlast), .ddr__bvalid_in(ddr_bvalid),
+        .ddr__bready_out(ddr_bready), .ddr__bid_in(ddr_bid),
+        .ddr__arvalid_out(ddr_arvalid), .ddr__arready_in(ddr_arready),
+        .ddr__araddr_out(ddr_araddr), .ddr__arid_out(ddr_arid),
+        .ddr__rvalid_in(ddr_rvalid), .ddr__rready_out(ddr_rready),
         .ddr__rdata_in(ddr_rdata), .ddr__rlast_in(ddr_rlast),
         .ddr__rid_in(ddr_rid), .software_irq_in(software_irq),
         .timer_irq_in(timer_irq), .external_irq_in(external_irq),
         .cache_invalidate_in(cache_invalidate));
+
+    // System/GTX/10G status capture.  All probes are sampled on the same
+    // 156.25 MHz clock used by the MAC AXI interfaces and SmartNIC network.
+    wire [16:0] ila_system_state = {
+        startup_locked, startup_reset, cpu_clk_locked, design_reset,
+        net_reset_from_ip, eth_reset_done, eth_reset_counter_done,
+        eth_qpll_lock, eth_gttxreset, eth_gtrxreset, eth_txuserrdy,
+        sfp_los, eth_tx_disable, nic_protocol_error, nic_storage_full};
+    wire [15:0] ila_processing_state = {
+        ddr_awvalid[0], ddr_awready[0], ddr_wvalid[0], ddr_wready[0],
+        ddr_bvalid[0], ddr_bready[0], ddr_arvalid[0], ddr_arready[0],
+        ddr_rvalid[0], ddr_rready[0], descriptor_valid, descriptor_ready,
+        rx_read_valid, rx_read_ready, proc_tx_valid, proc_tx_ready};
+    wire [11:0] ila_mac_activity = {
+        mac_rx_valid, mac_rx_last, mac_rx_error,
+        mac_tx_valid, mac_tx_ready, mac_tx_last};
+
+    ila_system system_debug (
+        .clk(net_clk),
+        .probe0(ila_system_state),
+        .probe1(eth_status[0]),
+        .probe2(eth_status[1]),
+        .probe3(dclk_heartbeat),
+        .probe4(txusr_heartbeat),
+        .probe5(ila_processing_state),
+        .probe6(ila_mac_activity),
+        .probe7(net_heartbeat));
+
+    ila_eth0 eth0_debug (
+        .clk(net_clk),
+        .probe0(mac_rx_data[0]), .probe1(mac_rx_keep[0]),
+        .probe2(mac_rx_valid[0]), .probe3(mac_rx_last[0]),
+        .probe4(mac_rx_error[0]), .probe5(mac_tx_data[0]),
+        .probe6(mac_tx_keep[0]), .probe7(mac_tx_valid[0]),
+        .probe8(mac_tx_ready[0]), .probe9(mac_tx_last[0]),
+        .probe10(eth_status[0]), .probe11(sfp_los[0]),
+        .probe12(rx_in_frame[0]), .probe13(txusr_heartbeat),
+        .probe14(dclk_heartbeat));
+
+    ila_eth1 eth1_debug (
+        .clk(net_clk),
+        .probe0(mac_rx_data[1]), .probe1(mac_rx_keep[1]),
+        .probe2(mac_rx_valid[1]), .probe3(mac_rx_last[1]),
+        .probe4(mac_rx_error[1]), .probe5(mac_tx_data[1]),
+        .probe6(mac_tx_keep[1]), .probe7(mac_tx_valid[1]),
+        .probe8(mac_tx_ready[1]), .probe9(mac_tx_last[1]),
+        .probe10(eth_status[1]), .probe11(sfp_los[1]),
+        .probe12(rx_in_frame[1]), .probe13(txusr_heartbeat),
+        .probe14(dclk_heartbeat));
 endmodule
 
 `default_nettype wire

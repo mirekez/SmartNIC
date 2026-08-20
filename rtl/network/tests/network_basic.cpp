@@ -536,11 +536,21 @@ class NetworkBasicTest
         auto found = expected.find(id);
         if (found == expected.end()) {
             fail("descriptor identifies an unknown packet " + std::to_string(id));
+            std::print("    ingress={} address={:08x} length={} flags={:02x}\n",
+                (uint32_t)descriptor.ingress_stream,
+                (uint32_t)descriptor.packet_address,
+                (uint32_t)descriptor.packet_length,
+                (uint32_t)descriptor.flags);
+            std::print("    word0[63:0]={:016x} destination_mac={:012x}\n",
+                (uint64_t)descriptor.packet_word0.raw.bits(63, 0),
+                (uint64_t)descriptor.packet_word0.fields.destination_mac);
             return false;
         }
         const NetworkPacket& packet = found->second;
         if ((uint32_t)descriptor.packet_length != packet.frame.size()) {
-            fail("descriptor length mismatch for packet " + std::to_string(id));
+            fail("descriptor length mismatch for packet " + std::to_string(id)
+                + ": got " + std::to_string((uint32_t)descriptor.packet_length)
+                + ", expected " + std::to_string(packet.frame.size()));
         }
         if ((uint32_t)descriptor.ingress_stream >= STREAMS
             || ((uint32_t)descriptor.packet_address & 7)
@@ -697,8 +707,9 @@ class NetworkBasicTest
         size_t source_stalls = 0;
         size_t cycles = 0;
         while (!error && descriptors < expected.size() && cycles < 100000) {
-            input_valid = !generator.empty();
-            if (input_valid) {
+            input_valid = !generator.empty()
+                && (uint64_t)generator.front().keep != 0;
+            if (!generator.empty()) {
                 const auto& beat = generator.front();
                 input_data = beat.data;
                 input_keep = beat.keep;
@@ -717,7 +728,11 @@ class NetworkBasicTest
                 validate_descriptor(word.descriptor, raw, expected, reads);
                 ++descriptors;
             }
-            if (input_valid) {
+            if (!generator.empty() && !input_valid) {
+                // A clock where both MACs are in IPG is not an AXI transfer.
+                generator.pop();
+            }
+            else if (input_valid) {
                 if (input_ready_value()) generator.pop();
                 else ++source_stalls;
             }
@@ -731,7 +746,14 @@ class NetworkBasicTest
         if (source_stalls != 0) {
             fail("Network backpressured the generated wire stream");
         }
-        if (protocol_error_value()) fail("Network raised protocol_error_out");
+        if (protocol_error_value()) {
+#ifndef VERILATOR
+            std::print("    errors: balancer={} parser={} rx_ram={} join={}\n",
+                dut.debug_balancer_error(), dut.debug_parser_error(),
+                dut.debug_rx_ram_error(), dut.debug_join_error());
+#endif
+            fail("Network raised protocol_error_out");
+        }
         if (storage_full_value()) fail("Network exhausted RxRAM");
         read_packets(reads);
         std::print("    {:<6} packets={} aggregate_words={} cycles={} {}\n",
@@ -943,7 +965,7 @@ int main(int argc, char** argv)
             project_root.string()};
         const std::vector<std::string> modules = {
             "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
-            "PacketParserCursor_pkg", "PacketParserFlags_pkg",
+            "PacketParserHeaderId_pkg", "PacketParserFlags_pkg",
             "RxRAMWritePair_pkg", "RxDescriptor_pkg", "RxDescriptorWord_pkg",
             "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser",
             "RxRAM", "RxFifo", "TxFifo", "OutputMerger"};

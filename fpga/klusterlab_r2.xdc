@@ -3,12 +3,13 @@
 
 set_property PACKAGE_PIN AC9 [get_ports sys_clk_200_p]
 set_property PACKAGE_PIN AD9 [get_ports sys_clk_200_n]
-set_property IOSTANDARD LVDS_25 [get_ports {sys_clk_200_p sys_clk_200_n}]
+set_property IOSTANDARD LVDS [get_ports {sys_clk_200_p sys_clk_200_n}]
 create_clock -name sys_clk_200 -period 5.000 [get_ports sys_clk_200_p]
 
 set_property PACKAGE_PIN H6 [get_ports eth_refclk_p]
 set_property PACKAGE_PIN H5 [get_ports eth_refclk_n]
-create_clock -name eth_refclk_156_25 -period 6.400 [get_ports eth_refclk_p]
+# The AXI 10G Ethernet master IP owns the 6.400 ns refclk_p constraint.
+# Duplicating it here overrides the IP clock and disables incremental reuse.
 
 # SFP+ 0 = GTX bank 115 channel 0.
 set_property PACKAGE_PIN P2 [get_ports {sfp_tx_p[0]}]

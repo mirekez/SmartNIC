@@ -24,19 +24,26 @@ module PacketStream #(
 ,   output wire eop_out
 ,   input wire ready_in
 );
-    parameter  SRC_BYTES = SRC_WIDTH/'h8;
-    parameter  DST_BYTES = DST_WIDTH/'h8;
-    parameter  BUFFER_BYTES = 64'h40;
-    parameter  BUFFER_BITS = 64'h200;
+    localparam  SRC_BYTES = SRC_WIDTH/'h8;
+    localparam  DST_BYTES = DST_WIDTH/'h8;
+    localparam  WIDE_WIDTH = 64'h100;
+    localparam  WIDE_BYTES = 64'h20;
+    localparam  LANE_WIDTH = 64'h40;
+    localparam  LANE_BYTES = 64'h8;
+    localparam  LANES = 64'h4;
 
 
     // regs and combs
-    reg[512-1:0] data_reg;
-    reg[7-1:0] count_reg;
+    reg[256-1:0] data_reg;
+    reg[32-1:0] keep_reg;
+    reg[2-1:0] lane_reg;
+    reg[2-1:0] last_lane_reg;
+    reg valid_reg;
     reg sop_reg;
     reg eop_reg;
     logic ready_comb;
     logic valid_comb;
+    logic sop_comb;
     logic eop_comb;
     logic[DST_WIDTH-1:0] data_comb;
     logic[DST_BYTES-1:0] keep_comb;
@@ -44,54 +51,96 @@ module PacketStream #(
     // members
 
     // tmp variables
-    logic[512-1:0] data_reg_tmp;
-    logic[7-1:0] count_reg_tmp;
+    logic[256-1:0] data_reg_tmp;
+    logic[32-1:0] keep_reg_tmp;
+    logic[2-1:0] lane_reg_tmp;
+    logic[2-1:0] last_lane_reg_tmp;
+    logic valid_reg_tmp;
     logic sop_reg_tmp;
     logic eop_reg_tmp;
 
 
-    function logic output_valid_value ();
-        return count_reg>=DST_BYTES || ((eop_reg && (unsigned'(32'(count_reg)) != 'h0)));
+    function logic last_output_lane ();
+        if (SRC_WIDTH < DST_WIDTH) begin
+            return 1;
+        end
+        return unsigned'(32'(lane_reg)) == unsigned'(32'(last_lane_reg));
     endfunction
 
     always_comb begin : ready_comb_func  // ready_comb_func
-        logic[31:0] count;
-        logic eop;
-        count = unsigned'(32'(count_reg));
-        eop = eop_reg;
-        if (output_valid_value() && ready_in) begin
-            count-=(count > DST_BYTES) ? (DST_BYTES) : (count);
-            if (count == 'h0) begin
-                eop=0;
-            end
-        end
-        ready_comb=!eop && (count + SRC_BYTES)<=BUFFER_BYTES;
+        ready_comb=!valid_reg || ((ready_in && last_output_lane()));
+    end
+
+    always_comb begin : valid_comb_func  // valid_comb_func
+        valid_comb=valid_reg;
     end
 
     always_comb begin : data_comb_func  // data_comb_func
-        logic[31:0] _byte;
         data_comb = 'h0;
-        for (_byte='h0;_byte < DST_BYTES;_byte=_byte+1) begin
-            if (_byte < unsigned'(32'(count_reg))) begin
-                data_comb[_byte*'h8 +:8] = data_reg[_byte*'h8 +:8];
+        if (SRC_WIDTH < DST_WIDTH) begin
+            data_comb = data_reg;
+        end
+        else begin
+            if (unsigned'(32'(lane_reg)) == 'h0) begin
+                data_comb = data_reg['h0 +:64];
+            end
+            else begin
+                if (unsigned'(32'(lane_reg)) == 'h1) begin
+                    data_comb = data_reg['h40 +:64];
+                end
+                else begin
+                    if (unsigned'(32'(lane_reg)) == 'h2) begin
+                        data_comb = data_reg['h80 +:64];
+                    end
+                    else begin
+                        data_comb = data_reg['hC0 +:64];
+                    end
+                end
             end
         end
     end
 
     always_comb begin : keep_comb_func  // keep_comb_func
-        logic[31:0] _byte;
         keep_comb = 'h0;
-        for (_byte='h0;_byte < DST_BYTES;_byte=_byte+1) begin
-            keep_comb[_byte] = _byte < unsigned'(32'(count_reg));
+        if (SRC_WIDTH < DST_WIDTH) begin
+            keep_comb = keep_reg;
+        end
+        else begin
+            if (unsigned'(32'(lane_reg)) == 'h0) begin
+                keep_comb = keep_reg['h0 +:8];
+            end
+            else begin
+                if (unsigned'(32'(lane_reg)) == 'h1) begin
+                    keep_comb = keep_reg['h8 +:8];
+                end
+                else begin
+                    if (unsigned'(32'(lane_reg)) == 'h2) begin
+                        keep_comb = keep_reg['h10 +:8];
+                    end
+                    else begin
+                        keep_comb = keep_reg['h18 +:8];
+                    end
+                end
+            end
         end
     end
 
-    always_comb begin : valid_comb_func  // valid_comb_func
-        valid_comb=output_valid_value();
+    always_comb begin : sop_comb_func  // sop_comb_func
+        if (SRC_WIDTH < DST_WIDTH) begin
+            sop_comb=sop_reg;
+        end
+        else begin
+            sop_comb=sop_reg && (unsigned'(32'(lane_reg)) == 'h0);
+        end
     end
 
     always_comb begin : eop_comb_func  // eop_comb_func
-        eop_comb=eop_reg && count_reg<=DST_BYTES;
+        if (SRC_WIDTH < DST_WIDTH) begin
+            eop_comb=eop_reg;
+        end
+        else begin
+            eop_comb=eop_reg && last_output_lane();
+        end
     end
 
     generate  // _assign
@@ -99,59 +148,106 @@ module PacketStream #(
         assign valid_out = valid_comb;
         assign data_out = data_comb;
         assign keep_out = keep_comb;
-        assign sop_out = sop_reg;
+        assign sop_out = sop_comb;
         assign eop_out = eop_comb;
     endgenerate
 
     task _work (input logic reset);
     begin: _work
-        logic[512-1:0] data;
-        logic[31:0] count;
-        logic[31:0] remove;
-        logic[31:0] _byte;
-        logic sop;
-        logic eop;
-        data = data_reg;
-        count = unsigned'(32'(count_reg));
-        sop = sop_reg;
-        eop = eop_reg;
-        if (output_valid_value() && ready_in) begin
-            remove=(count > DST_BYTES) ? (DST_BYTES) : (count);
-            for (_byte='h0;_byte < BUFFER_BYTES;_byte=_byte+1) begin
-                if ((_byte + remove) < count) begin
-                    data[_byte*'h8 +:8] = data[((_byte + remove))*'h8 +:8];
+        logic output_fire;
+        logic input_fire;
+        logic word_complete;
+        logic[31:0] lane;
+        logic[31:0] last_lane;
+        logic[256-1:0] data;
+        logic[32-1:0] keep;
+        output_fire=valid_reg && ready_in;
+        input_fire=valid_in && ready_comb;
+        if (SRC_WIDTH < DST_WIDTH) begin
+            lane=(output_fire) ? ('h0) : (unsigned'(32'(lane_reg)));
+            data = (output_fire) ? ('h0) : (data_reg);
+            keep = (output_fire) ? ('h0) : (keep_reg);
+            if (output_fire) begin
+                valid_reg_tmp = unsigned'(1'(0));
+                sop_reg_tmp = unsigned'(1'(0));
+                eop_reg_tmp = unsigned'(1'(0));
+            end
+            if (input_fire) begin
+                if (lane == 'h0) begin
+                    data['h0 +:64] = data_in;
+                    keep['h0 +:8] = keep_in;
                 end
                 else begin
-                    data[_byte*'h8 +:8] = 'h0;
+                    if (lane == 'h1) begin
+                        data['h40 +:64] = data_in;
+                        keep['h8 +:8] = keep_in;
+                    end
+                    else begin
+                        if (lane == 'h2) begin
+                            data['h80 +:64] = data_in;
+                            keep['h10 +:8] = keep_in;
+                        end
+                        else begin
+                            data['hC0 +:64] = data_in;
+                            keep['h18 +:8] = keep_in;
+                        end
+                    end
                 end
-            end
-            count-=remove;
-            sop=0;
-            if (count == 'h0) begin
-                eop=0;
+                if (sop_in) begin
+                    sop_reg_tmp = unsigned'(1'(1));
+                end
+                word_complete=eop_in || (lane == (LANES - 'h1));
+                if (word_complete) begin
+                    valid_reg_tmp = unsigned'(1'(1));
+                    eop_reg_tmp = unsigned'(1'(eop_in));
+                    lane_reg_tmp = 'h0;
+                end
+                else begin
+                    lane_reg_tmp = lane + 'h1;
+                end
+                data_reg_tmp = data;
+                keep_reg_tmp = keep;
             end
         end
-        if (valid_in && ready_comb) begin
-            for (_byte='h0;_byte < SRC_BYTES;_byte=_byte+1) begin
-                if (keep_in[_byte]) begin
-                    data[count*'h8 +:8] = data_in[_byte*'h8 +:8];
-                    count=count+1;
+        else begin
+            if (output_fire) begin
+                if (last_output_lane()) begin
+                    valid_reg_tmp = unsigned'(1'(0));
+                end
+                else begin
+                    lane_reg_tmp = lane_reg + 'h1;
                 end
             end
-            if (sop_in) begin
-                sop=1;
-            end
-            if (eop_in) begin
-                eop=1;
+            if (input_fire) begin
+                last_lane='h0;
+                if (unsigned'(64'(keep_in['h18 +:8])) != 'h0) begin
+                    last_lane='h3;
+                end
+                else begin
+                    if (unsigned'(64'(keep_in['h10 +:8])) != 'h0) begin
+                        last_lane='h2;
+                    end
+                    else begin
+                        if (unsigned'(64'(keep_in['h8 +:8])) != 'h0) begin
+                            last_lane='h1;
+                        end
+                    end
+                end
+                data_reg_tmp = data_in;
+                keep_reg_tmp = keep_in;
+                lane_reg_tmp = 'h0;
+                last_lane_reg_tmp = last_lane;
+                valid_reg_tmp = unsigned'(1'(unsigned'(64'(keep_in)) != 'h0));
+                sop_reg_tmp = unsigned'(1'(sop_in));
+                eop_reg_tmp = unsigned'(1'(eop_in));
             end
         end
-        data_reg_tmp = data;
-        count_reg_tmp = count;
-        sop_reg_tmp = unsigned'(1'(sop));
-        eop_reg_tmp = unsigned'(1'(eop));
         if (reset) begin
             data_reg_tmp = '0;
-            count_reg_tmp = '0;
+            keep_reg_tmp = '0;
+            lane_reg_tmp = '0;
+            last_lane_reg_tmp = '0;
+            valid_reg_tmp = '0;
             sop_reg_tmp = '0;
             eop_reg_tmp = '0;
         end
@@ -165,14 +261,20 @@ module PacketStream #(
 
     always_ff @(posedge net_clk) begin
         data_reg_tmp = data_reg;
-        count_reg_tmp = count_reg;
+        keep_reg_tmp = keep_reg;
+        lane_reg_tmp = lane_reg;
+        last_lane_reg_tmp = last_lane_reg;
+        valid_reg_tmp = valid_reg;
         sop_reg_tmp = sop_reg;
         eop_reg_tmp = eop_reg;
 
         _work(reset);
 
         data_reg <= data_reg_tmp;
-        count_reg <= count_reg_tmp;
+        keep_reg <= keep_reg_tmp;
+        lane_reg <= lane_reg_tmp;
+        last_lane_reg <= last_lane_reg_tmp;
+        valid_reg <= valid_reg_tmp;
         sop_reg <= sop_reg_tmp;
         eop_reg <= eop_reg_tmp;
     end

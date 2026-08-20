@@ -45,18 +45,18 @@ module L1CacheState #(
 ,   output wire L1CachePerf perf_out
 ,   input wire debugen_in
 );
-    parameter  LINE_WORDS = CACHE_LINE_SIZE/'h4;
-    parameter  SETS = (TOTAL_CACHE_SIZE/CACHE_LINE_SIZE)/WAYS;
-    parameter  SET_BITS = $clog2(SETS);
-    parameter  LINE_BITS = $clog2(CACHE_LINE_SIZE);
-    parameter  HALF_LINE_BITS = CACHE_LINE_SIZE*'h4;
-    parameter  PORT_BYTES = PORT_BITWIDTH/'h8;
-    parameter  PORT_WORDS = PORT_BITWIDTH/'h20;
-    parameter  REFILL_BEATS = CACHE_LINE_SIZE/PORT_BYTES;
-    parameter  TAG_BITS = (ADDR_BITS - SET_BITS) - LINE_BITS;
-    parameter  WAY_BITS = (WAYS<='h1) ? ('h1) : ($clog2(WAYS));
-    parameter  WORD_BITS = $clog2(LINE_WORDS);
-    parameter  REFILL_BEAT_BITS = (REFILL_BEATS<='h1) ? ('h1) : ($clog2(REFILL_BEATS));
+    localparam  LINE_WORDS = CACHE_LINE_SIZE/'h4;
+    localparam  SETS = (TOTAL_CACHE_SIZE/CACHE_LINE_SIZE)/WAYS;
+    localparam  SET_BITS = $clog2(SETS);
+    localparam  LINE_BITS = $clog2(CACHE_LINE_SIZE);
+    localparam  HALF_LINE_BITS = CACHE_LINE_SIZE*'h4;
+    localparam  PORT_BYTES = PORT_BITWIDTH/'h8;
+    localparam  PORT_WORDS = PORT_BITWIDTH/'h20;
+    localparam  REFILL_BEATS = CACHE_LINE_SIZE/PORT_BYTES;
+    localparam  TAG_BITS = (ADDR_BITS - SET_BITS) - LINE_BITS;
+    localparam  WAY_BITS = (WAYS<='h1) ? ('h1) : ($clog2(WAYS));
+    localparam  WORD_BITS = $clog2(LINE_WORDS);
+    localparam  REFILL_BEAT_BITS = (REFILL_BEATS<='h1) ? ('h1) : ($clog2(REFILL_BEATS));
 
 
     // regs and combs

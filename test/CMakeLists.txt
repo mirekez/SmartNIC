@@ -6,6 +6,9 @@ if(NOT CAPTURE_RISCV_CC)
     find_program(CAPTURE_RISCV_CC NAMES clang
         HINTS "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin"
         NO_DEFAULT_PATH REQUIRED)
+endif()
+get_filename_component(CAPTURE_RISCV_CC_NAME "${CAPTURE_RISCV_CC}" NAME)
+if(CAPTURE_RISCV_CC_NAME MATCHES "^clang")
     set(CAPTURE_RISCV_CC_ARGS
         --target=riscv32-unknown-elf
         -fuse-ld=lld)

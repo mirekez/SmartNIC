@@ -26,11 +26,12 @@ namespace
 #define SUSTAINED_CAPTURE 0
 #endif
 
-// Sustained mode serializes each aggregate word into two single-lane words and
-// uses a longer inter-packet gap. This exercises the complete 2x10G profile
-// for longer than its receive buffering at the rate supported by its single
-// RxRAM read engine, without inserting illegal gaps inside a frame.
-constexpr size_t TRAFFIC_DEPTH = SUSTAINED_CAPTURE ? 32768 : 8192;
+// Sustained mode time-serializes each aggregate word into two clocks while
+// retaining each MAC word on its original physical channel.  Moving channel 1
+// onto channel 0 would interleave two independent packets on one MAC lane.
+// The longer inter-packet gap exercises the complete profile for longer than
+// its receive buffering at the rate supported by its single RxRAM read engine.
+constexpr size_t TRAFFIC_DEPTH = SUSTAINED_CAPTURE ? 131072 : 8192;
 using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, TRAFFIC_DEPTH>;
 using Generator = GenEthStream<NET_LANE_WIDTH>;
 
@@ -38,7 +39,10 @@ constexpr uint64_t HOST_PACKET_BASE = 0x00100000;
 constexpr uint32_t HOST_PACKET_STRIDE = 2048;
 constexpr uint32_t CAPTURE_INTERVAL = 100;
 constexpr uint32_t BASE_FRAME_COUNT = 100;
-constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE ? 20 : 2;
+// Five 100-frame passes exceed the 64 KiB packet store many times, proving
+// circular allocation reuse without overrunning the single-cluster firmware
+// consumer in cycle-accurate simulation.
+constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE ? 5 : 2;
 constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_REPEATS;
 constexpr uint32_t CAPTURED_FRAME_COUNT = FRAME_COUNT / CAPTURE_INTERVAL;
 constexpr uint64_t MAX_CPU_TICKS = 40000000;
@@ -371,7 +375,7 @@ class CaptureTest
         Generator generator;
         generator.clear();
         for (const auto& frame : frames) {
-            generator.push(frame, SUSTAINED_CAPTURE ? 256 : 12);
+            generator.push(frame, SUSTAINED_CAPTURE ? 8192 : 12);
         }
         generator.finalize();
         const size_t load_words = generator.size()
@@ -393,16 +397,23 @@ class CaptureTest
                 traffic_load_sop = 0;
                 traffic_load_eop = 0;
                 if (SUSTAINED_CAPTURE) {
-                    traffic_load_data.bits(NET_LANE_WIDTH - 1, 0) =
+                    traffic_load_data.bits((word + 1) * NET_LANE_WIDTH - 1,
+                        word * NET_LANE_WIDTH) =
                         beat.data.bits((word + 1) * NET_LANE_WIDTH - 1,
                             word * NET_LANE_WIDTH);
-                    traffic_load_keep.bits(NET_LANE_WIDTH / 8 - 1, 0) =
+                    traffic_load_keep.bits(
+                        (word + 1) * (NET_LANE_WIDTH / 8) - 1,
+                        word * (NET_LANE_WIDTH / 8)) =
                         beat.keep.bits((word + 1) * (NET_LANE_WIDTH / 8) - 1,
                             word * (NET_LANE_WIDTH / 8));
-                    traffic_load_sop.bits(NET_LANE_WIDTH / 8 - 1, 0) =
+                    traffic_load_sop.bits(
+                        (word + 1) * (NET_LANE_WIDTH / 8) - 1,
+                        word * (NET_LANE_WIDTH / 8)) =
                         beat.sop.bits((word + 1) * (NET_LANE_WIDTH / 8) - 1,
                             word * (NET_LANE_WIDTH / 8));
-                    traffic_load_eop.bits(NET_LANE_WIDTH / 8 - 1, 0) =
+                    traffic_load_eop.bits(
+                        (word + 1) * (NET_LANE_WIDTH / 8) - 1,
+                        word * (NET_LANE_WIDTH / 8)) =
                         beat.eop.bits((word + 1) * (NET_LANE_WIDTH / 8) - 1,
                             word * (NET_LANE_WIDTH / 8));
                 }

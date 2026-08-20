@@ -27,6 +27,31 @@ import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
+import Axi4WriteAddressReady_pkg::*;
+import Axi4WriteDataReady_pkg::*;
+import Axi4WriteResponse4_pkg::*;
+import Axi4ReadAddressReady_pkg::*;
+import Axi4ReadData4_256_pkg::*;
+import Axi4Responder4_256_pkg::*;
+import Axi4WriteAddress32_4_pkg::*;
+import Axi4WriteData256_pkg::*;
+import Axi4WriteResponseReady_pkg::*;
+import Axi4ReadAddress32_4_pkg::*;
+import Axi4ReadDataReady_pkg::*;
+import Axi4Driver32_4_256_pkg::*;
+import L2CacheFsmState_pkg::*;
+import L2HitLookupComb_pkg::*;
+import L2RequestGeometryComb_pkg::*;
+import L2WordPairComb_pkg::*;
+import CacheRequest_pkg::*;
+import L2ActiveRequestComb_pkg::*;
+import L2EvictCandidateComb_pkg::*;
+import L2CpuWaitComb_pkg::*;
+import L2IoWritePayloadComb_pkg::*;
+import L2AxiRouteComb_pkg::*;
+import L2AxiRequestNoveltyComb_pkg::*;
+import CacheResponse_pkg::*;
+import L2AxiAddressState_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 
@@ -109,13 +134,13 @@ module TribeTest #(
 ,   output wire dma_line_ready_out
 ,   input wire debugen_in
 );
-    parameter  L2_TOTAL_SIZE = 64'h10000;
-    parameter  L2_PORT_WIDTH = 64'h100;
-    parameter  L2_LINE_SIZE = 64'h20;
-    parameter  L2_WAYS = 64'h4;
-    parameter  L2_ADDRESS_BITS = 64'h20;
-    parameter  L2_RAM_ADDRESS_BITS = 64'h1F;
-    parameter  L2_PORT_COUNT = 64'h4;
+    localparam  L2_TOTAL_SIZE = 64'h10000;
+    localparam  L2_PORT_WIDTH = 64'h100;
+    localparam  L2_LINE_SIZE = 64'h20;
+    localparam  L2_WAYS = 64'h4;
+    localparam  L2_ADDRESS_BITS = 64'h20;
+    localparam  L2_RAM_ADDRESS_BITS = 64'h1F;
+    localparam  L2_PORT_COUNT = 64'h4;
 
 
     // regs and combs

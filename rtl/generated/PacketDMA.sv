@@ -101,17 +101,17 @@ module PacketDMA #(
 ,   output wire protocol_error_out
 ,   output wire[4-1:0] protocol_error_reason_out
 );
-    parameter  AXI_BYTES = AXI_DATA_WIDTH/'h8;
-    parameter  CMD_PTR_BITS = (CMD_DEPTH<='h1) ? ('h1) : ($clog2(CMD_DEPTH));
-    parameter  CMD_COUNT_BITS = $clog2(CMD_DEPTH + 'h1);
-    parameter  COMMAND_PUSH = 'h1;
-    parameter  FLAG_OPERATION_MASK = 'h3;
-    parameter  FLAG_CACHE_ALLOCATE = 'h4;
-    parameter  FLAG_NETWORK_DISCARD = 'h8;
-    parameter  FLAG_NETWORK_SYSTEM = 'h10;
-    parameter  STATUS_BUSY = 'h1;
-    parameter  STATUS_CMD_READY = 'h2;
-    parameter  STATUS_ERROR = 'h4;
+    localparam  AXI_BYTES = AXI_DATA_WIDTH/'h8;
+    localparam  CMD_PTR_BITS = (CMD_DEPTH<='h1) ? ('h1) : ($clog2(CMD_DEPTH));
+    localparam  CMD_COUNT_BITS = $clog2(CMD_DEPTH + 'h1);
+    localparam  COMMAND_PUSH = 'h1;
+    localparam  FLAG_OPERATION_MASK = 'h3;
+    localparam  FLAG_CACHE_ALLOCATE = 'h4;
+    localparam  FLAG_NETWORK_DISCARD = 'h8;
+    localparam  FLAG_NETWORK_SYSTEM = 'h10;
+    localparam  STATUS_BUSY = 'h1;
+    localparam  STATUS_CMD_READY = 'h2;
+    localparam  STATUS_ERROR = 'h4;
 
 
     // regs and combs

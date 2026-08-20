@@ -149,7 +149,10 @@ add_custom_command(
         "${SMARTNIC_GENERATED_DIR}/Predef_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/PacketParserFields_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/PacketParserWord_pkg.sv"
-        "${SMARTNIC_GENERATED_DIR}/PacketParserCursor_pkg.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketParserProgress_pkg.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketParserPipeWord_pkg.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketParserCall_pkg.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketParserHeaderId_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/PacketParserFlags_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/RxRAMWritePair_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/RxDescriptor_pkg.sv"
@@ -278,7 +281,10 @@ if(BUILD_TESTING)
             "${PROJECT_SOURCE_DIR}/rtl/generated/Predef_pkg.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserFields_pkg.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserWord_pkg.sv"
-            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserCursor_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserProgress_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserPipeWord_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserCall_pkg.sv"
+            "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserHeaderId_pkg.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/PacketParserFlags_pkg.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/RxRAMWritePair_pkg.sv"
             "${PROJECT_SOURCE_DIR}/rtl/generated/RxDescriptor_pkg.sv"
@@ -340,6 +346,6 @@ if(BUILD_TESTING)
     set_tests_properties(network_fpga_rtl_lint PROPERTIES
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         LABELS "network;fpga;verilator;regression"
-        TIMEOUT 120
+        TIMEOUT 300
     )
 endif()

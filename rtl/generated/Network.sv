@@ -3,8 +3,11 @@
 import Predef_pkg::*;
 import PacketParserFields_pkg::*;
 import PacketParserWord_pkg::*;
+import PacketParserProgress_pkg::*;
+import PacketParserPipeWord_pkg::*;
+import PacketParserHeaderId_pkg::*;
+import PacketParserCall_pkg::*;
 import PacketParserFlags_pkg::*;
-import PacketParserCursor_pkg::*;
 import RxRAMWritePair_pkg::*;
 import RxDescriptor_pkg::*;
 import RxDescriptorWord_pkg::*;
@@ -17,6 +20,7 @@ module Network #(
 ,   parameter BANK_DEPTH = 'h1000
 ,   parameter RX_FIFO_DEPTH = 'h40
 ,   parameter TX_FIFO_WORDS = 'h800
+,   parameter ENABLE_RAW = 1
  )
  (
     input wire net_clk
@@ -58,14 +62,14 @@ module Network #(
 ,   output wire protocol_error_out
 ,   output wire storage_full_out
 );
-    parameter  STREAMS = 64'h2;
-    parameter  LANE_BYTES = LANE_WIDTH/'h8;
-    parameter  INPUT_BITS = STREAMS*LANE_WIDTH;
-    parameter  INPUT_BYTES = STREAMS*LANE_BYTES;
-    parameter  LOGICAL_ROWS = BANK_DEPTH*'h2;
-    parameter  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
-    parameter  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
-    parameter  FRAME_LENGTH_BITS = 64'hE;
+    localparam  STREAMS = 64'h2;
+    localparam  LANE_BYTES = LANE_WIDTH/'h8;
+    localparam  INPUT_BITS = STREAMS*LANE_WIDTH;
+    localparam  INPUT_BYTES = STREAMS*LANE_BYTES;
+    localparam  LOGICAL_ROWS = BANK_DEPTH*'h2;
+    localparam  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
+    localparam  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
+    localparam  FRAME_LENGTH_BITS = 64'hE;
 
 
     // regs and combs
@@ -89,6 +93,7 @@ module Network #(
     logic error_comb;
 
     // members
+    genvar __i;
     wire balancer__valid_in;
     wire[64'h2*LANE_WIDTH-1:0] balancer__data_in;
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] balancer__keep_in;
@@ -122,41 +127,46 @@ module Network #(
 ,       .ready_in(balancer__ready_in)
 ,       .protocol_error_out(balancer__protocol_error_out)
     );
-    wire[2-1:0] parser__valid_in;
-    wire[64'h2*LANE_WIDTH-1:0] parser__data_in;
-    wire[64'h2*(LANE_WIDTH/'h8)-1:0] parser__keep_in;
-    wire[64'h2*(LANE_WIDTH/'h8)-1:0] parser__sop_in;
-    wire[64'h2*(LANE_WIDTH/'h8)-1:0] parser__eop_in;
-    wire[2-1:0] parser__raw_in;
-    wire[2-1:0] parser__ready_out;
-    wire PacketParserWord[2-1:0] parser__data_out;
-    wire[128-1:0] parser__keep_out;
-    wire[2-1:0] parser__valid_out;
-    wire[2-1:0] parser__last_out;
-    wire[2-1:0] parser__raw_out;
-    wire[2-1:0] parser__ready_in;
-    wire parser__protocol_error_out;
-    PacketParser #(
+    wire parser__valid_in[2];
+    wire[LANE_WIDTH-1:0] parser__data_in[2];
+    wire[LANE_WIDTH/'h8-1:0] parser__keep_in[2];
+    wire[LANE_WIDTH/'h8-1:0] parser__sop_in[2];
+    wire[LANE_WIDTH/'h8-1:0] parser__eop_in[2];
+    wire parser__raw_in[2];
+    wire parser__ready_out[2];
+    wire PacketParserWord parser__data_out[2];
+    wire[64-1:0] parser__keep_out[2];
+    wire parser__valid_out[2];
+    wire parser__last_out[2];
+    wire parser__raw_out[2];
+    wire parser__ready_in[2];
+    wire parser__protocol_error_out[2];
+    generate
+    for (__i=0; __i < 2; __i = __i + 1) begin
+        PacketParser #(
         LANE_WIDTH
-    ) parser (
-        .net_clk(net_clk)
-,       .l2_clk(l2_clk)
-,       .reset(reset)
-,       .valid_in(parser__valid_in)
-,       .data_in(parser__data_in)
-,       .keep_in(parser__keep_in)
-,       .sop_in(parser__sop_in)
-,       .eop_in(parser__eop_in)
-,       .raw_in(parser__raw_in)
-,       .ready_out(parser__ready_out)
-,       .data_out(parser__data_out)
-,       .keep_out(parser__keep_out)
-,       .valid_out(parser__valid_out)
-,       .last_out(parser__last_out)
-,       .raw_out(parser__raw_out)
-,       .ready_in(parser__ready_in)
-,       .protocol_error_out(parser__protocol_error_out)
-    );
+,       ENABLE_RAW
+        ) parser (
+            .net_clk(net_clk)
+        ,           .l2_clk(l2_clk)
+        ,           .reset(reset)
+        ,           .valid_in(parser__valid_in[__i])
+        ,           .data_in(parser__data_in[__i])
+        ,           .keep_in(parser__keep_in[__i])
+        ,           .sop_in(parser__sop_in[__i])
+        ,           .eop_in(parser__eop_in[__i])
+        ,           .raw_in(parser__raw_in[__i])
+        ,           .ready_out(parser__ready_out[__i])
+        ,           .data_out(parser__data_out[__i])
+        ,           .keep_out(parser__keep_out[__i])
+        ,           .valid_out(parser__valid_out[__i])
+        ,           .last_out(parser__last_out[__i])
+        ,           .raw_out(parser__raw_out[__i])
+        ,           .ready_in(parser__ready_in[__i])
+        ,           .protocol_error_out(parser__protocol_error_out[__i])
+        );
+    end
+    endgenerate
     wire[2-1:0] rx_ram__valid_in;
     wire[64'h2*LANE_WIDTH-1:0] rx_ram__data_in;
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] rx_ram__keep_in;
@@ -313,7 +323,7 @@ module Network #(
         logic[31:0] stream;
         raw_mask_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            raw_mask_comb[stream] = raw_in;
+            raw_mask_comb[stream] = ENABLE_RAW && raw_in;
         end
     end
 
@@ -359,7 +369,7 @@ module Network #(
     end
 
     always_comb begin : error_comb_func  // error_comb_func
-        error_comb=(((protocol_error_reg || balancer__protocol_error_out) || parser__protocol_error_out) || rx_ram__protocol_error_out) || output_merger__protocol_error_out;
+        error_comb=((((protocol_error_reg || balancer__protocol_error_out) || parser__protocol_error_out['h0]) || parser__protocol_error_out['h1]) || rx_ram__protocol_error_out) || output_merger__protocol_error_out;
     end
 
     generate  // _assign
@@ -369,13 +379,20 @@ module Network #(
         assign balancer__sop_in = sop_in;
         assign balancer__eop_in = eop_in;
         assign balancer__ready_in = balanced_ready_comb;
-        assign parser__valid_in = parser_valid_comb;
-        assign parser__data_in = balancer__data_out;
-        assign parser__keep_in = balancer__keep_out;
-        assign parser__sop_in = balancer__sop_out;
-        assign parser__eop_in = balancer__eop_out;
-        assign parser__raw_in = raw_mask_comb;
-        assign parser__ready_in = parser_ready_comb;
+        assign parser__valid_in['h0] = parser_valid_comb['h0];
+        assign parser__data_in['h0] = balancer__data_out['h0*LANE_WIDTH +:(('h0*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h0*LANE_WIDTH + 1];
+        assign parser__keep_in['h0] = balancer__keep_out['h0*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+        assign parser__sop_in['h0] = balancer__sop_out['h0*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+        assign parser__eop_in['h0] = balancer__eop_out['h0*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+        assign parser__raw_in['h0] = raw_mask_comb['h0];
+        assign parser__ready_in['h0] = parser_ready_comb['h0];
+        assign parser__valid_in['h1] = parser_valid_comb['h1];
+        assign parser__data_in['h1] = balancer__data_out['h1*LANE_WIDTH +:(('h1*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h1*LANE_WIDTH + 1];
+        assign parser__keep_in['h1] = balancer__keep_out['h1*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+        assign parser__sop_in['h1] = balancer__sop_out['h1*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+        assign parser__eop_in['h1] = balancer__eop_out['h1*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+        assign parser__raw_in['h1] = raw_mask_comb['h1];
+        assign parser__ready_in['h1] = parser_ready_comb['h1];
         assign rx_ram__valid_in = ram_valid_comb;
         assign rx_ram__data_in = balancer__data_out;
         assign rx_ram__keep_in = balancer__keep_out;
@@ -426,7 +443,6 @@ module Network #(
         logic parser_raw;
         logic parser_last;
         logic fifo_fire;
-        PacketParserWord[2-1:0] parser_bus;
         PacketParserWord parser_word;
         logic[32-1:0] handles;
         logic[28-1:0] lengths;
@@ -442,9 +458,10 @@ module Network #(
                 ram_complete_reg_tmp[stream] = '0;
             end
             protocol_error_reg_tmp = '0;
+            for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            end
             disable _work_net_clk;
         end
-        parser_bus = parser__data_out;
         handles = rx_ram__packet_handle_out;
         lengths = rx_ram__packet_length_out;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
@@ -456,7 +473,7 @@ module Network #(
             end
             parser_fire=parser__valid_out[stream] && parser_ready_comb[stream];
             if (parser_fire) begin
-                parser_word = parser_bus[stream];
+                parser_word = parser__data_out[stream];
                 parser_raw=parser__raw_out[stream];
                 parser_last=parser__last_out[stream];
                 if (!parser_raw) begin
@@ -499,6 +516,8 @@ module Network #(
                 ram_length_reg_tmp[stream] = unsigned'(16'(length));
                 ram_complete_reg_tmp[stream] = unsigned'(1'h1);
             end
+        end
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
         end
     end
     endtask

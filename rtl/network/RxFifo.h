@@ -63,7 +63,10 @@ public:
     _PORT(bool) clear_in;
 
 private:
-    Fifo<DESCRIPTOR_BYTES, FIFO_DEPTH, true, false> fifos[STREAMS];
+    // Use the CppHDL FIFO's registered show-ahead mode. This keeps the wide
+    // descriptor RAM behind a synchronous read boundary without any SV
+    // replacement module.
+    Fifo<DESCRIPTOR_BYTES, FIFO_DEPTH, true, true> fifos[STREAMS];
     reg<u<1>> rr_reg;
 
     logic<STREAMS> input_ready_comb;

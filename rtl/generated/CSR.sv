@@ -41,26 +41,26 @@ module CSR (
 ,   output wire[31:0] satp_out
 ,   output wire[2-1:0] priv_out
 );
-    parameter  MISA_RV32IMC = 'h40001104;
-    parameter  PRIV_U = 'h0;
-    parameter  PRIV_S = 'h1;
-    parameter  PRIV_M = 'h3;
-    parameter  MSTATUS_UIE = 'h1;
-    parameter  MSTATUS_SIE = 'h2;
-    parameter  MSTATUS_MIE = 'h8;
-    parameter  MSTATUS_UPIE = 'h10;
-    parameter  MSTATUS_SPIE = 'h20;
-    parameter  MSTATUS_MPIE = 'h80;
-    parameter  MSTATUS_SPP = 'h100;
-    parameter  MSTATUS_MPP_SHIFT = 'hB;
-    parameter  MSTATUS_MPP_MASK = 'h1800;
-    parameter  MSTATUS_WRITABLE = 'hFF9BB;
-    parameter  SSTATUS_MASK = 'h5E133;
-    parameter  IRQ_SSIP = 'h2;
-    parameter  IRQ_STIP = 'h20;
-    parameter  IRQ_SEIP = 'h200;
-    parameter  XIP_VISIBLE_MASK = 'h222;
-    parameter  XIP_SOFTWARE_WRITABLE_MASK = 'h2;
+    localparam  MISA_RV32IMC = 'h40001104;
+    localparam  PRIV_U = 'h0;
+    localparam  PRIV_S = 'h1;
+    localparam  PRIV_M = 'h3;
+    localparam  MSTATUS_UIE = 'h1;
+    localparam  MSTATUS_SIE = 'h2;
+    localparam  MSTATUS_MIE = 'h8;
+    localparam  MSTATUS_UPIE = 'h10;
+    localparam  MSTATUS_SPIE = 'h20;
+    localparam  MSTATUS_MPIE = 'h80;
+    localparam  MSTATUS_SPP = 'h100;
+    localparam  MSTATUS_MPP_SHIFT = 'hB;
+    localparam  MSTATUS_MPP_MASK = 'h1800;
+    localparam  MSTATUS_WRITABLE = 'hFF9BB;
+    localparam  SSTATUS_MASK = 'h5E133;
+    localparam  IRQ_SSIP = 'h2;
+    localparam  IRQ_STIP = 'h20;
+    localparam  IRQ_SEIP = 'h200;
+    localparam  XIP_VISIBLE_MASK = 'h222;
+    localparam  XIP_SOFTWARE_WRITABLE_MASK = 'h2;
 
 
     // regs and combs
