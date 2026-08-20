@@ -9,7 +9,12 @@
 using namespace cpphdl;
 
 template<size_t WIDTH, size_t DEPTH>
+#ifdef SMARTNIC_TWO_CLOCKS
+class [[clang::annotate("CPPHDL_REPLACEMENT_FILE=SmartNicRAMPrimitive.sv;")]]
+SmartNicRAM : public Module
+#else
 class SmartNicRAM : public Module
+#endif
 {
 public:
     _PORT(u<clog2(DEPTH)>) write_addr_in;

@@ -1,7 +1,7 @@
 // Native CppHDL and generated-SystemVerilog/Verilator tests for PacketParser.
 // Packet construction is a recursive fold of Ethernet, VLAN, MPLS, IP,
-// extension/option and transport layers.  Eight independent byte timelines use
-// unrelated initial offsets and IPGs so SOP/EOP exercise every lane position.
+// extension/option and transport layers.  The byte timeline uses unrelated
+// initial offsets and IPGs so SOP/EOP exercise every lane position.
 
 #include "../PacketParser.h"
 
@@ -165,12 +165,16 @@ static PacketCase make_packet(uint32_t id, bool ipv6, bool tcp,
     std::vector<std::vector<uint8_t>> extension_layers;
     uint8_t ipv6_first_next = protocol;
     if (ipv6 && ipv6_extensions) {
-        // Hop-by-hop -> routing -> destination -> AH -> TCP/UDP.
+        // Exercise all eight statically expanded extension work items.
         extension_layers = {
             {43, 0, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16},
             {60, 0, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26},
-            {51, 0, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36},
-            {protocol, 1, 0, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48}};
+            {135, 0, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36},
+            {0, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46},
+            {43, 0, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56},
+            {60, 0, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66},
+            {51, 0, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76},
+            {protocol, 0, 0, 0, 0x81, 0x82, 0x83, 0x84}};
         ipv6_first_next = 0;
     }
 
@@ -253,6 +257,7 @@ static PacketCase make_packet(uint32_t id, bool ipv6, bool tcp,
         packet.fields.vlan_tci[i] = u16(0x100 + id + i * 0x111);
     }
 #endif
+
 #if PACKET_PARSER_ENABLE_MPLS
     for (uint32_t i = 0; i < std::min(mpls_count,
              (uint32_t)PACKET_PARSER_OUTPUT_MPLS_LABELS); ++i) {
@@ -306,10 +311,7 @@ static PacketCase make_stack_limit_packet(uint32_t id, bool vlan_limit)
 template<size_t LANE_WIDTH>
 class PacketParserTest
 {
-    static constexpr size_t STREAMS = 8;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
-    static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
-    static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
 
 #ifdef VERILATOR
     VERILATOR_MODEL dut;
@@ -317,17 +319,18 @@ class PacketParserTest
     PacketParser<LANE_WIDTH> dut;
 #endif
 
-    logic<STREAMS> valid;
-    logic<INPUT_BITS> data;
-    logic<INPUT_BYTES> keep;
-    logic<INPUT_BYTES> sop;
-    logic<INPUT_BYTES> eop;
-    logic<STREAMS> raw;
-    logic<STREAMS> output_ready;
-    std::array<std::vector<WireByte>, STREAMS> wire;
-    std::array<size_t, STREAMS> position{};
-    std::array<std::deque<ExpectedWord>, STREAMS> expected;
+    bool valid = false;
+    logic<LANE_WIDTH> data;
+    logic<LANE_BYTES> keep;
+    logic<LANE_BYTES> sop;
+    logic<LANE_BYTES> eop;
+    bool raw = false;
+    bool output_ready = false;
+    std::vector<WireByte> wire;
+    size_t position = 0;
+    std::deque<ExpectedWord> expected;
     bool error = false;
+    bool stall_outputs = true;
     size_t received = 0;
     size_t total_expected = 0;
 
@@ -366,13 +369,13 @@ class PacketParserTest
 #ifdef VERILATOR
         dut.clk = 0;
         dut.reset = reset;
-        dut.valid_in = (uint8_t)(uint64_t)valid;
+        dut.valid_in = valid;
         copy_to_verilator(dut.data_in, data);
         copy_to_verilator(dut.keep_in, keep);
         copy_to_verilator(dut.sop_in, sop);
         copy_to_verilator(dut.eop_in, eop);
-        dut.raw_in = (uint8_t)(uint64_t)raw;
-        dut.ready_in = (uint8_t)(uint64_t)output_ready;
+        dut.raw_in = raw;
+        dut.ready_in = output_ready;
         dut.eval();
 #else
         (void)reset;
@@ -392,65 +395,58 @@ class PacketParserTest
         ++_system_clock;
     }
 
-    logic<STREAMS> input_ready_value()
+    bool input_ready_value()
     {
 #ifdef VERILATOR
-        return logic<STREAMS>(dut.ready_out);
+        return dut.ready_out;
 #else
         return dut.ready_out();
 #endif
     }
 
-    logic<STREAMS> output_valid_value()
+    bool output_valid_value()
     {
 #ifdef VERILATOR
-        return logic<STREAMS>(dut.valid_out);
+        return dut.valid_out;
 #else
         return dut.valid_out();
 #endif
     }
 
-    logic<STREAMS> output_last_value()
+    bool output_last_value()
     {
 #ifdef VERILATOR
-        return logic<STREAMS>(dut.last_out);
+        return dut.last_out;
 #else
         return dut.last_out();
 #endif
     }
 
-    logic<STREAMS> output_raw_value()
+    bool output_raw_value()
     {
 #ifdef VERILATOR
-        return logic<STREAMS>(dut.raw_out);
+        return dut.raw_out;
 #else
         return dut.raw_out();
 #endif
     }
 
-    logic<STREAMS * 64> output_keep_value()
+    logic<64> output_keep_value()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<decltype(dut.keep_out), logic<STREAMS * 64>>(dut.keep_out);
+        return copy_from_verilator<decltype(dut.keep_out), logic<64>>(dut.keep_out);
 #else
         return dut.keep_out();
 #endif
     }
 
-    logic<STREAMS * 512> output_data_value()
+    logic<512> output_data_value()
     {
 #ifdef VERILATOR
-        return copy_from_verilator<decltype(dut.data_out), logic<STREAMS * 512>>(dut.data_out);
+        return copy_from_verilator<decltype(dut.data_out), logic<512>>(dut.data_out);
 #else
-        PacketParserOutputBus bus = dut.data_out();
-        logic<STREAMS * 512> flattened = 0;
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            PacketParserWord word = bus[stream];
-            for (size_t bit = 0; bit < 512; ++bit) {
-                flattened[stream * 512 + bit] = word.raw[bit];
-            }
-        }
-        return flattened;
+        PacketParserWord word = dut.data_out();
+        return word.raw;
 #endif
     }
 
@@ -471,14 +467,14 @@ class PacketParserTest
         error = true;
     }
 
-    void append_case(size_t stream, const PacketCase& packet, size_t ipg)
+    void append_case(const PacketCase& packet, size_t ipg)
     {
         for (size_t i = 0; i < packet.frame.size(); ++i) {
-            wire[stream].push_back({packet.frame[i], true, i == 0,
+            wire.push_back({packet.frame[i], true, i == 0,
                 i + 1 == packet.frame.size(), packet.raw});
         }
         for (size_t i = 0; i < ipg; ++i) {
-            wire[stream].push_back({});
+            wire.push_back({});
         }
 
         if (packet.raw) {
@@ -494,7 +490,7 @@ class PacketParserTest
                         output.keep[byte] = 1;
                     }
                 }
-                expected[stream].push_back(output);
+                expected.push_back(output);
                 ++total_expected;
             }
         }
@@ -507,7 +503,7 @@ class PacketParserTest
             output.last = true;
             output.raw = false;
             output.name = packet.name;
-            expected[stream].push_back(output);
+            expected.push_back(output);
             ++total_expected;
         }
     }
@@ -516,25 +512,45 @@ class PacketParserTest
     {
         static constexpr std::array<size_t, 11> ipgs = {0, 1, 2, 3, 7, 11, 12, 19, 31, 47, 65};
         uint32_t id = 1;
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            // A distinct leading hole is the explicit realignment stress.
-            wire[stream].resize((stream * 7 + 3) % LANE_BYTES);
-            for (size_t item = 0; item < 12; ++item, ++id) {
-                bool ipv6 = ((item + stream) & 1) != 0;
-                bool tcp = ((item + stream * 3) & 2) != 0;
-                uint32_t vlan_count = (uint32_t)((item + stream) % 4);
-                uint32_t mpls_count = (uint32_t)((item / 2 + stream) % 3);
-                bool ip_options = !ipv6 && (item % 3 == 0);
-                bool transport_options = tcp && (item % 2 == 0);
-                bool extensions = ipv6 && (item % 3 != 0);
-                bool raw_mode = (item == 2 || item == 9);
-                PacketCase packet = make_packet(id, ipv6, tcp, vlan_count,
-                    mpls_count, ip_options, transport_options, extensions, raw_mode);
-                append_case(stream, packet, ipgs[(item * 3 + stream) % ipgs.size()]);
-            }
-            PacketCase limited = make_stack_limit_packet(id++, (stream & 1) == 0);
-            append_case(stream, limited, ipgs[(stream * 5 + 1) % ipgs.size()]);
+        // A leading hole is the explicit realignment stress.
+        wire.resize(stall_outputs ? 3 % LANE_BYTES : 0);
+        for (size_t item = 0; item < 12; ++item, ++id) {
+            bool ipv6 = (item & 1) != 0;
+            bool tcp = (item & 2) != 0;
+            uint32_t vlan_count = (uint32_t)(item % 4);
+            uint32_t mpls_count = (uint32_t)((item / 2) % 3);
+            bool ip_options = !ipv6 && (item % 3 == 0);
+            bool transport_options = tcp && (item % 2 == 0);
+            bool extensions = ipv6 && (item % 3 != 0);
+            bool raw_mode = (item == 2 || item == 9);
+            PacketCase packet = make_packet(id, ipv6, tcp, vlan_count,
+                mpls_count, ip_options, transport_options, extensions, raw_mode);
+            append_case(packet, ipgs[(item * 3) % ipgs.size()]);
+            if (!stall_outputs)
+                wire.resize((wire.size() + LANE_BYTES - 1)
+                    / LANE_BYTES * LANE_BYTES);
         }
+        PacketCase limited = make_stack_limit_packet(id++, true);
+        append_case(limited, ipgs[1]);
+        if (!stall_outputs)
+            wire.resize((wire.size() + LANE_BYTES - 1)
+                / LANE_BYTES * LANE_BYTES);
+        // Keep two RAW frames adjacent so EOP-to-SOP rollover in one queue
+        // word cannot retain the prior frame's capture registers.
+        PacketCase short_raw = make_packet(id++, false, false, 0, 0,
+            false, false, false, true);
+        short_raw.frame.resize(79);
+        append_case(short_raw, 0);
+        if (!stall_outputs)
+            wire.resize((wire.size() + LANE_BYTES - 1)
+                / LANE_BYTES * LANE_BYTES);
+        PacketCase long_raw = make_packet(id++, true, true, 1, 0,
+            false, false, false, true);
+        long_raw.frame.resize(1518);
+        append_case(long_raw, 0);
+        if (!stall_outputs)
+            wire.resize((wire.size() + LANE_BYTES - 1)
+                / LANE_BYTES * LANE_BYTES);
     }
 
     void drive_inputs()
@@ -545,66 +561,82 @@ class PacketParserTest
         eop = 0;
         valid = 0;
         raw = 0;
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            for (size_t byte = 0; byte < LANE_BYTES; ++byte) {
-                if (position[stream] + byte >= wire[stream].size()) {
-                    break;
-                }
-                const WireByte& item = wire[stream][position[stream] + byte];
-                size_t flat = stream * LANE_BYTES + byte;
-                data.bits(flat * 8 + 7, flat * 8) = item.data;
-                keep[flat] = item.keep;
-                sop[flat] = item.sop;
-                eop[flat] = item.eop;
-                valid[stream] = (bool)valid[stream] || item.keep;
-                if (item.sop) {
-                    raw[stream] = item.raw;
-                }
+        for (size_t byte = 0; byte < LANE_BYTES; ++byte) {
+            if (position + byte >= wire.size()) break;
+            const WireByte& item = wire[position + byte];
+            data.bits(byte * 8 + 7, byte * 8) = item.data;
+            keep[byte] = item.keep;
+            sop[byte] = item.sop;
+            eop[byte] = item.eop;
+            valid = valid || item.keep;
+            if (item.sop) {
+                raw = item.raw;
             }
         }
     }
 
     void sample_outputs()
     {
-        logic<STREAMS> out_valid = output_valid_value();
-        logic<STREAMS> out_last = output_last_value();
-        logic<STREAMS> out_raw = output_raw_value();
-        logic<STREAMS * 64> out_keep = output_keep_value();
-        logic<STREAMS * 512> out_data = output_data_value();
+        bool out_valid = output_valid_value();
+        bool out_last = output_last_value();
+        bool out_raw = output_raw_value();
+        logic<64> got_keep = output_keep_value();
+        logic<512> got_data = output_data_value();
 
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            if (!(bool)out_valid[stream] || !(bool)output_ready[stream]) {
-                continue;
+        if (out_valid && output_ready) {
+            if (expected.empty()) {
+                fail("unexpected parser output");
+                return;
             }
-            if (expected[stream].empty()) {
-                fail("unexpected output on stream " + std::to_string(stream));
-                continue;
-            }
-            ExpectedWord reference = expected[stream].front();
-            expected[stream].pop_front();
-            logic<512> got_data = out_data.bits(stream * 512 + 511, stream * 512);
-            logic<64> got_keep = out_keep.bits(stream * 64 + 63, stream * 64);
+            ExpectedWord reference = expected.front();
+            expected.pop_front();
             if (got_data != reference.data || got_keep != reference.keep
-                || (bool)out_last[stream] != reference.last
-                || (bool)out_raw[stream] != reference.raw) {
-                fail("output mismatch on stream " + std::to_string(stream)
-                    + " for " + reference.name);
+                || out_last != reference.last || out_raw != reference.raw) {
+                fail("output mismatch for " + reference.name);
+                for (size_t byte = 0; byte < 64; ++byte) {
+                    uint8_t got_byte = (uint8_t)got_data.bits(byte * 8 + 7, byte * 8);
+                    uint8_t expected_byte = (uint8_t)reference.data.bits(
+                        byte * 8 + 7, byte * 8);
+                    if (got_byte != expected_byte) {
+                        std::print("    first data difference at byte {}: {:02x} != {:02x}\n",
+                            byte, got_byte, expected_byte);
+                        break;
+                    }
+                }
+                std::print("    flags={:02x} reserved={:02x}\n",
+                    (uint8_t)got_data.bits(50 * 8 + 7, 50 * 8),
+                    (uint8_t)got_data.bits(63 * 8 + 7, 63 * 8));
+                std::print("    ports={:04x}/{:04x} expected={:04x}/{:04x}\n",
+                    (uint16_t)got_data.bits(45 * 8 + 7, 44 * 8),
+                    (uint16_t)got_data.bits(47 * 8 + 7, 46 * 8),
+                    (uint16_t)reference.data.bits(45 * 8 + 7, 44 * 8),
+                    (uint16_t)reference.data.bits(47 * 8 + 7, 46 * 8));
+                std::print("    protocol={:02x} expected={:02x}\n",
+                    (uint8_t)got_data.bits(48 * 8 + 7, 48 * 8),
+                    (uint8_t)reference.data.bits(48 * 8 + 7, 48 * 8));
             }
             ++received;
         }
     }
 
 public:
+    explicit PacketParserTest(bool enable_output_stalls = true)
+        : stall_outputs(enable_output_stalls)
+    {
+    }
+
     bool run()
     {
 #ifdef VERILATOR
-        std::print("VERILATOR PacketParser<{}>\n", LANE_WIDTH);
+        std::print("VERILATOR PacketParser<{}> {}\n", LANE_WIDTH,
+            stall_outputs ? "backpressure" : "line-rate");
 #else
-        std::print("CppHDL PacketParser<{}>\n", LANE_WIDTH);
+        std::print("CppHDL PacketParser<{}> {}\n", LANE_WIDTH,
+            stall_outputs ? "backpressure" : "line-rate");
 #endif
         bind_native();
         build_traffic();
-        output_ready = 0xff;
+        output_ready = true;
         for (size_t cycle = 0; cycle < 2; ++cycle) {
             eval_low(true);
             rising_edge(true);
@@ -613,18 +645,17 @@ public:
         size_t cycles = 0;
         while (!error && received < total_expected && cycles < 20000) {
             drive_inputs();
-            // Independent, bounded stalls exercise output holding and RAW's
-            // two-word reservation without starving any stream.
-            output_ready = 0xff;
-            if ((cycles % 13) < 2) output_ready[cycles % STREAMS] = 0;
-            if ((cycles % 29) == 7) output_ready[(cycles / 3) % STREAMS] = 0;
+            // One pass exercises output holding; the second proves that the
+            // registered parser accepts every offered word at line rate.
+            output_ready = !stall_outputs
+                || !((cycles % 13) < 2 || (cycles % 29) == 7);
             eval_low(false);
             sample_outputs();
-            logic<STREAMS> input_ready = input_ready_value();
-            for (size_t stream = 0; stream < STREAMS; ++stream) {
-                if ((bool)input_ready[stream] && position[stream] < wire[stream].size()) {
-                    position[stream] += LANE_BYTES;
-                }
+            if (!stall_outputs && valid && !input_ready_value()) {
+                fail("line-rate parser inserted an input bubble");
+            }
+            if (input_ready_value() && position < wire.size()) {
+                position += LANE_BYTES;
             }
             rising_edge(false);
             ++cycles;
@@ -636,10 +667,8 @@ public:
         if (received != total_expected) {
             fail("timed out before receiving every parser word");
         }
-        for (size_t stream = 0; stream < STREAMS; ++stream) {
-            if (!expected[stream].empty()) {
-                fail("stream " + std::to_string(stream) + " retained expected outputs");
-            }
+        if (!expected.empty()) {
+            fail("parser retained expected outputs");
         }
         std::print("    words={} cycles={} {}\n", received, cycles,
             error ? "FAILED" : "PASSED");
@@ -649,55 +678,74 @@ public:
 
 int main(int argc, char** argv)
 {
-    bool noveril = false;
-    std::vector<std::string> positional;
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--noveril") == 0) {
-            noveril = true;
+    try {
+        bool noveril = false;
+        std::vector<std::string> positional;
+        for (int i = 1; i < argc; ++i) {
+            if (std::strcmp(argv[i], "--noveril") == 0) {
+                noveril = true;
+            }
+            else {
+                positional.emplace_back(argv[i]);
+            }
         }
-        else {
-            positional.emplace_back(argv[i]);
-        }
-    }
 
-    bool ok = true;
+        bool ok = true;
 #ifndef VERILATOR
-    if (!noveril) {
-        std::cout << "Building PacketParser Verilator simulations =========================\n";
-        const std::filesystem::path generated = std::filesystem::current_path() / "generated_parser";
-        const std::filesystem::path source = std::filesystem::absolute(__FILE__);
-        const std::filesystem::path project_root =
-            source.parent_path().parent_path().parent_path().parent_path();
-        const std::vector<std::string> includes = {
-            (source.parent_path().parent_path()).string(),
-            (project_root / "cpphdl" / "include").string(),
-            project_root.string()};
-        const std::vector<std::string> packages = {
-            "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
-            "PacketParserCursor_pkg", "PacketParserFlags_pkg"};
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "PacketParser_160",
-            "PacketParser", generated, packages, includes, 160);
-        ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "PacketParser_320",
-            "PacketParser", generated, packages, includes, 320);
-        if (ok) {
-            ok &= std::system("PacketParser_160/obj_dir/VPacketParser 160") == 0;
-            ok &= std::system("PacketParser_320/obj_dir/VPacketParser 320") == 0;
+        if (!noveril) {
+            std::cout << "Building PacketParser Verilator simulations "
+                "=========================\n";
+            const std::filesystem::path generated =
+                std::filesystem::current_path() / "generated_parser";
+            const std::filesystem::path source =
+                std::filesystem::absolute(__FILE__);
+            const std::filesystem::path project_root = source.parent_path()
+                .parent_path().parent_path().parent_path();
+            const std::vector<std::string> includes = {
+                (source.parent_path().parent_path()).string(),
+                (project_root / "cpphdl" / "include").string(),
+                project_root.string()};
+            const std::vector<std::string> packages = {
+                "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
+                "PacketParserProgress_pkg", "PacketParserPipeWord_pkg",
+                "PacketParserHeaderId_pkg", "PacketParserCall_pkg",
+                "PacketParserFlags_pkg"};
+            ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__,
+                "PacketParser_160", "PacketParser", generated, packages,
+                includes, 160);
+            ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__,
+                "PacketParser_320", "PacketParser", generated, packages,
+                includes, 320);
+            if (ok) {
+                ok &= std::system(
+                    "PacketParser_160/obj_dir/VPacketParser 160") == 0;
+                ok &= std::system(
+                    "PacketParser_320/obj_dir/VPacketParser 320") == 0;
+            }
         }
-    }
 #else
-    Verilated::commandArgs(argc, argv);
+        Verilated::commandArgs(argc, argv);
 #endif
 
-    if (!positional.empty()) {
-        size_t width = std::stoull(positional[0]);
-        if (width == 160) return !(ok && PacketParserTest<160>().run());
-        if (width == 320) return !(ok && PacketParserTest<320>().run());
-        std::print("unsupported PacketParser lane width {}\n", width);
+        if (!positional.empty()) {
+            size_t width = std::stoull(positional[0]);
+            if (width == 160) return !(ok && PacketParserTest<160>().run()
+                && PacketParserTest<160>(false).run());
+            if (width == 320) return !(ok && PacketParserTest<320>().run()
+                && PacketParserTest<320>(false).run());
+            std::print("unsupported PacketParser lane width {}\n", width);
+            return 1;
+        }
+        ok = ok && PacketParserTest<160>().run();
+        ok = ok && PacketParserTest<160>(false).run();
+        ok = ok && PacketParserTest<320>().run();
+        ok = ok && PacketParserTest<320>(false).run();
+        return ok ? 0 : 1;
+    }
+    catch (const cpphdl_exception& exception) {
+        std::print("CppHDL exception: {}\n", exception.text);
         return 1;
     }
-    ok = ok && PacketParserTest<160>().run();
-    ok = ok && PacketParserTest<320>().run();
-    return ok ? 0 : 1;
 }
 
 #endif

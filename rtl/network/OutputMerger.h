@@ -378,9 +378,13 @@ private:
                         any_data = true;
 
                         last_byte = true;
-                        for (remaining = byte_index + 1;
+                        // Use a fixed loop bound for FPGA elaboration. Vivado
+                        // cannot prove convergence when a generated loop starts
+                        // at the runtime byte offset.
+                        for (remaining = 0;
                              remaining < LANE_BYTES; ++remaining) {
-                            if ((bool)word_keep[remaining]) {
+                            if (remaining > byte_index
+                                && (bool)word_keep[remaining]) {
                                 last_byte = false;
                             }
                         }

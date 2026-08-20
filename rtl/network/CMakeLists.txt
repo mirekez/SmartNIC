@@ -153,12 +153,16 @@ add_custom_command(
         -I "${PROJECT_SOURCE_DIR}"
         ${CPPHDL_TOOLCHAIN_ARGS}
     COMMAND "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator"
-        --lint-only -Wno-fatal --top-module SmartNIC
+        --lint-only -Wno-fatal -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC
+        --top-module SmartNIC
         -I"${SMARTNIC_GENERATED_DIR}"
         "${SMARTNIC_GENERATED_DIR}/Predef_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/PacketParserFields_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/PacketParserWord_pkg.sv"
-        "${SMARTNIC_GENERATED_DIR}/PacketParserCursor_pkg.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketParserProgress_pkg.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketParserPipeWord_pkg.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketParserHeaderId_pkg.sv"
+        "${SMARTNIC_GENERATED_DIR}/PacketParserCall_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/PacketParserFlags_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/RxRAMWritePair_pkg.sv"
         "${SMARTNIC_GENERATED_DIR}/RxDescriptor_pkg.sv"

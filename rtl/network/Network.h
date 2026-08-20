@@ -13,6 +13,9 @@
 
 using namespace cpphdl;
 
+#define NETWORK_FOR_EACH_STREAM(M) \
+    M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
+
 template<size_t LANE_WIDTH = 160, size_t READ_PORTS = 4,
     size_t BANK_DEPTH = 4096, size_t RX_FIFO_DEPTH = 64,
     size_t TX_FIFO_WORDS = 1024>
@@ -77,7 +80,7 @@ public:
 
 private:
     InputBalancer<LANE_WIDTH> balancer;
-    PacketParser<LANE_WIDTH> parser;
+    PacketParser<LANE_WIDTH> parser[STREAMS];
     RxRAM<LANE_WIDTH, READ_PORTS, BANK_DEPTH> rx_ram;
     RxFifo<RX_FIFO_DEPTH> rx_fifo;
     OutputMerger<LANE_WIDTH, TX_FIFO_WORDS, 12> output_merger;
@@ -108,7 +111,7 @@ private:
         uint32_t stream;
         balanced_ready_comb = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
-            balanced_ready_comb[stream] = parser.ready_out()[stream]
+            balanced_ready_comb[stream] = parser[stream].ready_out()
                 && rx_ram.ready_out()[stream];
         }
         return balanced_ready_comb;
@@ -133,7 +136,7 @@ private:
         ram_valid_comb = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
             ram_valid_comb[stream] = balancer.valid_out()[stream]
-                && parser.ready_out()[stream];
+                && parser[stream].ready_out();
         }
         return ram_valid_comb;
     }
@@ -202,18 +205,26 @@ private:
 
     bool& error_comb_func()
     {
+        uint32_t stream;
         error_comb = (bool)protocol_error_reg
             || balancer.protocol_error_out()
-            || parser.protocol_error_out()
             || rx_ram.protocol_error_out()
             || output_merger.protocol_error_out();
+        for (stream = 0; stream < STREAMS; ++stream)
+            error_comb = error_comb || parser[stream].protocol_error_out();
         return error_comb;
     }
 
 public:
 #ifndef SYNTHESIS
     bool debug_balancer_error() { return balancer.protocol_error_out(); }
-    bool debug_parser_error() { return parser.protocol_error_out(); }
+    bool debug_parser_error()
+    {
+        bool error = false;
+        for (uint32_t stream = 0; stream < STREAMS; ++stream)
+            error = error || parser[stream].protocol_error_out();
+        return error;
+    }
     bool debug_rx_ram_error() { return rx_ram.protocol_error_out(); }
     bool debug_join_error() { return protocol_error_reg; }
     uint32_t debug_balancer_words() const
@@ -245,15 +256,25 @@ public:
         balancer.__inst_name = __inst_name + "/balancer";
         balancer._assign();
 
-        parser.valid_in = _ASSIGN_COMB(parser_valid_comb_func());
-        parser.data_in = _ASSIGN(balancer.data_out());
-        parser.keep_in = _ASSIGN(balancer.keep_out());
-        parser.sop_in = _ASSIGN(balancer.sop_out());
-        parser.eop_in = _ASSIGN(balancer.eop_out());
-        parser.raw_in = _ASSIGN_COMB(raw_mask_comb_func());
-        parser.ready_in = _ASSIGN_COMB(parser_ready_comb_func());
-        parser.__inst_name = __inst_name + "/parser";
-        parser._assign();
+#define NETWORK_BIND_PARSER(number) \
+        parser[number].valid_in = \
+            _ASSIGN((bool)parser_valid_comb_func()[number]); \
+        parser[number].data_in = _ASSIGN(balancer.data_out().bits( \
+            number * LANE_WIDTH + LANE_WIDTH - 1, number * LANE_WIDTH)); \
+        parser[number].keep_in = _ASSIGN(balancer.keep_out().bits( \
+            number * LANE_BYTES + LANE_BYTES - 1, number * LANE_BYTES)); \
+        parser[number].sop_in = _ASSIGN(balancer.sop_out().bits( \
+            number * LANE_BYTES + LANE_BYTES - 1, number * LANE_BYTES)); \
+        parser[number].eop_in = _ASSIGN(balancer.eop_out().bits( \
+            number * LANE_BYTES + LANE_BYTES - 1, number * LANE_BYTES)); \
+        parser[number].raw_in = _ASSIGN((bool)raw_mask_comb_func()[number]); \
+        parser[number].ready_in = \
+            _ASSIGN((bool)parser_ready_comb_func()[number]); \
+        parser[number].__inst_name = __inst_name \
+            + "/parser" + std::to_string(number); \
+        parser[number]._assign();
+        NETWORK_FOR_EACH_STREAM(NETWORK_BIND_PARSER)
+#undef NETWORK_BIND_PARSER
 
         rx_ram.valid_in = _ASSIGN_COMB(ram_valid_comb_func());
         rx_ram.data_in = _ASSIGN(balancer.data_out());
@@ -315,7 +336,6 @@ public:
         bool parser_raw;
         bool parser_last;
         bool fifo_fire;
-        PacketParserOutputBus parser_bus;
         PacketParserWord parser_word;
         logic<STREAMS * HANDLE_BITS> handles;
         logic<STREAMS * FRAME_LENGTH_BITS> lengths;
@@ -333,14 +353,14 @@ public:
             }
             protocol_error_reg.clr();
             balancer._work(true);
-            parser._work(true);
+            for (stream = 0; stream < STREAMS; ++stream)
+                parser[stream]._work(true);
             rx_ram._work(true);
             rx_fifo._work(true);
             output_merger._work(true);
             return;
         }
 
-        parser_bus = parser.data_out();
         handles = rx_ram.packet_handle_out();
         lengths = rx_ram.packet_length_out();
         for (stream = 0; stream < STREAMS; ++stream) {
@@ -352,12 +372,12 @@ public:
                 ram_complete_reg[stream]._next = 0;
             }
 
-            parser_fire = (bool)parser.valid_out()[stream]
+            parser_fire = parser[stream].valid_out()
                 && (bool)parser_ready_comb_func()[stream];
             if (parser_fire) {
-                parser_word = parser_bus[stream];
-                parser_raw = (bool)parser.raw_out()[stream];
-                parser_last = (bool)parser.last_out()[stream];
+                parser_word = parser[stream].data_out();
+                parser_raw = parser[stream].raw_out();
+                parser_last = parser[stream].last_out();
                 if (!parser_raw) {
                     parser_word0_reg[stream]._next = parser_word.raw;
                     parser_word1_reg[stream]._next = 0;
@@ -368,17 +388,17 @@ public:
                         protocol_error_reg._next = 1;
                     }
                 }
-                else if (!(bool)parser_first_reg[stream]) {
+                else if (!parser_last) {
                     parser_word0_reg[stream]._next = parser_word.raw;
                     parser_word1_reg[stream]._next = 0;
                     parser_raw_reg[stream]._next = 1;
                     parser_first_reg[stream]._next = 1;
-                    parser_complete_reg[stream]._next = parser_last;
+                    parser_complete_reg[stream]._next = 0;
                 }
                 else {
                     parser_word1_reg[stream]._next = parser_word.raw;
-                    parser_complete_reg[stream]._next = parser_last;
-                    if (!parser_last) {
+                    parser_complete_reg[stream]._next = 1;
+                    if (!(bool)parser_first_reg[stream]) {
                         protocol_error_reg._next = 1;
                     }
                 }
@@ -403,7 +423,8 @@ public:
         }
 
         balancer._work(false);
-        parser._work(false);
+        for (stream = 0; stream < STREAMS; ++stream)
+            parser[stream]._work(false);
         rx_ram._work(false);
         rx_fifo._work(false);
         output_merger._work(false);
@@ -425,7 +446,8 @@ public:
         }
         protocol_error_reg.strobe();
         balancer._strobe();
-        parser._strobe();
+        for (stream = 0; stream < STREAMS; ++stream)
+            parser[stream]._strobe();
         rx_ram._strobe();
         rx_fifo._strobe();
         output_merger._strobe();
@@ -441,7 +463,9 @@ public:
             parser_complete_reg[stream].strobe(); ram_address_reg[stream].strobe();
             ram_length_reg[stream].strobe(); ram_complete_reg[stream].strobe();
         }
-        protocol_error_reg.strobe(); balancer._strobe(); parser._strobe();
+        protocol_error_reg.strobe(); balancer._strobe();
+        for (stream = 0; stream < STREAMS; ++stream)
+            parser[stream]._strobe();
         rx_ram._strobe(); rx_fifo._strobe(); output_merger._strobe();
     }
 
@@ -452,3 +476,5 @@ public:
 template class Network<160, 8, RX_RAM_BANK_DEPTH, 64, 1024>;
 template class Network<320, 8, RX_RAM_BANK_DEPTH, 64, 1024>;
 #endif
+
+#undef NETWORK_FOR_EACH_STREAM

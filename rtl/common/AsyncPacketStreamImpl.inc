@@ -179,16 +179,12 @@ private:
         emit = fifo_write_valid_comb_func() && fifo.write_ready_out();
         if (emit) {
             shifted = count > CHUNK_BYTES ? count - CHUNK_BYTES : 0;
-            for (byte = 0; byte < BUFFER_BYTES; ++byte) {
-                if (byte < shifted) {
-                    data.bits(byte * 8 + 7, byte * 8) =
-                        data.bits((byte + CHUNK_BYTES) * 8 + 7,
-                            (byte + CHUNK_BYTES) * 8);
-                }
-                else {
-                    data.bits(byte * 8 + 7, byte * 8) = 0;
-                }
-            }
+            // Emission always removes one fixed-size FIFO chunk.  Expressing
+            // this as a constant shift avoids generating an out-of-range
+            // variable part-select for the upper half of the accumulator and
+            // maps to wiring instead of a byte-indexed mux.
+            if (count > CHUNK_BYTES) data = data >> CHUNK_BITS;
+            else data = 0;
             count = shifted;
             sop = false;
             if (shifted == 0) eop = false;
@@ -233,16 +229,12 @@ private:
         eop = output_eop_reg;
         if (output_valid_comb_func() && ready_in()) {
             remove = count > DST_BYTES ? DST_BYTES : count;
-            for (byte = 0; byte < BUFFER_BYTES; ++byte) {
-                if (byte + remove < count) {
-                    data.bits(byte * 8 + 7, byte * 8) =
-                        data.bits((byte + remove) * 8 + 7,
-                            (byte + remove) * 8);
-                }
-                else {
-                    data.bits(byte * 8 + 7, byte * 8) = 0;
-                }
-            }
+            // A full destination beat removes the compile-time DST width.  A
+            // short EOP beat consumes everything.  Keeping the two cases
+            // explicit prevents a wide dynamic shifter and out-of-range
+            // variable reads in synthesized SystemVerilog.
+            if (count > DST_BYTES) data = data >> DST_WIDTH;
+            else data = 0;
             count -= remove;
             sop = false;
             if (count == 0) eop = false;

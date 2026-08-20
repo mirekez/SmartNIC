@@ -142,12 +142,15 @@ static NetworkPacket make_network_packet(uint32_t id, size_t target_size,
 
     uint8_t first_next = protocol;
     if (ipv6 && ipv6_extensions) {
-        const std::array<std::vector<uint8_t>, 4> chain = {
+        const std::array<std::vector<uint8_t>, 8> chain = {
             std::vector<uint8_t>{43, 0, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16},
             std::vector<uint8_t>{60, 0, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26},
-            std::vector<uint8_t>{51, 0, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36},
-            std::vector<uint8_t>{protocol, 1, 0, 0, 0x41, 0x42, 0x43, 0x44,
-                0x45, 0x46, 0x47, 0x48}};
+            std::vector<uint8_t>{135, 0, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36},
+            std::vector<uint8_t>{0, 0, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46},
+            std::vector<uint8_t>{43, 0, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56},
+            std::vector<uint8_t>{60, 0, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66},
+            std::vector<uint8_t>{51, 0, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76},
+            std::vector<uint8_t>{protocol, 0, 0, 0, 0x81, 0x82, 0x83, 0x84}};
         first_next = 0;
         for (const auto& header : chain) {
             extensions.insert(extensions.end(), header.begin(), header.end());
@@ -540,7 +543,9 @@ class NetworkBasicTest
         }
         const NetworkPacket& packet = found->second;
         if ((uint32_t)descriptor.packet_length != packet.frame.size()) {
-            fail("descriptor length mismatch for packet " + std::to_string(id));
+            fail("descriptor length mismatch for packet " + std::to_string(id)
+                + ": got " + std::to_string((uint32_t)descriptor.packet_length)
+                + ", expected " + std::to_string(packet.frame.size()));
         }
         if ((uint32_t)descriptor.ingress_stream >= STREAMS
             || ((uint32_t)descriptor.packet_address & 7)
@@ -943,7 +948,9 @@ int main(int argc, char** argv)
             project_root.string()};
         const std::vector<std::string> modules = {
             "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
-            "PacketParserCursor_pkg", "PacketParserFlags_pkg",
+            "PacketParserProgress_pkg", "PacketParserPipeWord_pkg",
+            "PacketParserHeaderId_pkg", "PacketParserCall_pkg",
+            "PacketParserFlags_pkg",
             "RxRAMWritePair_pkg", "RxDescriptor_pkg", "RxDescriptorWord_pkg",
             "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser",
             "RxRAM", "RxFifo", "TxFifo", "OutputMerger"};
