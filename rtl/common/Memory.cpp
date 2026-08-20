@@ -8,7 +8,12 @@
 using namespace cpphdl;
 
 template<size_t MEM_WIDTH_BYTES, size_t MEM_DEPTH, bool SHOWAHEAD = true>
+#ifdef SMARTNIC_TWO_CLOCKS
+class [[clang::annotate("CPPHDL_REPLACEMENT_FILE=SmartNicMemoryPrimitive.sv;")]]
+SmartNicMemory : public Module
+#else
 class SmartNicMemory : public Module
+#endif
 {
 public:
     _PORT(u<clog2(MEM_DEPTH)>) write_addr_in;

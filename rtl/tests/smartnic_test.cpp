@@ -1173,7 +1173,9 @@ static bool build_verilator_model(const char* source_file, const char* program_f
         project_root.string()};
     const std::vector<std::string> modules = {
         "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
-        "PacketParserCursor_pkg", "PacketParserFlags_pkg", "RxRAMWritePair_pkg",
+        "PacketParserProgress_pkg", "PacketParserPipeWord_pkg",
+        "PacketParserHeaderId_pkg", "PacketParserCall_pkg",
+        "PacketParserFlags_pkg", "RxRAMWritePair_pkg",
         "RxDescriptor_pkg", "RxDescriptorWord_pkg", "RxDescriptorFlags_pkg",
         "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser", "RxRAM",
         "RxFifo", "TxFifo", "OutputMerger", "Network",
