@@ -1,6 +1,6 @@
 package PacketParserFlags_pkg;
 
-typedef enum {
+typedef enum logic[8-1:0] {
     PACKET_PARSER_FLAG_PARSED = 'h1 <<< 'h0,
     PACKET_PARSER_FLAG_MALFORMED = 'h1 <<< 'h1,
     PACKET_PARSER_FLAG_LIMIT = 'h1 <<< 'h2,

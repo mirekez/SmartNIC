@@ -665,7 +665,8 @@ int main(int argc, char** argv)
             project_root.string()};
         const std::vector<std::string> packages = {
             "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
-            "PacketParserProgress_pkg", "PacketParserPipeWord_pkg",
+            "PacketParserProgress_pkg", "PacketParserScanEvent_pkg",
+            "PacketParserRealignEvent_pkg", "PacketParserPipeWord_pkg",
             "PacketParserCall_pkg", "PacketParserHeaderId_pkg",
             "PacketParserFlags_pkg"};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "PacketParser_64",

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-vivado_root="${VIVADO_ROOT:-/tools/Xilinx/Vivado/2022.2}"
+vivado_root="${VIVADO_ROOT:-/tools/2026.1/Vivado}"
 mkdir -p "$repo_dir/fpga/build"
 
-# Vivado 2022.2's Ubuntu loader omits the bundled ncurses5 compatibility
-# directory on newer distributions, although librdi_commontasks still needs it.
+# Keep the bundled compatibility libraries available to Vivado on newer Linux
+# distributions.  This is harmless for 2026.1 and remains useful with 2022.2.
 vivado_compat_lib="$vivado_root/lib/lnx64.o/SuSE"
 
 # Keep the FPGA source set reproducible from the CppHDL implementation.  The
@@ -14,7 +14,7 @@ vivado_compat_lib="$vivado_root/lib/lnx64.o/SuSE"
 # generated from their C++ modules.
 "$repo_dir/cpphdl/build/cpphdl" \
     --generated-dir "$repo_dir/rtl/generated" \
-    --primary_clock clk 312500000 \
+    --primary_clock clk 156250000 \
     --secondary_clock l2_clock 156250000 \
     "$repo_dir/rtl/processing/Processing.h" \
     -DMULTICORE \

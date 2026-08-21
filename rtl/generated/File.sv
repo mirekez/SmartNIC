@@ -6,6 +6,7 @@ import Predef_pkg::*;
 module File #(
     parameter MEM_WIDTH = 32
 ,   parameter MEM_DEPTH = 32
+,   parameter PRIMARY_WRITE_FIRST = 1
  )
  (
     input wire clk
@@ -121,7 +122,7 @@ module File #(
     endgenerate
 
     always_comb begin : data0_out_comb_func  // data0_out_comb_func
-        if (write_in && (write_addr_in == read_addr0_in)) begin
+        if ((PRIMARY_WRITE_FIRST && write_in) && (write_addr_in == read_addr0_in)) begin
             data0_out_comb=write_data_in;
         end
         else begin
@@ -135,7 +136,7 @@ module File #(
     end
 
     always_comb begin : data1_out_comb_func  // data1_out_comb_func
-        if (write_in && (write_addr_in == read_addr1_in)) begin
+        if ((PRIMARY_WRITE_FIRST && write_in) && (write_addr_in == read_addr1_in)) begin
             data1_out_comb=write_data_in;
         end
         else begin
@@ -153,7 +154,7 @@ module File #(
     end
 
     always_comb begin : x10_comb_func  // x10_comb_func
-        if (write_in && (write_addr_in == 'hA)) begin
+        if ((PRIMARY_WRITE_FIRST && write_in) && (write_addr_in == 'hA)) begin
             x10_comb=write_data_in;
         end
         else begin
@@ -167,7 +168,7 @@ module File #(
     end
 
     always_comb begin : x11_comb_func  // x11_comb_func
-        if (write_in && (write_addr_in == 'hB)) begin
+        if ((PRIMARY_WRITE_FIRST && write_in) && (write_addr_in == 'hB)) begin
             x11_comb=write_data_in;
         end
         else begin
@@ -181,7 +182,7 @@ module File #(
     end
 
     always_comb begin : x16_comb_func  // x16_comb_func
-        if (write_in && (write_addr_in == 'h10)) begin
+        if ((PRIMARY_WRITE_FIRST && write_in) && (write_addr_in == 'h10)) begin
             x16_comb=write_data_in;
         end
         else begin
@@ -195,7 +196,7 @@ module File #(
     end
 
     always_comb begin : x17_comb_func  // x17_comb_func
-        if (write_in && (write_addr_in == 'h11)) begin
+        if ((PRIMARY_WRITE_FIRST && write_in) && (write_addr_in == 'h11)) begin
             x17_comb=write_data_in;
         end
         else begin

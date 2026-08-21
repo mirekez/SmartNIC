@@ -9,11 +9,11 @@ if {$argc > 0} {
 }
 
 file mkdir $work_dir
-create_project network_area_check $work_dir -part xc7k160tffg676-3 -force
+create_project network_area_check $work_dir -part xc7k325tffg676-3 -force
 add_files -norecurse [glob -directory $generated_dir *.sv]
 set_property top Network [current_fileset]
 update_compile_order -fileset sources_1
-synth_design -top Network -part xc7k160tffg676-3 -mode out_of_context \
+synth_design -top Network -part xc7k325tffg676-3 -mode out_of_context \
     -generic ENABLE_RAW=0 -directive AreaOptimized_high -resource_sharing on \
     -flatten_hierarchy $flatten_mode
 report_utilization -file [file join $work_dir utilization.rpt]

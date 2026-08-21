@@ -4,10 +4,13 @@ import Predef_pkg::*;
 import PacketParserFields_pkg::*;
 import PacketParserWord_pkg::*;
 import PacketParserProgress_pkg::*;
+import PacketParserScanEvent_pkg::*;
+import PacketParserRealignEvent_pkg::*;
 import PacketParserPipeWord_pkg::*;
 import PacketParserHeaderId_pkg::*;
 import PacketParserCall_pkg::*;
 import PacketParserFlags_pkg::*;
+import RxRAMScanEvent_pkg::*;
 import RxRAMWritePair_pkg::*;
 import RxDescriptor_pkg::*;
 import RxDescriptorWord_pkg::*;
@@ -73,6 +76,12 @@ module Network #(
 
 
     // regs and combs
+    reg[LANE_WIDTH-1:0] receive_data_reg[2];
+    reg[LANE_BYTES-1:0] receive_keep_reg[2];
+    reg[LANE_BYTES-1:0] receive_sop_reg[2];
+    reg[LANE_BYTES-1:0] receive_eop_reg[2];
+    reg receive_raw_reg[2];
+    reg receive_valid_reg[2];
     reg[512-1:0] parser_word0_reg[2];
     reg[512-1:0] parser_word1_reg[2];
     reg parser_raw_reg[2];
@@ -89,6 +98,10 @@ module Network #(
     logic[2-1:0] parser_ready_comb;
     logic[2-1:0] ram_completion_ready_comb;
     logic[2-1:0] descriptor_valid_comb;
+    logic[INPUT_BITS-1:0] receive_data_comb;
+    logic[INPUT_BYTES-1:0] receive_keep_comb;
+    logic[INPUT_BYTES-1:0] receive_sop_comb;
+    logic[INPUT_BYTES-1:0] receive_eop_comb;
     RxDescriptorWord[2-1:0] descriptor_input_comb;
     logic error_comb;
 
@@ -284,6 +297,12 @@ module Network #(
     );
 
     // tmp variables
+    logic[LANE_WIDTH-1:0] receive_data_reg_tmp[2];
+    logic[LANE_BYTES-1:0] receive_keep_reg_tmp[2];
+    logic[LANE_BYTES-1:0] receive_sop_reg_tmp[2];
+    logic[LANE_BYTES-1:0] receive_eop_reg_tmp[2];
+    logic receive_raw_reg_tmp[2];
+    logic receive_valid_reg_tmp[2];
     logic[512-1:0] parser_word0_reg_tmp[2];
     logic[512-1:0] parser_word1_reg_tmp[2];
     logic parser_raw_reg_tmp[2];
@@ -299,7 +318,7 @@ module Network #(
         logic[31:0] stream;
         balanced_ready_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            balanced_ready_comb[stream] = parser__ready_out[stream] && rx_ram__ready_out[stream];
+            balanced_ready_comb[stream] = !receive_valid_reg[stream] || ((parser__ready_out[stream] && rx_ram__ready_out[stream]));
         end
     end
 
@@ -307,7 +326,7 @@ module Network #(
         logic[31:0] stream;
         parser_valid_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            parser_valid_comb[stream] = balancer__valid_out[stream] && rx_ram__ready_out[stream];
+            parser_valid_comb[stream] = receive_valid_reg[stream] && rx_ram__ready_out[stream];
         end
     end
 
@@ -315,7 +334,7 @@ module Network #(
         logic[31:0] stream;
         ram_valid_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            ram_valid_comb[stream] = balancer__valid_out[stream] && parser__ready_out[stream];
+            ram_valid_comb[stream] = receive_valid_reg[stream] && parser__ready_out[stream];
         end
     end
 
@@ -323,7 +342,7 @@ module Network #(
         logic[31:0] stream;
         raw_mask_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            raw_mask_comb[stream] = ENABLE_RAW && raw_in;
+            raw_mask_comb[stream] = ENABLE_RAW && receive_raw_reg[stream];
         end
     end
 
@@ -348,6 +367,38 @@ module Network #(
         descriptor_valid_comb = 'h0;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             descriptor_valid_comb[stream] = parser_complete_reg[stream] && ram_complete_reg[stream];
+        end
+    end
+
+    always_comb begin : receive_data_comb_func  // receive_data_comb_func
+        logic[31:0] stream;
+        receive_data_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            receive_data_comb[stream*LANE_WIDTH +:(0 + LANE_WIDTH) - 'h1 - 0 + 1] = receive_data_reg[stream];
+        end
+    end
+
+    always_comb begin : receive_keep_comb_func  // receive_keep_comb_func
+        logic[31:0] stream;
+        receive_keep_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            receive_keep_comb[stream*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1] = receive_keep_reg[stream];
+        end
+    end
+
+    always_comb begin : receive_sop_comb_func  // receive_sop_comb_func
+        logic[31:0] stream;
+        receive_sop_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            receive_sop_comb[stream*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1] = receive_sop_reg[stream];
+        end
+    end
+
+    always_comb begin : receive_eop_comb_func  // receive_eop_comb_func
+        logic[31:0] stream;
+        receive_eop_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            receive_eop_comb[stream*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1] = receive_eop_reg[stream];
         end
     end
 
@@ -380,24 +431,24 @@ module Network #(
         assign balancer__eop_in = eop_in;
         assign balancer__ready_in = balanced_ready_comb;
         assign parser__valid_in['h0] = parser_valid_comb['h0];
-        assign parser__data_in['h0] = balancer__data_out['h0*LANE_WIDTH +:(('h0*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h0*LANE_WIDTH + 1];
-        assign parser__keep_in['h0] = balancer__keep_out['h0*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
-        assign parser__sop_in['h0] = balancer__sop_out['h0*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
-        assign parser__eop_in['h0] = balancer__eop_out['h0*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+        assign parser__data_in['h0] = receive_data_reg['h0];
+        assign parser__keep_in['h0] = receive_keep_reg['h0];
+        assign parser__sop_in['h0] = receive_sop_reg['h0];
+        assign parser__eop_in['h0] = receive_eop_reg['h0];
         assign parser__raw_in['h0] = raw_mask_comb['h0];
         assign parser__ready_in['h0] = parser_ready_comb['h0];
         assign parser__valid_in['h1] = parser_valid_comb['h1];
-        assign parser__data_in['h1] = balancer__data_out['h1*LANE_WIDTH +:(('h1*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h1*LANE_WIDTH + 1];
-        assign parser__keep_in['h1] = balancer__keep_out['h1*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
-        assign parser__sop_in['h1] = balancer__sop_out['h1*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
-        assign parser__eop_in['h1] = balancer__eop_out['h1*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+        assign parser__data_in['h1] = receive_data_reg['h1];
+        assign parser__keep_in['h1] = receive_keep_reg['h1];
+        assign parser__sop_in['h1] = receive_sop_reg['h1];
+        assign parser__eop_in['h1] = receive_eop_reg['h1];
         assign parser__raw_in['h1] = raw_mask_comb['h1];
         assign parser__ready_in['h1] = parser_ready_comb['h1];
         assign rx_ram__valid_in = ram_valid_comb;
-        assign rx_ram__data_in = balancer__data_out;
-        assign rx_ram__keep_in = balancer__keep_out;
-        assign rx_ram__sop_in = balancer__sop_out;
-        assign rx_ram__eop_in = balancer__eop_out;
+        assign rx_ram__data_in = receive_data_comb;
+        assign rx_ram__keep_in = receive_keep_comb;
+        assign rx_ram__sop_in = receive_sop_comb;
+        assign rx_ram__eop_in = receive_eop_comb;
         assign rx_ram__packet_ready_in = ram_completion_ready_comb;
         assign rx_ram__read_valid_in = read_valid_in;
         assign rx_ram__read_handle_in = read_handle_in;
@@ -448,6 +499,12 @@ module Network #(
         logic[28-1:0] lengths;
         if (reset) begin
             for (stream='h0;stream < STREAMS;stream=stream+1) begin
+                receive_data_reg_tmp[stream] = '0;
+                receive_keep_reg_tmp[stream] = '0;
+                receive_sop_reg_tmp[stream] = '0;
+                receive_eop_reg_tmp[stream] = '0;
+                receive_raw_reg_tmp[stream] = '0;
+                receive_valid_reg_tmp[stream] = '0;
                 parser_word0_reg_tmp[stream] = '0;
                 parser_word1_reg_tmp[stream] = '0;
                 parser_raw_reg_tmp[stream] = '0;
@@ -465,6 +522,16 @@ module Network #(
         handles = rx_ram__packet_handle_out;
         lengths = rx_ram__packet_length_out;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            if (balanced_ready_comb[stream]) begin
+                receive_valid_reg_tmp[stream] = unsigned'(1'(balancer__valid_out[stream]));
+                if (balancer__valid_out[stream]) begin
+                    receive_data_reg_tmp[stream] = balancer__data_out[stream*LANE_WIDTH +:(0 + LANE_WIDTH) - 'h1 - 0 + 1];
+                    receive_keep_reg_tmp[stream] = balancer__keep_out[stream*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+                    receive_sop_reg_tmp[stream] = balancer__sop_out[stream*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+                    receive_eop_reg_tmp[stream] = balancer__eop_out[stream*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+                    receive_raw_reg_tmp[stream] = unsigned'(1'(raw_in));
+                end
+            end
             fifo_fire=descriptor_valid_comb[stream] && rx_fifo__ready_out[stream];
             if (fifo_fire) begin
                 parser_complete_reg_tmp[stream] = unsigned'(1'h0);
@@ -534,6 +601,12 @@ module Network #(
     endtask
 
     always_ff @(posedge net_clk) begin
+        receive_data_reg_tmp = receive_data_reg;
+        receive_keep_reg_tmp = receive_keep_reg;
+        receive_sop_reg_tmp = receive_sop_reg;
+        receive_eop_reg_tmp = receive_eop_reg;
+        receive_raw_reg_tmp = receive_raw_reg;
+        receive_valid_reg_tmp = receive_valid_reg;
         parser_word0_reg_tmp = parser_word0_reg;
         parser_word1_reg_tmp = parser_word1_reg;
         parser_raw_reg_tmp = parser_raw_reg;
@@ -546,6 +619,12 @@ module Network #(
 
         _work_net_clk(reset);
 
+        receive_data_reg <= receive_data_reg_tmp;
+        receive_keep_reg <= receive_keep_reg_tmp;
+        receive_sop_reg <= receive_sop_reg_tmp;
+        receive_eop_reg <= receive_eop_reg_tmp;
+        receive_raw_reg <= receive_raw_reg_tmp;
+        receive_valid_reg <= receive_valid_reg_tmp;
         parser_word0_reg <= parser_word0_reg_tmp;
         parser_word1_reg <= parser_word1_reg_tmp;
         parser_raw_reg <= parser_raw_reg_tmp;

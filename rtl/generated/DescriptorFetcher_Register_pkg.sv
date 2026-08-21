@@ -1,6 +1,6 @@
 package DescriptorFetcher_Register_pkg;
 
-typedef enum {
+typedef enum logic[32-1:0] {
     REG_CONTROL = 'h0,
     REG_STATUS = 'h4,
     REG_ACTION = 'h8,

@@ -1,6 +1,7 @@
 `default_nettype none
 
 import Predef_pkg::*;
+import RxRAMScanEvent_pkg::*;
 import RxRAMWritePair_pkg::*;
 
 
@@ -59,9 +60,20 @@ module RxRAM #(
     reg[LOGICAL_ROW_BITS-1:0] next_row_reg[2];
     reg[LOGICAL_ROW_BITS-1:0] release_row_reg[2];
     reg[$clog2(LOGICAL_ROWS + 'h1)-1:0] used_rows_reg[2];
+    reg[$clog2(LOGICAL_ROWS + 'h1)-1:0] allocated_rows_reg[2];
+    reg[$clog2(LOGICAL_ROWS + 'h1)-1:0] released_rows_reg[2];
     reg[LOGICAL_ROW_BITS-1:0] packet_start_reg[2];
     reg[14-1:0] packet_length_reg[2];
     reg in_frame_reg[2];
+    reg scan_in_frame_reg[2];
+    reg scan_valid_reg[2];
+    RxRAMScanEvent scan_event_reg[2];
+    reg[LANE_WIDTH-1:0] write_data0_reg[2];
+    reg[LANE_WIDTH-1:0] write_data1_reg[2];
+    reg[LOGICAL_ROW_BITS-1:0] write_row0_reg[2];
+    reg[LOGICAL_ROW_BITS-1:0] write_row1_reg[2];
+    reg write_valid0_reg[2];
+    reg write_valid1_reg[2];
     reg deferred_release_valid_reg[2][RELEASE_SLOTS];
     reg[HANDLE_BITS-1:0] deferred_release_handle_reg[2][RELEASE_SLOTS];
     reg[14-1:0] deferred_release_length_reg[2][RELEASE_SLOTS];
@@ -75,6 +87,8 @@ module RxRAM #(
     reg read_response_valid_reg[READ_PORTS];
     reg[LANE_WIDTH-1:0] read_response_data_reg[READ_PORTS];
     reg[READ_RR_BITS-1:0] read_rr_reg[4];
+    reg release_error_reg[2];
+    reg ingress_error_reg[2];
     reg protocol_error_reg;
     reg storage_full_reg;
     logic[4-1:0] bank_write_valid_comb;
@@ -122,9 +136,20 @@ module RxRAM #(
     logic[LOGICAL_ROW_BITS-1:0] next_row_reg_tmp[2];
     logic[LOGICAL_ROW_BITS-1:0] release_row_reg_tmp[2];
     logic[$clog2(LOGICAL_ROWS + 'h1)-1:0] used_rows_reg_tmp[2];
+    logic[$clog2(LOGICAL_ROWS + 'h1)-1:0] allocated_rows_reg_tmp[2];
+    logic[$clog2(LOGICAL_ROWS + 'h1)-1:0] released_rows_reg_tmp[2];
     logic[LOGICAL_ROW_BITS-1:0] packet_start_reg_tmp[2];
     logic[14-1:0] packet_length_reg_tmp[2];
     logic in_frame_reg_tmp[2];
+    logic scan_in_frame_reg_tmp[2];
+    logic scan_valid_reg_tmp[2];
+    RxRAMScanEvent scan_event_reg_tmp[2];
+    logic[LANE_WIDTH-1:0] write_data0_reg_tmp[2];
+    logic[LANE_WIDTH-1:0] write_data1_reg_tmp[2];
+    logic[LOGICAL_ROW_BITS-1:0] write_row0_reg_tmp[2];
+    logic[LOGICAL_ROW_BITS-1:0] write_row1_reg_tmp[2];
+    logic write_valid0_reg_tmp[2];
+    logic write_valid1_reg_tmp[2];
     logic deferred_release_valid_reg_tmp[2][RELEASE_SLOTS];
     logic[HANDLE_BITS-1:0] deferred_release_handle_reg_tmp[2][RELEASE_SLOTS];
     logic[14-1:0] deferred_release_length_reg_tmp[2][RELEASE_SLOTS];
@@ -138,12 +163,14 @@ module RxRAM #(
     logic read_response_valid_reg_tmp[READ_PORTS];
     logic[LANE_WIDTH-1:0] read_response_data_reg_tmp[READ_PORTS];
     logic[READ_RR_BITS-1:0] read_rr_reg_tmp[4];
+    logic release_error_reg_tmp[2];
+    logic ingress_error_reg_tmp[2];
     logic protocol_error_reg_tmp;
     logic storage_full_reg_tmp;
 
 
-    function logic[31:0] released_rows (input logic[31:0] length);
-        return ((((((length + LANE_BYTES) - 'h1))/LANE_BYTES) + 'h1)) & ~'h1;
+    function logic[15:0] released_rows (input logic[15:0] length);
+        return unsigned'(16'((((((length + 'hF)) >>> 'h4)) <<< 'h1)));
     endfunction
 
     function logic[31:0] request_handle (
@@ -180,93 +207,101 @@ module RxRAM #(
         return (((handle & 'h7))*'h2) + ((logical & 'h1));
     endfunction
 
-    always_comb begin : input_ready_comb_func  // input_ready_comb_func
-        logic[31:0] stream;
-        logic[31:0] count;
-        input_ready_comb = 'h0;
-        for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            count=unsigned'(32'(completion_count_reg[stream]));
-            if ((count != 'h0) && packet_ready_in[stream]) begin
-                --count;
-            end
-            input_ready_comb[stream] = (count < COMPLETION_FIFO_WORDS) && ((in_frame_reg[stream] || used_rows_reg[stream]<=(LOGICAL_ROWS - MAX_PACKET_ROWS)));
-        end
-    end
-
-    function RxRAMWritePair write_pair_for_stream (input logic[31:0] stream);
-        RxRAMWritePair pair;
-        logic[64-1:0] pack_data;
-        logic[31:0] pack_count;
-        logic[31:0] logical_row;
+    function RxRAMScanEvent scan_input_for_stream (input logic[31:0] stream);
+        RxRAMScanEvent _event;
         logic[31:0] _byte;
-        logic[31:0] _bit;
         logic[31:0] flat;
         logic[7:0] input_byte;
-        logic in_frame;
         logic keep;
         logic sop;
         logic eop;
-        pair = 0;
-        pack_data = pack_data_reg[stream];
-        pack_count=unsigned'(32'(pack_count_reg[stream]));
-        logical_row=unsigned'(32'(next_row_reg[stream]));
-        in_frame=in_frame_reg[stream];
-        if (!valid_in[stream] || !input_ready_comb[stream]) begin
-            return pair;
-        end
+        logic accepting;
+        logic second_segment;
+        logic first_eop;
+        logic second_eop;
+        _event = 0;
+        accepting=scan_in_frame_reg[stream];
+        second_segment=0;
+        first_eop=0;
+        second_eop=0;
         for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
             flat=(stream*LANE_BYTES) + _byte;
             keep=keep_in[flat];
             sop=sop_in[flat];
             eop=eop_in[flat];
-            if (keep) begin
-                if (sop) begin
-                    if (((logical_row & 'h1)) != 'h0) begin
-                        logical_row=logical_row+1;
-                    end
-                    pack_data = 'h0;
-                    pack_count='h0;
-                    in_frame=1;
+            if (!keep) begin
+                if (sop || eop) begin
+                    _event.protocol_error = unsigned'(1'h1);
                 end
-                if (in_frame) begin
-                    input_byte=unsigned'(8'(data_in[flat*'h8 +:8]));
-                    for (_bit='h0;_bit < 'h8;_bit=_bit+1) begin
-                        pack_data[(pack_count*'h8) + _bit] = ((input_byte >>> _bit)) & 'h1;
+            end
+            else begin
+                if (sop) begin
+                    if (accepting || second_eop) begin
+                        _event.protocol_error = unsigned'(1'h1);
                     end
-                    pack_count=pack_count+1;
-                    if (pack_count == LANE_BYTES) begin
-                        if (!pair.valid0) begin
-                            pair.data0 = pack_data;
-                            pair.row0 = logical_row;
-                            pair.valid0 = unsigned'(1'h1);
-                        end
-                        else begin
-                            pair.data1 = pack_data;
-                            pair.row1 = logical_row;
-                            pair.valid1 = unsigned'(1'h1);
-                        end
-                        logical_row=logical_row+1;
-                        pack_data = 'h0;
-                        pack_count='h0;
+                    if (first_eop) begin
+                        second_segment=1;
+                    end
+                    accepting=1;
+                    if (second_segment) begin
+                        _event.sop1 = unsigned'(1'h1);
+                    end
+                    else begin
+                        _event.sop0 = unsigned'(1'h1);
+                    end
+                end
+                else begin
+                    if (!accepting) begin
+                        _event.protocol_error = unsigned'(1'h1);
+                    end
+                end
+                if (accepting) begin
+                    input_byte=unsigned'(8'(data_in[flat*'h8 +:8]));
+                    if (second_segment) begin
+                        _event.data1 |= input_byte << (unsigned'(8'(_event.bytes1))*'h8);
+                        _event.bytes1 = unsigned'(4'(unsigned'(4'(unsigned'(8'(_event.bytes1)) + 'h1))));
+                        _event.valid1 = unsigned'(1'h1);
+                    end
+                    else begin
+                        _event.data0 |= input_byte << (unsigned'(8'(_event.bytes0))*'h8);
+                        _event.bytes0 = unsigned'(4'(unsigned'(4'(unsigned'(8'(_event.bytes0)) + 'h1))));
+                        _event.valid0 = unsigned'(1'h1);
                     end
                     if (eop) begin
-                        if (pack_count != 'h0) begin
-                            if (!pair.valid0) begin
-                                pair.data0 = pack_data;
-                                pair.row0 = logical_row;
-                                pair.valid0 = unsigned'(1'h1);
-                            end
-                            else begin
-                                pair.data1 = pack_data;
-                                pair.row1 = logical_row;
-                                pair.valid1 = unsigned'(1'h1);
-                            end
+                        if (second_segment) begin
+                            _event.eop1 = unsigned'(1'h1);
+                            second_eop=1;
                         end
-                        in_frame=0;
+                        else begin
+                            _event.eop0 = unsigned'(1'h1);
+                            first_eop=1;
+                        end
+                        accepting=0;
+                    end
+                end
+                else begin
+                    if (eop) begin
+                        _event.protocol_error = unsigned'(1'h1);
                     end
                 end
             end
         end
+        _event.in_frame_next = unsigned'(1'(accepting));
+        if (first_eop && second_eop) begin
+            _event.protocol_error = unsigned'(1'h1);
+        end
+        return _event;
+    endfunction
+
+    function RxRAMWritePair write_pair_for_stream (input logic[31:0] stream);
+        RxRAMWritePair pair;
+        pair = 0;
+        pair.data0 = write_data0_reg[stream];
+        pair.data1 = write_data1_reg[stream];
+        pair.row0 = write_row0_reg[stream];
+        pair.row1 = write_row1_reg[stream];
+        pair.valid0 = write_valid0_reg[stream];
+        pair.valid1 = write_valid1_reg[stream];
         return pair;
     endfunction
 
@@ -396,6 +431,21 @@ module RxRAM #(
         end
     end
 
+    always_comb begin : input_ready_comb_func  // input_ready_comb_func
+        logic[31:0] stream;
+        logic[31:0] count;
+        logic[31:0] occupied;
+        input_ready_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            count=unsigned'(32'(completion_count_reg[stream]));
+            if ((count != 'h0) && packet_ready_in[stream]) begin
+                --count;
+            end
+            occupied=unsigned'(32'(used_rows_reg[stream])) + unsigned'(32'(allocated_rows_reg[stream]));
+            input_ready_comb[stream] = (count < COMPLETION_FIFO_WORDS) && ((scan_in_frame_reg[stream] || occupied<=(LOGICAL_ROWS - MAX_PACKET_ROWS)));
+        end
+    end
+
     always_comb begin : packet_valid_comb_func  // packet_valid_comb_func
         logic[31:0] stream;
         packet_valid_comb = 'h0;
@@ -511,32 +561,40 @@ module RxRAM #(
         logic[31:0] slot;
         logic[31:0] port;
         logic[31:0] bank;
-        logic[31:0] _byte;
-        logic[31:0] _bit;
-        logic[31:0] flat;
+        logic[31:0] segment;
+        logic[31:0] segment_bytes;
+        logic[31:0] total_count;
         logic[31:0] pack_count;
-        logic[31:0] next_row;
-        logic[31:0] packet_start;
-        logic[31:0] packet_length;
+        logic[15:0] next_row;
+        logic[15:0] packet_start;
+        logic[15:0] packet_length;
         logic[31:0] head;
         logic[31:0] tail;
         logic[31:0] completion_count;
         logic[31:0] used_rows;
+        logic[31:0] allocated_rows;
+        logic[31:0] released_row_count;
         logic[31:0] release_row;
         logic[31:0] release_stream;
         logic[31:0] release_handle;
         logic[31:0] release_length;
         logic[31:0] rows;
         logic[31:0] release_slot;
+        logic[31:0] drained_release_slot;
         logic[31:0] free_release_slot;
+        logic[63:0] matching_release_slots;
         logic[63:0] claimed_release_slots;
-        logic[7:0] input_byte;
         logic in_frame;
-        logic keep;
-        logic sop;
-        logic eop;
+        logic segment_valid;
+        logic segment_sop;
+        logic segment_eop;
+        logic release_slot_available;
         logic response_free;
         logic[64-1:0] pack_data;
+        logic[64-1:0] segment_data;
+        logic[128-1:0] combined_data;
+        RxRAMWritePair write_pair;
+        RxRAMScanEvent scan_event;
         if (reset) begin
             for (stream='h0;stream < STREAMS;stream=stream+1) begin
                 pack_data_reg_tmp[stream] = 'h0;
@@ -544,9 +602,22 @@ module RxRAM #(
                 next_row_reg_tmp[stream] = 'h0;
                 release_row_reg_tmp[stream] = 'h0;
                 used_rows_reg_tmp[stream] = 'h0;
+                allocated_rows_reg_tmp[stream] = 'h0;
+                released_rows_reg_tmp[stream] = 'h0;
                 packet_start_reg_tmp[stream] = 'h0;
                 packet_length_reg_tmp[stream] = 'h0;
                 in_frame_reg_tmp[stream] = unsigned'(1'h0);
+                scan_in_frame_reg_tmp[stream] = unsigned'(1'h0);
+                scan_valid_reg_tmp[stream] = unsigned'(1'h0);
+                scan_event_reg_tmp[stream] = 0;
+                write_data0_reg_tmp[stream] = 'h0;
+                write_data1_reg_tmp[stream] = 'h0;
+                write_row0_reg_tmp[stream] = 'h0;
+                write_row1_reg_tmp[stream] = 'h0;
+                write_valid0_reg_tmp[stream] = unsigned'(1'h0);
+                write_valid1_reg_tmp[stream] = unsigned'(1'h0);
+                release_error_reg_tmp[stream] = unsigned'(1'h0);
+                ingress_error_reg_tmp[stream] = unsigned'(1'h0);
                 completion_head_reg_tmp[stream] = 'h0;
                 completion_tail_reg_tmp[stream] = 'h0;
                 completion_count_reg_tmp[stream] = 'h0;
@@ -574,6 +645,11 @@ module RxRAM #(
             disable _work_net_clk;
         end
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            if (release_error_reg[stream] || ingress_error_reg[stream]) begin
+                protocol_error_reg_tmp = unsigned'(1'h1);
+            end
+            release_error_reg_tmp[stream] = unsigned'(1'h0);
+            ingress_error_reg_tmp[stream] = unsigned'(1'h0);
             for (slot='h0;slot < COMPLETION_FIFO_WORDS;slot=slot+1) begin
                 completion_handle_reg_tmp[stream][slot] = completion_handle_reg[stream][slot];
                 completion_length_reg_tmp[stream][slot] = completion_length_reg[stream][slot];
@@ -582,20 +658,47 @@ module RxRAM #(
             tail=unsigned'(32'(completion_tail_reg[stream]));
             completion_count=unsigned'(32'(completion_count_reg[stream]));
             used_rows=unsigned'(32'(used_rows_reg[stream]));
+            allocated_rows='h0;
+            released_row_count='h0;
+            rows=unsigned'(32'(released_rows_reg[stream]));
+            if (rows > used_rows) begin
+                release_error_reg_tmp[stream] = unsigned'(1'h1);
+            end
+            else begin
+                used_rows-=rows;
+            end
+            rows=unsigned'(32'(allocated_rows_reg[stream]));
+            if ((used_rows + rows) > LOGICAL_ROWS) begin
+                release_error_reg_tmp[stream] = unsigned'(1'h1);
+                storage_full_reg_tmp = unsigned'(1'h1);
+            end
+            else begin
+                used_rows+=rows;
+            end
             release_row=unsigned'(32'(release_row_reg[stream]));
+            matching_release_slots='h0;
             claimed_release_slots='h0;
+            drained_release_slot=RELEASE_SLOTS;
             for (release_slot='h0;release_slot < RELEASE_SLOTS;release_slot=release_slot+1) begin
                 if (deferred_release_valid_reg[stream][release_slot] && (((unsigned'(32'(deferred_release_handle_reg[stream][release_slot])) >>> 'h3)) == release_row)) begin
-                    rows=released_rows(unsigned'(32'(deferred_release_length_reg[stream][release_slot])));
-                    if ((rows == 'h0) || (rows > used_rows)) begin
-                        protocol_error_reg_tmp = unsigned'(1'h1);
-                    end
-                    else begin
-                        release_row=((release_row + rows)) & ((LOGICAL_ROWS - 'h1));
-                        used_rows-=rows;
-                    end
-                    deferred_release_valid_reg_tmp[stream][release_slot] = unsigned'(1'h0);
+                    matching_release_slots|=unsigned'(64'('h1)) <<< release_slot;
                 end
+            end
+            for (release_slot='h0;release_slot < RELEASE_SLOTS;release_slot=release_slot+1) begin
+                if ((drained_release_slot == RELEASE_SLOTS) && (((((matching_release_slots >>> release_slot)) & 'h1)) != 'h0)) begin
+                    drained_release_slot=release_slot;
+                end
+            end
+            if (drained_release_slot != RELEASE_SLOTS) begin
+                rows=released_rows(unsigned'(32'(deferred_release_length_reg[stream][drained_release_slot])));
+                if (rows == 'h0) begin
+                    release_error_reg_tmp[stream] = unsigned'(1'h1);
+                end
+                else begin
+                    release_row=((release_row + rows)) & ((LOGICAL_ROWS - 'h1));
+                    released_row_count+=rows;
+                end
+                deferred_release_valid_reg_tmp[stream][drained_release_slot] = unsigned'(1'h0);
             end
             for (port='h0;port < READ_PORTS;port=port+1) begin
                 if (release_valid_in[port]) begin
@@ -604,33 +707,28 @@ module RxRAM #(
                     if (release_stream == stream) begin
                         release_length=unsigned'(32'(release_length_in[port*FRAME_LENGTH_BITS +:(0 + FRAME_LENGTH_BITS) - 'h1 - 0 + 1]));
                         rows=released_rows(release_length);
-                        if ((rows == 'h0) || (rows > used_rows)) begin
-                            protocol_error_reg_tmp = unsigned'(1'h1);
+                        if (rows == 'h0) begin
+                            release_error_reg_tmp[stream] = unsigned'(1'h1);
                         end
                         else begin
-                            if (((release_handle >>> 'h3)) == release_row) begin
-                                release_row=((release_row + rows)) & ((LOGICAL_ROWS - 'h1));
-                                used_rows-=rows;
+                            free_release_slot=RELEASE_SLOTS;
+                            for (release_slot='h0;release_slot < RELEASE_SLOTS;release_slot=release_slot+1) begin
+                                release_slot_available=!deferred_release_valid_reg[stream][release_slot] || (release_slot == drained_release_slot);
+                                if (!release_slot_available && (unsigned'(32'(deferred_release_handle_reg[stream][release_slot])) == release_handle)) begin
+                                    release_error_reg_tmp[stream] = unsigned'(1'h1);
+                                end
+                                if (((free_release_slot == RELEASE_SLOTS) && release_slot_available) && (((((claimed_release_slots >>> release_slot)) & 'h1)) == 'h0)) begin
+                                    free_release_slot=release_slot;
+                                end
+                            end
+                            if (free_release_slot == RELEASE_SLOTS) begin
+                                release_error_reg_tmp[stream] = unsigned'(1'h1);
                             end
                             else begin
-                                free_release_slot=RELEASE_SLOTS;
-                                for (release_slot='h0;release_slot < RELEASE_SLOTS;release_slot=release_slot+1) begin
-                                    if (deferred_release_valid_reg[stream][release_slot] && (unsigned'(32'(deferred_release_handle_reg[stream][release_slot])) == release_handle)) begin
-                                        protocol_error_reg_tmp = unsigned'(1'h1);
-                                    end
-                                    if (((free_release_slot == RELEASE_SLOTS) && !deferred_release_valid_reg[stream][release_slot]) && (((((claimed_release_slots >>> release_slot)) & 'h1)) == 'h0)) begin
-                                        free_release_slot=release_slot;
-                                    end
-                                end
-                                if (free_release_slot == RELEASE_SLOTS) begin
-                                    protocol_error_reg_tmp = unsigned'(1'h1);
-                                end
-                                else begin
-                                    claimed_release_slots|=unsigned'(64'('h1)) <<< free_release_slot;
-                                    deferred_release_valid_reg_tmp[stream][free_release_slot] = unsigned'(1'h1);
-                                    deferred_release_handle_reg_tmp[stream][free_release_slot] = release_handle;
-                                    deferred_release_length_reg_tmp[stream][free_release_slot] = release_length;
-                                end
+                                claimed_release_slots|=unsigned'(64'('h1)) <<< free_release_slot;
+                                deferred_release_valid_reg_tmp[stream][free_release_slot] = unsigned'(1'h1);
+                                deferred_release_handle_reg_tmp[stream][free_release_slot] = release_handle;
+                                deferred_release_length_reg_tmp[stream][free_release_slot] = release_length;
                             end
                         end
                     end
@@ -646,86 +744,106 @@ module RxRAM #(
             packet_start=unsigned'(32'(packet_start_reg[stream]));
             packet_length=unsigned'(32'(packet_length_reg[stream]));
             in_frame=in_frame_reg[stream];
-            if ((valid_in[stream] && !input_ready_comb[stream]) && !in_frame) begin
+            write_pair = 0;
+            scan_event = scan_event_reg[stream];
+            if ((valid_in[stream] && !input_ready_comb[stream]) && !scan_in_frame_reg[stream]) begin
                 storage_full_reg_tmp = unsigned'(1'h1);
             end
-            if (valid_in[stream] && input_ready_comb[stream]) begin
-                for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-                    flat=(stream*LANE_BYTES) + _byte;
-                    keep=keep_in[flat];
-                    sop=sop_in[flat];
-                    eop=eop_in[flat];
-                    if (!keep) begin
-                        if (sop || eop) begin
-                            protocol_error_reg_tmp = unsigned'(1'h1);
+            if (scan_valid_reg[stream]) begin
+                if (scan_event.protocol_error) begin
+                    ingress_error_reg_tmp[stream] = unsigned'(1'h1);
+                end
+                for (segment='h0;segment < 'h2;segment=segment+1) begin
+                    segment_valid=(segment == 'h0) ? (scan_event.valid0) : (scan_event.valid1);
+                    segment_sop=(segment == 'h0) ? (scan_event.sop0) : (scan_event.sop1);
+                    segment_eop=(segment == 'h0) ? (scan_event.eop0) : (scan_event.eop1);
+                    segment_data = (segment == 'h0) ? (scan_event.data0) : (scan_event.data1);
+                    segment_bytes=(segment == 'h0) ? (unsigned'(32'(scan_event.bytes0))) : (unsigned'(32'(scan_event.bytes1)));
+                    if (segment_sop) begin
+                        if (in_frame) begin
+                            ingress_error_reg_tmp[stream] = unsigned'(1'h1);
+                        end
+                        if (((next_row & 'h1)) != 'h0) begin
+                            next_row=((next_row + 'h1)) & ((LOGICAL_ROWS - 'h1));
+                        end
+                        pack_data = 'h0;
+                        pack_count='h0;
+                        packet_start=next_row;
+                        packet_length='h0;
+                        in_frame=1;
+                    end
+                    if (segment_valid) begin
+                        if (!in_frame) begin
+                            ingress_error_reg_tmp[stream] = unsigned'(1'h1);
+                        end
+                        combined_data = pack_data | (segment_data << (pack_count*'h8));
+                        total_count=pack_count + segment_bytes;
+                        packet_length+=segment_bytes;
+                        if (total_count>=LANE_BYTES) begin
+                            if (!write_pair.valid0) begin
+                                write_pair.data0 = combined_data['h0 +:64];
+                                write_pair.row0 = unsigned'(16'(unsigned'(16'(next_row))));
+                                write_pair.valid0 = unsigned'(1'h1);
+                            end
+                            else begin
+                                if (!write_pair.valid1) begin
+                                    write_pair.data1 = combined_data['h0 +:64];
+                                    write_pair.row1 = unsigned'(16'(unsigned'(16'(next_row))));
+                                    write_pair.valid1 = unsigned'(1'h1);
+                                end
+                                else begin
+                                    ingress_error_reg_tmp[stream] = unsigned'(1'h1);
+                                end
+                            end
+                            next_row=((next_row + 'h1)) & ((LOGICAL_ROWS - 'h1));
+                            pack_data = combined_data['h40 +:64];
+                            pack_count=total_count - LANE_BYTES;
+                        end
+                        else begin
+                            pack_data = combined_data['h0 +:64];
+                            pack_count=total_count;
+                        end
+                        if (segment_eop) begin
+                            if (pack_count != 'h0) begin
+                                if (!write_pair.valid0) begin
+                                    write_pair.data0 = pack_data;
+                                    write_pair.row0 = unsigned'(16'(unsigned'(16'(next_row))));
+                                    write_pair.valid0 = unsigned'(1'h1);
+                                end
+                                else begin
+                                    if (!write_pair.valid1) begin
+                                        write_pair.data1 = pack_data;
+                                        write_pair.row1 = unsigned'(16'(unsigned'(16'(next_row))));
+                                        write_pair.valid1 = unsigned'(1'h1);
+                                    end
+                                    else begin
+                                        ingress_error_reg_tmp[stream] = unsigned'(1'h1);
+                                    end
+                                end
+                                next_row=((next_row + 'h1)) & ((LOGICAL_ROWS - 'h1));
+                            end
+                            if (((next_row & 'h1)) != 'h0) begin
+                                next_row=((next_row + 'h1)) & ((LOGICAL_ROWS - 'h1));
+                            end
+                            completion_handle_reg_tmp[stream][tail] = ((packet_start <<< 'h3)) | stream;
+                            completion_length_reg_tmp[stream][tail] = packet_length;
+                            tail=((tail + 'h1)) & ((COMPLETION_FIFO_WORDS - 'h1));
+                            completion_count=completion_count+1;
+                            allocated_rows=released_rows(packet_length);
+                            pack_data = 'h0;
+                            pack_count='h0;
+                            in_frame=0;
                         end
                     end
                     else begin
-                        if (sop) begin
-                            if (in_frame) begin
-                                protocol_error_reg_tmp = unsigned'(1'h1);
-                            end
-                            if (((next_row & 'h1)) != 'h0) begin
-                                next_row=next_row+1;
-                            end
-                            pack_data = 'h0;
-                            pack_count='h0;
-                            packet_start=next_row;
-                            packet_length='h0;
-                            in_frame=1;
-                        end
-                        else begin
-                            if (!in_frame) begin
-                                protocol_error_reg_tmp = unsigned'(1'h1);
-                            end
-                        end
-                        if (in_frame) begin
-                            input_byte=unsigned'(8'(data_in[flat*'h8 +:8]));
-                            for (_bit='h0;_bit < 'h8;_bit=_bit+1) begin
-                                pack_data[(pack_count*'h8) + _bit] = ((input_byte >>> _bit)) & 'h1;
-                            end
-                            pack_count=pack_count+1;
-                            if (packet_length != ((('h1 <<< FRAME_LENGTH_BITS)) - 'h1)) begin
-                                packet_length=packet_length+1;
-                            end
-                            if (pack_count == LANE_BYTES) begin
-                                next_row=next_row+1;
-                                pack_data = 'h0;
-                                pack_count='h0;
-                            end
-                            if (eop) begin
-                                if (pack_count != 'h0) begin
-                                    next_row=next_row+1;
-                                    pack_data = 'h0;
-                                    pack_count='h0;
-                                end
-                                if (completion_count>=COMPLETION_FIFO_WORDS) begin
-                                    protocol_error_reg_tmp = unsigned'(1'h1);
-                                end
-                                else begin
-                                    completion_handle_reg_tmp[stream][tail] = ((packet_start <<< 'h3)) | stream;
-                                    completion_length_reg_tmp[stream][tail] = packet_length;
-                                    tail=((tail + 'h1)) & ((COMPLETION_FIFO_WORDS - 'h1));
-                                    completion_count=completion_count+1;
-                                end
-                                if (((next_row & 'h1)) != 'h0) begin
-                                    next_row=next_row+1;
-                                end
-                                rows=released_rows(packet_length);
-                                if ((used_rows + rows) > LOGICAL_ROWS) begin
-                                    protocol_error_reg_tmp = unsigned'(1'h1);
-                                    storage_full_reg_tmp = unsigned'(1'h1);
-                                end
-                                else begin
-                                    used_rows+=rows;
-                                end
-                                next_row&=LOGICAL_ROWS - 'h1;
-                                in_frame=0;
-                            end
+                        if (segment_sop || segment_eop) begin
+                            ingress_error_reg_tmp[stream] = unsigned'(1'h1);
                         end
                     end
                 end
             end
+            allocated_rows_reg_tmp[stream] = allocated_rows;
+            released_rows_reg_tmp[stream] = released_row_count;
             pack_data_reg_tmp[stream] = pack_data;
             pack_count_reg_tmp[stream] = pack_count;
             next_row_reg_tmp[stream] = next_row;
@@ -734,6 +852,24 @@ module RxRAM #(
             packet_start_reg_tmp[stream] = packet_start;
             packet_length_reg_tmp[stream] = packet_length;
             in_frame_reg_tmp[stream] = unsigned'(1'(in_frame));
+            write_data0_reg_tmp[stream] = write_pair.data0;
+            write_data1_reg_tmp[stream] = write_pair.data1;
+            write_row0_reg_tmp[stream] = write_pair.row0;
+            write_row1_reg_tmp[stream] = write_pair.row1;
+            write_valid0_reg_tmp[stream] = write_pair.valid0;
+            write_valid1_reg_tmp[stream] = write_pair.valid1;
+            scan_valid_reg_tmp[stream] = unsigned'(1'h0);
+            scan_event_reg_tmp[stream] = scan_event_reg[stream];
+            scan_in_frame_reg_tmp[stream] = scan_in_frame_reg[stream];
+            if (valid_in[stream] && input_ready_comb[stream]) begin
+                scan_event = scan_input_for_stream(stream);
+                scan_event_reg_tmp[stream] = scan_event;
+                scan_valid_reg_tmp[stream] = unsigned'(1'h1);
+                scan_in_frame_reg_tmp[stream] = scan_event.in_frame_next;
+                if (scan_event.protocol_error) begin
+                    ingress_error_reg_tmp[stream] = unsigned'(1'h1);
+                end
+            end
             completion_head_reg_tmp[stream] = head;
             completion_tail_reg_tmp[stream] = tail;
             completion_count_reg_tmp[stream] = completion_count;
@@ -784,9 +920,20 @@ module RxRAM #(
         next_row_reg_tmp = next_row_reg;
         release_row_reg_tmp = release_row_reg;
         used_rows_reg_tmp = used_rows_reg;
+        allocated_rows_reg_tmp = allocated_rows_reg;
+        released_rows_reg_tmp = released_rows_reg;
         packet_start_reg_tmp = packet_start_reg;
         packet_length_reg_tmp = packet_length_reg;
         in_frame_reg_tmp = in_frame_reg;
+        scan_in_frame_reg_tmp = scan_in_frame_reg;
+        scan_valid_reg_tmp = scan_valid_reg;
+        scan_event_reg_tmp = scan_event_reg;
+        write_data0_reg_tmp = write_data0_reg;
+        write_data1_reg_tmp = write_data1_reg;
+        write_row0_reg_tmp = write_row0_reg;
+        write_row1_reg_tmp = write_row1_reg;
+        write_valid0_reg_tmp = write_valid0_reg;
+        write_valid1_reg_tmp = write_valid1_reg;
         deferred_release_valid_reg_tmp = deferred_release_valid_reg;
         deferred_release_handle_reg_tmp = deferred_release_handle_reg;
         deferred_release_length_reg_tmp = deferred_release_length_reg;
@@ -800,6 +947,8 @@ module RxRAM #(
         read_response_valid_reg_tmp = read_response_valid_reg;
         read_response_data_reg_tmp = read_response_data_reg;
         read_rr_reg_tmp = read_rr_reg;
+        release_error_reg_tmp = release_error_reg;
+        ingress_error_reg_tmp = ingress_error_reg;
         protocol_error_reg_tmp = protocol_error_reg;
         storage_full_reg_tmp = storage_full_reg;
 
@@ -810,9 +959,20 @@ module RxRAM #(
         next_row_reg <= next_row_reg_tmp;
         release_row_reg <= release_row_reg_tmp;
         used_rows_reg <= used_rows_reg_tmp;
+        allocated_rows_reg <= allocated_rows_reg_tmp;
+        released_rows_reg <= released_rows_reg_tmp;
         packet_start_reg <= packet_start_reg_tmp;
         packet_length_reg <= packet_length_reg_tmp;
         in_frame_reg <= in_frame_reg_tmp;
+        scan_in_frame_reg <= scan_in_frame_reg_tmp;
+        scan_valid_reg <= scan_valid_reg_tmp;
+        scan_event_reg <= scan_event_reg_tmp;
+        write_data0_reg <= write_data0_reg_tmp;
+        write_data1_reg <= write_data1_reg_tmp;
+        write_row0_reg <= write_row0_reg_tmp;
+        write_row1_reg <= write_row1_reg_tmp;
+        write_valid0_reg <= write_valid0_reg_tmp;
+        write_valid1_reg <= write_valid1_reg_tmp;
         deferred_release_valid_reg <= deferred_release_valid_reg_tmp;
         deferred_release_handle_reg <= deferred_release_handle_reg_tmp;
         deferred_release_length_reg <= deferred_release_length_reg_tmp;
@@ -826,6 +986,8 @@ module RxRAM #(
         read_response_valid_reg <= read_response_valid_reg_tmp;
         read_response_data_reg <= read_response_data_reg_tmp;
         read_rr_reg <= read_rr_reg_tmp;
+        release_error_reg <= release_error_reg_tmp;
+        ingress_error_reg <= ingress_error_reg_tmp;
         protocol_error_reg <= protocol_error_reg_tmp;
         storage_full_reg <= storage_full_reg_tmp;
     end

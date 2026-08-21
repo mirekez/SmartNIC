@@ -1,4 +1,4 @@
-# KlusterLab r2.0, XC7K160T-3FFG676E.  Pin/net correlation was checked
+# KlusterLab r2.0, XC7K325T-3FFG676E.  Pin/net correlation was checked
 # against the imported KiCad PCB and the MGT/System Clocks schematics.
 
 set_property PACKAGE_PIN AC9 [get_ports sys_clk_200_p]
@@ -23,14 +23,29 @@ set_property PACKAGE_PIN M1 [get_ports {sfp_tx_n[1]}]
 set_property PACKAGE_PIN N4 [get_ports {sfp_rx_p[1]}]
 set_property PACKAGE_PIN N3 [get_ports {sfp_rx_n[1]}]
 
-# Direct FPGA-side SFP management nets are in 1.8 V bank 14.
+# Direct FPGA-side SFP management nets are in 3.3 V bank 13.
 set_property PACKAGE_PIN T19 [get_ports {sfp_los[0]}]
 set_property PACKAGE_PIN M19 [get_ports {sfp_los[1]}]
 set_property PACKAGE_PIN R18 [get_ports {sfp_tx_en[0]}]
 set_property PACKAGE_PIN N18 [get_ports {sfp_tx_en[1]}]
-set_property IOSTANDARD LVCMOS18 [get_ports {sfp_los[*] sfp_tx_en[*]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {sfp_los[*] sfp_tx_en[*]}]
 set_property PULLUP true [get_ports {sfp_los[*]}]
 
+# The retained system ILA is clocked by net_clk.  These registers are the
+# first stage of explicit two-flop synchronizers for diagnostic-only status
+# and clock-activity signals originating in startup/GTX domains.  Timing an
+# asynchronous source to the metastability-catching D pin is meaningless and
+# made the router trade setup against hold on exactly these pins.  Keep this
+# exception deliberately narrow: the second synchronizer stages and all
+# functional datapaths remain timed normally.
+set debug_cdc_first_stage_cells [get_cells -quiet -hier -filter \
+    {NAME =~ *dclk_toggle_meta_reg || \
+     NAME =~ *txusr_toggle_meta_reg || \
+     NAME =~ *ila_system_state_meta_reg*}]
+set debug_cdc_first_stage_pins [get_pins -quiet -of_objects \
+    $debug_cdc_first_stage_cells -filter {REF_PIN_NAME == D}]
+set_false_path -to $debug_cdc_first_stage_pins
+
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
-set_property CONFIG_VOLTAGE 3.3 [current_design]
-set_property CFGBVS VCCO [current_design]
+set_property CONFIG_VOLTAGE 1.8 [current_design]
+set_property CFGBVS GND [current_design]

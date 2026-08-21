@@ -1,6 +1,8 @@
 `default_nettype none
 
 import Predef_pkg::*;
+import L2HitLookupComb_pkg::*;
+import L2EvictCandidateComb_pkg::*;
 import CacheRequest_pkg::*;
 import Axi4WriteResponse4_pkg::*;
 import Axi4ReadData4_256_pkg::*;
@@ -111,6 +113,10 @@ module L2CacheState #(
 
 
     // regs and combs
+    reg[DATA_BANKS-1:0][32-1:0] lookup_data_reg;
+    reg[WAYS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] lookup_tag_reg;
+    L2HitLookupComb lookup_hit_reg;
+    L2EvictCandidateComb lookup_evict_reg;
     reg[5-1:0] state_reg;
     CacheRequest req_reg;
     reg[3-1:0] cpu_rr_reg;
@@ -120,6 +126,7 @@ module L2CacheState #(
     CacheResponse[16-1:0] response_reg;
     reg[PORT_BITWIDTH-1:0] cross_low_reg;
     reg[PORT_BITWIDTH-1:0] cross_high_reg;
+    reg[PORT_BITWIDTH-1:0] refill_data_reg;
     reg[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] fill_beat_reg;
     reg[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] evict_beat_reg;
     reg[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] evict_tag_reg;
@@ -127,6 +134,8 @@ module L2CacheState #(
     L2AxiAddressState[8-1:0] slave_aw_reg;
     L2AxiAddressState[8-1:0] slave_aw_seen_reg;
     L2AxiAddressState[8-1:0] slave_ar_seen_reg;
+    reg[8-1:0] slave_aw_novelty_reg;
+    reg[8-1:0] slave_ar_novelty_reg;
 
     // members
     genvar __i;
@@ -176,6 +185,10 @@ module L2CacheState #(
     endgenerate
 
     // tmp variables
+    logic[DATA_BANKS-1:0][32-1:0] lookup_data_reg_tmp;
+    logic[WAYS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] lookup_tag_reg_tmp;
+    L2HitLookupComb lookup_hit_reg_tmp;
+    L2EvictCandidateComb lookup_evict_reg_tmp;
     logic[5-1:0] state_reg_tmp;
     CacheRequest req_reg_tmp;
     logic[3-1:0] cpu_rr_reg_tmp;
@@ -185,6 +198,7 @@ module L2CacheState #(
     CacheResponse[16-1:0] response_reg_tmp;
     logic[PORT_BITWIDTH-1:0] cross_low_reg_tmp;
     logic[PORT_BITWIDTH-1:0] cross_high_reg_tmp;
+    logic[PORT_BITWIDTH-1:0] refill_data_reg_tmp;
     logic[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] fill_beat_reg_tmp;
     logic[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] evict_beat_reg_tmp;
     logic[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] evict_tag_reg_tmp;
@@ -192,6 +206,8 @@ module L2CacheState #(
     L2AxiAddressState[8-1:0] slave_aw_reg_tmp;
     L2AxiAddressState[8-1:0] slave_aw_seen_reg_tmp;
     L2AxiAddressState[8-1:0] slave_ar_seen_reg_tmp;
+    logic[8-1:0] slave_aw_novelty_reg_tmp;
+    logic[8-1:0] slave_ar_novelty_reg_tmp;
 
 
     task _work_clk (input logic reset);

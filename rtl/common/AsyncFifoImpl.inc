@@ -26,12 +26,16 @@ private:
 
     reg<u<PTR_BITS>> write_bin_reg;
     reg<u<PTR_BITS>> write_gray_reg;
+    // (* ASYNC_REG = "TRUE" *)
     reg<u<PTR_BITS>> read_gray_write1_reg;
+    // (* ASYNC_REG = "TRUE" *)
     reg<u<PTR_BITS>> read_gray_write2_reg;
 
     reg<u<PTR_BITS>> read_bin_reg;
     reg<u<PTR_BITS>> read_gray_reg;
+    // (* ASYNC_REG = "TRUE" *)
     reg<u<PTR_BITS>> write_gray_read1_reg;
+    // (* ASYNC_REG = "TRUE" *)
     reg<u<PTR_BITS>> write_gray_read2_reg;
 
     bool write_ready_comb;

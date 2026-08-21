@@ -145,6 +145,21 @@ module TribeTest #(
 
     // regs and combs
     L1PeerStoreState peer_store_reg[CPU_CORES];
+    reg dma_invalidate_request_l2_reg;
+    reg[32-1:0] dma_invalidate_addr_l2_reg;
+    (* ASYNC_REG = "TRUE" *)
+    logic dma_invalidate_ack_l21_reg;
+    (* ASYNC_REG = "TRUE" *)
+    logic dma_invalidate_ack_l22_reg;
+    (* ASYNC_REG = "TRUE" *)
+    logic dma_invalidate_request_cpu1_reg;
+    (* ASYNC_REG = "TRUE" *)
+    logic dma_invalidate_request_cpu2_reg;
+    reg dma_invalidate_seen_cpu_reg;
+    reg dma_invalidate_pulse_cpu_reg;
+    reg[32-1:0] dma_invalidate_addr_cpu_reg;
+    logic dma_invalidate_ready_l2_comb;
+;
     L1PeerInvalidateComb peer_invalidate_comb[CPU_CORES];
 
     // members
@@ -667,7 +682,20 @@ module TribeTest #(
 
     // tmp variables
     L1PeerStoreState peer_store_reg_tmp[CPU_CORES];
+    logic dma_invalidate_request_l2_reg_tmp;
+    logic[32-1:0] dma_invalidate_addr_l2_reg_tmp;
+    logic dma_invalidate_ack_l21_reg_tmp;
+    logic dma_invalidate_ack_l22_reg_tmp;
+    logic dma_invalidate_request_cpu1_reg_tmp;
+    logic dma_invalidate_request_cpu2_reg_tmp;
+    logic dma_invalidate_seen_cpu_reg_tmp;
+    logic dma_invalidate_pulse_cpu_reg_tmp;
+    logic[32-1:0] dma_invalidate_addr_cpu_reg_tmp;
 
+
+    always_comb begin : dma_invalidate_ready_l2_comb_func  // dma_invalidate_ready_l2_comb_func
+        dma_invalidate_ready_l2_comb=dma_invalidate_request_l2_reg == dma_invalidate_ack_l22_reg;
+    end
 
     always_comb begin : peer_invalidate_comb_func  // peer_invalidate_comb_func
         logic[31:0] target;
@@ -788,11 +816,11 @@ module TribeTest #(
         assign l2cache__mem_region_uncached_in['h2] = 0;
         assign l2cache__mem_region_uncached_in['h3] = 1;
         assign l2cache__debugen_in=debugen_in;
-        assign l2cache__dma_line_valid_in = dma_line_valid_in;
+        assign l2cache__dma_line_valid_in = dma_line_valid_in && dma_invalidate_ready_l2_comb;
         assign l2cache__dma_line_addr_in = dma_line_addr_in;
         assign l2cache__dma_line_data_in = dma_line_data_in;
         assign l2cache__dma_line_keep_in = dma_line_keep_in;
-        assign dma_line_ready_out = l2cache__dma_line_ready_out;
+        assign dma_line_ready_out = l2cache__dma_line_ready_out && dma_invalidate_ready_l2_comb;
         for (gi='h0;gi < CPU_CORES;gi=gi+1) begin
             assign cores__debugen_in[gi]=debugen_in;
             assign cores__reset_pc_in[gi] = reset_pc_in;
@@ -800,8 +828,8 @@ module TribeTest #(
             assign cores__boot_dtb_addr_in[gi] = boot_dtb_addr_in;
             assign cores__boot_priv_in[gi] = boot_priv_in;
             assign cores__external_cache_invalidate_in[gi] = external_cache_invalidate_in || peer_invalidate_comb[gi].full;
-            assign cores__peer_cache_invalidate_in[gi] = peer_invalidate_comb[gi].valid || ((dma_line_valid_in && dma_line_ready_out));
-            assign cores__peer_cache_invalidate_addr_in[gi] = ((dma_line_valid_in && dma_line_ready_out)) ? (unsigned'(32'(dma_line_addr_in))) : (unsigned'(32'(peer_invalidate_comb[gi].addr)));
+            assign cores__peer_cache_invalidate_in[gi] = peer_invalidate_comb[gi].valid || dma_invalidate_pulse_cpu_reg;
+            assign cores__peer_cache_invalidate_addr_in[gi] = (dma_invalidate_pulse_cpu_reg) ? (unsigned'(32'(dma_invalidate_addr_cpu_reg))) : (unsigned'(32'(peer_invalidate_comb[gi].addr)));
             assign cores__memory_base_in[gi] = memory_base_in;
             assign cores__memory_size_in[gi] = memory_size_in;
             for (gregion='h0;gregion < 'h4;gregion=gregion+1) begin
@@ -848,6 +876,14 @@ module TribeTest #(
     task work_clk_func (input logic reset);
     begin: work_clk_func
         logic[31:0] i;
+        dma_invalidate_request_cpu1_reg_tmp = dma_invalidate_request_l2_reg;
+        dma_invalidate_request_cpu2_reg_tmp = dma_invalidate_request_cpu1_reg;
+        dma_invalidate_pulse_cpu_reg_tmp = unsigned'(1'(0));
+        if (dma_invalidate_request_cpu2_reg != dma_invalidate_seen_cpu_reg) begin
+            dma_invalidate_addr_cpu_reg_tmp = dma_invalidate_addr_l2_reg;
+            dma_invalidate_seen_cpu_reg_tmp = dma_invalidate_request_cpu2_reg;
+            dma_invalidate_pulse_cpu_reg_tmp = unsigned'(1'(1));
+        end
         for (i='h0;i < CPU_CORES;i=i+1) begin
             peer_store_reg_tmp[i].valid = unsigned'(1'(0));
             if (cores__dmem_write_out[i] && !d_mem_cdc__fast_in__wait_out[i]) begin
@@ -856,6 +892,11 @@ module TribeTest #(
             end
         end
         if (reset) begin
+            dma_invalidate_request_cpu1_reg_tmp = '0;
+            dma_invalidate_request_cpu2_reg_tmp = '0;
+            dma_invalidate_seen_cpu_reg_tmp = '0;
+            dma_invalidate_pulse_cpu_reg_tmp = '0;
+            dma_invalidate_addr_cpu_reg_tmp = '0;
             for (i='h0;i < CPU_CORES;i=i+1) begin
                 peer_store_reg_tmp[i].valid = unsigned'(1'(0));
                 peer_store_reg_tmp[i].addr = unsigned'(32'h0);
@@ -878,21 +919,51 @@ module TribeTest #(
 
     task _work_l2_clock (input logic reset);
     begin: _work_l2_clock
+        dma_invalidate_ack_l21_reg_tmp = dma_invalidate_seen_cpu_reg;
+        dma_invalidate_ack_l22_reg_tmp = dma_invalidate_ack_l21_reg;
+        if (dma_line_valid_in && dma_line_ready_out) begin
+            dma_invalidate_addr_l2_reg_tmp = unsigned'(32'(unsigned'(32'(dma_line_addr_in))));
+            dma_invalidate_request_l2_reg_tmp = unsigned'(1'(!dma_invalidate_request_l2_reg));
+        end
+        if (reset) begin
+            dma_invalidate_request_l2_reg_tmp = '0;
+            dma_invalidate_addr_l2_reg_tmp = '0;
+            dma_invalidate_ack_l21_reg_tmp = '0;
+            dma_invalidate_ack_l22_reg_tmp = '0;
+        end
     end
     endtask
 
     always_ff @(posedge clk) begin
         peer_store_reg_tmp = peer_store_reg;
+        dma_invalidate_request_cpu1_reg_tmp = dma_invalidate_request_cpu1_reg;
+        dma_invalidate_request_cpu2_reg_tmp = dma_invalidate_request_cpu2_reg;
+        dma_invalidate_seen_cpu_reg_tmp = dma_invalidate_seen_cpu_reg;
+        dma_invalidate_pulse_cpu_reg_tmp = dma_invalidate_pulse_cpu_reg;
+        dma_invalidate_addr_cpu_reg_tmp = dma_invalidate_addr_cpu_reg;
 
         _work_clk(reset);
 
         peer_store_reg <= peer_store_reg_tmp;
+        dma_invalidate_request_cpu1_reg <= dma_invalidate_request_cpu1_reg_tmp;
+        dma_invalidate_request_cpu2_reg <= dma_invalidate_request_cpu2_reg_tmp;
+        dma_invalidate_seen_cpu_reg <= dma_invalidate_seen_cpu_reg_tmp;
+        dma_invalidate_pulse_cpu_reg <= dma_invalidate_pulse_cpu_reg_tmp;
+        dma_invalidate_addr_cpu_reg <= dma_invalidate_addr_cpu_reg_tmp;
     end
 
     always_ff @(posedge l2_clock) begin
+        dma_invalidate_request_l2_reg_tmp = dma_invalidate_request_l2_reg;
+        dma_invalidate_addr_l2_reg_tmp = dma_invalidate_addr_l2_reg;
+        dma_invalidate_ack_l21_reg_tmp = dma_invalidate_ack_l21_reg;
+        dma_invalidate_ack_l22_reg_tmp = dma_invalidate_ack_l22_reg;
 
         _work_l2_clock(reset);
 
+        dma_invalidate_request_l2_reg <= dma_invalidate_request_l2_reg_tmp;
+        dma_invalidate_addr_l2_reg <= dma_invalidate_addr_l2_reg_tmp;
+        dma_invalidate_ack_l21_reg <= dma_invalidate_ack_l21_reg_tmp;
+        dma_invalidate_ack_l22_reg <= dma_invalidate_ack_l22_reg_tmp;
     end
 
     assign dmem_write_out = cores__dmem_write_out['h0];

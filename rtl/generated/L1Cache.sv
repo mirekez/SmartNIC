@@ -355,8 +355,10 @@ module L1Cache #(
         L1CacheRefill___refill_lines_comb.odd = L1CacheState___refill_reg.odd_line;
         for (i='h0;i < PORT_WORDS;i=i+1) begin
             word=(unsigned'(32'(L1CacheState___refill_reg.beat))*PORT_WORDS) + i;
-            L1CacheRefill___refill_lines_comb.even[word*'h10 +:16] = unsigned'(32'(mem_out__read_data_in[i*'h20 +:16]));
-            L1CacheRefill___refill_lines_comb.odd[word*'h10 +:16] = unsigned'(32'(mem_out__read_data_in[(i*'h20) + 'h10 +:16]));
+            if (word < LINE_WORDS) begin
+                L1CacheRefill___refill_lines_comb.even[word*'h10 +:16] = unsigned'(32'(mem_out__read_data_in[i*'h20 +:16]));
+                L1CacheRefill___refill_lines_comb.odd[word*'h10 +:16] = unsigned'(32'(mem_out__read_data_in[(i*'h20) + 'h10 +:16]));
+            end
         end
     end
 
@@ -485,6 +487,8 @@ module L1Cache #(
                             end
                             else begin
                                 if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) begin
+                                    L1CacheState___refill_reg_tmp.beat = unsigned'(8'h0);
+                                    L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
                                     if (lookup.hit) begin
                                         if (stall_in) begin
                                             L1CacheState___response_reg_tmp.addr = L1CacheState___req_reg.addr;
@@ -509,10 +513,6 @@ module L1Cache #(
                                         end
                                     end
                                     else begin
-                                        L1CacheState___refill_reg_tmp.beat = unsigned'(8'h0);
-                                        L1CacheState___refill_reg_tmp.even_line = 'h0;
-                                        L1CacheState___refill_reg_tmp.odd_line = 'h0;
-                                        L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
                                         L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_REFILL;
                                     end
                                 end

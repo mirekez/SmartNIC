@@ -1,6 +1,6 @@
 package PacketDMA_Register_pkg;
 
-typedef enum {
+typedef enum logic[32-1:0] {
     REG_RX_HANDLE = 'h0,
     REG_LENGTH = 'h4,
     REG_DESTINATION = 'h8,
