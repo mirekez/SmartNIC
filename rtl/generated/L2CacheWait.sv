@@ -163,6 +163,10 @@ module L2CacheWait #(
 ;
     L2RequestGeometryComb L2CacheRequest___request_geometry_comb;
 ;
+    reg[DATA_BANKS-1:0][32-1:0] L2CacheState___lookup_data_reg;
+    reg[WAYS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] L2CacheState___lookup_tag_reg;
+    L2HitLookupComb L2CacheState___lookup_hit_reg;
+    L2EvictCandidateComb L2CacheState___lookup_evict_reg;
     reg[5-1:0] L2CacheState___state_reg;
     CacheRequest L2CacheState___req_reg;
     reg[3-1:0] L2CacheState___cpu_rr_reg;
@@ -172,6 +176,7 @@ module L2CacheWait #(
     CacheResponse[16-1:0] L2CacheState___response_reg;
     reg[PORT_BITWIDTH-1:0] L2CacheState___cross_low_reg;
     reg[PORT_BITWIDTH-1:0] L2CacheState___cross_high_reg;
+    reg[PORT_BITWIDTH-1:0] L2CacheState___refill_data_reg;
     reg[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___fill_beat_reg;
     reg[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___evict_beat_reg;
     reg[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] L2CacheState___evict_tag_reg;
@@ -179,6 +184,8 @@ module L2CacheWait #(
     L2AxiAddressState[8-1:0] L2CacheState___slave_aw_reg;
     L2AxiAddressState[8-1:0] L2CacheState___slave_aw_seen_reg;
     L2AxiAddressState[8-1:0] L2CacheState___slave_ar_seen_reg;
+    reg[8-1:0] L2CacheState___slave_aw_novelty_reg;
+    reg[8-1:0] L2CacheState___slave_ar_novelty_reg;
 
     // members
     genvar __i;
@@ -228,6 +235,10 @@ module L2CacheWait #(
     endgenerate
 
     // tmp variables
+    logic[DATA_BANKS-1:0][32-1:0] L2CacheState___lookup_data_reg_tmp;
+    logic[WAYS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] L2CacheState___lookup_tag_reg_tmp;
+    L2HitLookupComb L2CacheState___lookup_hit_reg_tmp;
+    L2EvictCandidateComb L2CacheState___lookup_evict_reg_tmp;
     logic[5-1:0] L2CacheState___state_reg_tmp;
     CacheRequest L2CacheState___req_reg_tmp;
     logic[3-1:0] L2CacheState___cpu_rr_reg_tmp;
@@ -237,6 +248,7 @@ module L2CacheWait #(
     CacheResponse[16-1:0] L2CacheState___response_reg_tmp;
     logic[PORT_BITWIDTH-1:0] L2CacheState___cross_low_reg_tmp;
     logic[PORT_BITWIDTH-1:0] L2CacheState___cross_high_reg_tmp;
+    logic[PORT_BITWIDTH-1:0] L2CacheState___refill_data_reg_tmp;
     logic[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___fill_beat_reg_tmp;
     logic[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___evict_beat_reg_tmp;
     logic[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] L2CacheState___evict_tag_reg_tmp;
@@ -244,6 +256,8 @@ module L2CacheWait #(
     L2AxiAddressState[8-1:0] L2CacheState___slave_aw_reg_tmp;
     L2AxiAddressState[8-1:0] L2CacheState___slave_aw_seen_reg_tmp;
     L2AxiAddressState[8-1:0] L2CacheState___slave_ar_seen_reg_tmp;
+    logic[8-1:0] L2CacheState___slave_aw_novelty_reg_tmp;
+    logic[8-1:0] L2CacheState___slave_ar_novelty_reg_tmp;
 
 
     always_comb begin : cpu_wait_comb_func  // cpu_wait_comb_func
@@ -316,7 +330,7 @@ module L2CacheWait #(
         _byte=unsigned'(32'(L2CacheState___req_reg.addr)) & 'h3;
         word_data='h0;
         for (i='h0;i < WAYS;i=i+1) begin
-            if (L2CacheState___tag_ram__data_out[i][(TAG_BITS + 'h1)] && (L2CacheState___tag_ram__data_out[i]['h0 +:(TAG_BITS - 'h1) - 'h0 + 1] == L2CacheRequest___request_geometry_comb.tag)) begin
+            if (L2CacheState___lookup_tag_reg[i][(TAG_BITS + 'h1)] && (L2CacheState___lookup_tag_reg[i]['h0 +:(TAG_BITS - 'h1) - 'h0 + 1] == L2CacheRequest___request_geometry_comb.tag)) begin
                 L2CacheTagData___hit_lookup_comb.hit = unsigned'(1'(1));
                 L2CacheTagData___hit_lookup_comb.way = unsigned'(32'(i));
             end
@@ -325,7 +339,7 @@ module L2CacheWait #(
             way=i/LINE_WORDS;
             word_index=i % LINE_WORDS;
             if (L2CacheTagData___hit_lookup_comb.hit && (unsigned'(32'(L2CacheTagData___hit_lookup_comb.way)) == way)) begin
-                word_data=unsigned'(32'(L2CacheState___data_ram__data_out[i]));
+                word_data=unsigned'(32'(L2CacheState___lookup_data_reg[i]));
                 if (L2CacheRequest___request_geometry_comb.word == word_index) begin
                     L2CacheTagData___hit_lookup_comb.aligned_word = unsigned'(32'(word_data));
                     L2CacheTagData___hit_lookup_comb.read_word |= word_data >>> ((_byte*'h8));
@@ -338,7 +352,7 @@ module L2CacheWait #(
                 end
                 if (word_index>=(unsigned'(32'(L2CacheRequest___request_geometry_comb.beat))*PORT_WORDS) && (word_index < (((unsigned'(32'(L2CacheRequest___request_geometry_comb.beat)) + 'h1))*PORT_WORDS))) begin
                     beat_word=word_index - (unsigned'(32'(L2CacheRequest___request_geometry_comb.beat))*PORT_WORDS);
-                    L2CacheTagData___hit_lookup_comb.beat[beat_word*'h20 +:32] = L2CacheState___data_ram__data_out[i];
+                    L2CacheTagData___hit_lookup_comb.beat[beat_word*'h20 +:32] = L2CacheState___lookup_data_reg[i];
                 end
             end
         end
@@ -368,81 +382,6 @@ module L2CacheWait #(
         L2CacheTagData___hit_write_pair_comb.next_word = unsigned'(32'(((unsigned'(32'(L2CacheTagData___hit_lookup_comb.aligned_next_word)) & ~next_word_mask)) | ((next_word_data & next_word_mask))));
     end
 
-    always_comb begin : L2CacheMemory___axi_route_comb_func  // L2CacheMemory___axi_route_comb_func
-        logic[31:0] i;
-        logic[63:0] base;
-        logic[31:0] ar_total_local;
-        logic[31:0] ar_region_base;
-        logic[31:0] aw_total_local;
-        logic[31:0] aw_region_base;
-        L2CacheMemory___axi_route_comb.ar_full_addr = unsigned'(32'(((unsigned'(32'(L2CacheState___req_reg.addr)) & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1)))))) + ((unsigned'(32'(L2CacheState___fill_beat_reg))*PORT_BYTES))));
-        if ((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_AR) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_R)) begin
-            L2CacheMemory___axi_route_comb.ar_full_addr = L2CacheState___req_reg.addr;
-        end
-        if ((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_AR0) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_R0)) begin
-            L2CacheMemory___axi_route_comb.ar_full_addr = unsigned'(32'(((unsigned'(32'(L2CacheState___req_reg.addr)) & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1)))))) + ((unsigned'(32'(L2CacheRequest___request_geometry_comb.beat))*PORT_BYTES))));
-        end
-        if ((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_AR1) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_R1)) begin
-            L2CacheMemory___axi_route_comb.ar_full_addr = unsigned'(32'(((unsigned'(32'(L2CacheState___req_reg.addr)) & ~unsigned'(32'(((PORT_BYTES - 'h1)))))) + PORT_BYTES));
-        end
-        ar_total_local=unsigned'(32'(L2CacheMemory___axi_route_comb.ar_full_addr)) - memory_base_in;
-        base='h0;
-        ar_region_base='h0;
-        L2CacheMemory___axi_route_comb.ar_sel = unsigned'(8'(MEM_PORTS - 'h1));
-        for (i='h0;i < MEM_PORTS;i=i+1) begin
-            if (ar_total_local>=base && (unsigned'(64'(ar_total_local)) < (base + mem_region_size_in[i]))) begin
-                L2CacheMemory___axi_route_comb.ar_sel = unsigned'(8'(i));
-                ar_region_base=unsigned'(32'(base));
-            end
-            base+=mem_region_size_in[i];
-        end
-        L2CacheMemory___axi_route_comb.ar_local_addr = unsigned'(32'(unsigned'(32'(((unsigned'(64'(((ar_total_local - ar_region_base))))) & MEM_ADDR_MASK64)))));
-        L2CacheMemory___axi_route_comb.aw_full_addr = unsigned'(32'(((((unsigned'(32'(L2CacheState___evict_tag_reg)) <<< ((SET_BITS + LINE_BITS)))) | ((unsigned'(32'(L2CacheRequest___request_geometry_comb.set)) <<< LINE_BITS)))) + ((unsigned'(32'(L2CacheState___evict_beat_reg))*PORT_BYTES))));
-        if (((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_AW) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_W)) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_B)) begin
-            L2CacheMemory___axi_route_comb.aw_full_addr = L2CacheState___req_reg.addr;
-        end
-        aw_total_local=unsigned'(32'(L2CacheMemory___axi_route_comb.aw_full_addr)) - memory_base_in;
-        base='h0;
-        aw_region_base='h0;
-        L2CacheMemory___axi_route_comb.aw_sel = unsigned'(8'(MEM_PORTS - 'h1));
-        for (i='h0;i < MEM_PORTS;i=i+1) begin
-            if (aw_total_local>=base && (unsigned'(64'(aw_total_local)) < (base + mem_region_size_in[i]))) begin
-                L2CacheMemory___axi_route_comb.aw_sel = unsigned'(8'(i));
-                aw_region_base=unsigned'(32'(base));
-            end
-            base+=mem_region_size_in[i];
-        end
-        L2CacheMemory___axi_route_comb.aw_local_addr = unsigned'(32'(unsigned'(32'(((unsigned'(64'(((aw_total_local - aw_region_base))))) & MEM_ADDR_MASK64)))));
-    end
-
-    always_comb begin : L2CacheMemory___axi_out_selected_resp_comb_func  // L2CacheMemory___axi_out_selected_resp_comb_func
-        logic[31:0] i;
-        L2CacheMemory___axi_out_selected_resp_comb.aw.ready=0;
-        L2CacheMemory___axi_out_selected_resp_comb.w.ready=0;
-        L2CacheMemory___axi_out_selected_resp_comb.b.valid=0;
-        L2CacheMemory___axi_out_selected_resp_comb.b.id = 'h0;
-        L2CacheMemory___axi_out_selected_resp_comb.ar.ready=0;
-        L2CacheMemory___axi_out_selected_resp_comb.r.valid=0;
-        L2CacheMemory___axi_out_selected_resp_comb.r.data = 'h0;
-        L2CacheMemory___axi_out_selected_resp_comb.r.last=0;
-        L2CacheMemory___axi_out_selected_resp_comb.r.id = 'h0;
-        for (i='h0;i < MEM_PORTS;i=i+1) begin
-            if (unsigned'(32'(L2CacheMemory___axi_route_comb.aw_sel)) == i) begin
-                L2CacheMemory___axi_out_selected_resp_comb.aw.ready=axi_out__awready_in[i];
-                L2CacheMemory___axi_out_selected_resp_comb.w.ready=axi_out__wready_in[i];
-                L2CacheMemory___axi_out_selected_resp_comb.b.valid=axi_out__bvalid_in[i];
-                L2CacheMemory___axi_out_selected_resp_comb.b.id = axi_out__bid_in[i];
-            end
-            if (unsigned'(32'(L2CacheMemory___axi_route_comb.ar_sel)) == i) begin
-                L2CacheMemory___axi_out_selected_resp_comb.ar.ready=axi_out__arready_in[i];
-                L2CacheMemory___axi_out_selected_resp_comb.r.valid=axi_out__rvalid_in[i];
-                L2CacheMemory___axi_out_selected_resp_comb.r.data = axi_out__rdata_in[i];
-                L2CacheMemory___axi_out_selected_resp_comb.r.last=axi_out__rlast_in[i];
-                L2CacheMemory___axi_out_selected_resp_comb.r.id = axi_out__rid_in[i];
-            end
-        end
-    end
-
     always_comb begin : L2CacheTagData___fill_write_pair_comb_func  // L2CacheTagData___fill_write_pair_comb_func
         logic[31:0] i;
         logic[31:0] _byte;
@@ -457,10 +396,10 @@ module L2CacheWait #(
         _byte=unsigned'(32'(L2CacheState___req_reg.addr)) & 'h3;
         word=unsigned'(32'(L2CacheRequest___request_geometry_comb.word)) % PORT_WORDS;
         next_word=((unsigned'(32'(L2CacheRequest___request_geometry_comb.word)) + 'h1)) % PORT_WORDS;
-        old_word=unsigned'(32'((L2CacheMemory___axi_out_selected_resp_comb.r.data >> (word*'h20))));
+        old_word=unsigned'(32'((L2CacheState___refill_data_reg >> (word*'h20))));
         old_next_word='h0;
         if ((unsigned'(32'(L2CacheRequest___request_geometry_comb.word)) + 'h1) < LINE_WORDS) begin
-            old_next_word=unsigned'(32'((L2CacheMemory___axi_out_selected_resp_comb.r.data >> (next_word*'h20))));
+            old_next_word=unsigned'(32'((L2CacheState___refill_data_reg >> (next_word*'h20))));
         end
         word_mask='h0;
         next_word_mask='h0;
@@ -532,6 +471,53 @@ module L2CacheWait #(
         end
     end
 
+    always_comb begin : L2CacheMemory___axi_route_comb_func  // L2CacheMemory___axi_route_comb_func
+        logic[31:0] i;
+        logic[63:0] base;
+        logic[31:0] ar_total_local;
+        logic[31:0] ar_region_base;
+        logic[31:0] aw_total_local;
+        logic[31:0] aw_region_base;
+        L2CacheMemory___axi_route_comb.ar_full_addr = unsigned'(32'(((unsigned'(32'(L2CacheState___req_reg.addr)) & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1)))))) + ((unsigned'(32'(L2CacheState___fill_beat_reg))*PORT_BYTES))));
+        if ((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_AR) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_R)) begin
+            L2CacheMemory___axi_route_comb.ar_full_addr = L2CacheState___req_reg.addr;
+        end
+        if ((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_AR0) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_R0)) begin
+            L2CacheMemory___axi_route_comb.ar_full_addr = unsigned'(32'(((unsigned'(32'(L2CacheState___req_reg.addr)) & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1)))))) + ((unsigned'(32'(L2CacheRequest___request_geometry_comb.beat))*PORT_BYTES))));
+        end
+        if ((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_AR1) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_R1)) begin
+            L2CacheMemory___axi_route_comb.ar_full_addr = unsigned'(32'(((unsigned'(32'(L2CacheState___req_reg.addr)) & ~unsigned'(32'(((PORT_BYTES - 'h1)))))) + PORT_BYTES));
+        end
+        ar_total_local=unsigned'(32'(L2CacheMemory___axi_route_comb.ar_full_addr)) - memory_base_in;
+        base='h0;
+        ar_region_base='h0;
+        L2CacheMemory___axi_route_comb.ar_sel = unsigned'(8'(MEM_PORTS - 'h1));
+        for (i='h0;i < MEM_PORTS;i=i+1) begin
+            if (ar_total_local>=base && (unsigned'(64'(ar_total_local)) < (base + mem_region_size_in[i]))) begin
+                L2CacheMemory___axi_route_comb.ar_sel = unsigned'(8'(i));
+                ar_region_base=unsigned'(32'(base));
+            end
+            base+=mem_region_size_in[i];
+        end
+        L2CacheMemory___axi_route_comb.ar_local_addr = unsigned'(32'(unsigned'(32'(((unsigned'(64'(((ar_total_local - ar_region_base))))) & MEM_ADDR_MASK64)))));
+        L2CacheMemory___axi_route_comb.aw_full_addr = unsigned'(32'(((((unsigned'(32'(L2CacheState___evict_tag_reg)) <<< ((SET_BITS + LINE_BITS)))) | ((unsigned'(32'(L2CacheRequest___request_geometry_comb.set)) <<< LINE_BITS)))) + ((unsigned'(32'(L2CacheState___evict_beat_reg))*PORT_BYTES))));
+        if (((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_AW) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_W)) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_B)) begin
+            L2CacheMemory___axi_route_comb.aw_full_addr = L2CacheState___req_reg.addr;
+        end
+        aw_total_local=unsigned'(32'(L2CacheMemory___axi_route_comb.aw_full_addr)) - memory_base_in;
+        base='h0;
+        aw_region_base='h0;
+        L2CacheMemory___axi_route_comb.aw_sel = unsigned'(8'(MEM_PORTS - 'h1));
+        for (i='h0;i < MEM_PORTS;i=i+1) begin
+            if (aw_total_local>=base && (unsigned'(64'(aw_total_local)) < (base + mem_region_size_in[i]))) begin
+                L2CacheMemory___axi_route_comb.aw_sel = unsigned'(8'(i));
+                aw_region_base=unsigned'(32'(base));
+            end
+            base+=mem_region_size_in[i];
+        end
+        L2CacheMemory___axi_route_comb.aw_local_addr = unsigned'(32'(unsigned'(32'(((unsigned'(64'(((aw_total_local - aw_region_base))))) & MEM_ADDR_MASK64)))));
+    end
+
     always_comb begin : L2CacheMemory___evict_line_comb_func  // L2CacheMemory___evict_line_comb_func
         logic[31:0] word;
         logic[63:0] beat_word;
@@ -561,6 +547,34 @@ module L2CacheWait #(
         L2CacheMemory___axi_out_driver_comb.r.ready=(((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_AXI_R) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_R0)) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_CROSS_R1)) || (L2CacheState___state_reg == L2CacheFsmState_pkg::ST_IO_R);
     end
 
+    always_comb begin : L2CacheMemory___axi_out_selected_resp_comb_func  // L2CacheMemory___axi_out_selected_resp_comb_func
+        logic[31:0] i;
+        L2CacheMemory___axi_out_selected_resp_comb.aw.ready=0;
+        L2CacheMemory___axi_out_selected_resp_comb.w.ready=0;
+        L2CacheMemory___axi_out_selected_resp_comb.b.valid=0;
+        L2CacheMemory___axi_out_selected_resp_comb.b.id = 'h0;
+        L2CacheMemory___axi_out_selected_resp_comb.ar.ready=0;
+        L2CacheMemory___axi_out_selected_resp_comb.r.valid=0;
+        L2CacheMemory___axi_out_selected_resp_comb.r.data = 'h0;
+        L2CacheMemory___axi_out_selected_resp_comb.r.last=0;
+        L2CacheMemory___axi_out_selected_resp_comb.r.id = 'h0;
+        for (i='h0;i < MEM_PORTS;i=i+1) begin
+            if (unsigned'(32'(L2CacheMemory___axi_route_comb.aw_sel)) == i) begin
+                L2CacheMemory___axi_out_selected_resp_comb.aw.ready=axi_out__awready_in[i];
+                L2CacheMemory___axi_out_selected_resp_comb.w.ready=axi_out__wready_in[i];
+                L2CacheMemory___axi_out_selected_resp_comb.b.valid=axi_out__bvalid_in[i];
+                L2CacheMemory___axi_out_selected_resp_comb.b.id = axi_out__bid_in[i];
+            end
+            if (unsigned'(32'(L2CacheMemory___axi_route_comb.ar_sel)) == i) begin
+                L2CacheMemory___axi_out_selected_resp_comb.ar.ready=axi_out__arready_in[i];
+                L2CacheMemory___axi_out_selected_resp_comb.r.valid=axi_out__rvalid_in[i];
+                L2CacheMemory___axi_out_selected_resp_comb.r.data = axi_out__rdata_in[i];
+                L2CacheMemory___axi_out_selected_resp_comb.r.last=axi_out__rlast_in[i];
+                L2CacheMemory___axi_out_selected_resp_comb.r.id = axi_out__rid_in[i];
+            end
+        end
+    end
+
     always_comb begin : L2CacheMemory___evict_candidate_comb_func  // L2CacheMemory___evict_candidate_comb_func
         logic[31:0] i;
         logic[31:0] way;
@@ -571,16 +585,16 @@ module L2CacheWait #(
         L2CacheMemory___evict_candidate_comb.way = unsigned'(32'(((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP)) ? (unsigned'(32'(L2CacheState___victim_reg))) : (unsigned'(32'(L2CacheState___fill_way_reg)))));
         for (i='h0;i < WAYS;i=i+1) begin
             if (unsigned'(32'(L2CacheMemory___evict_candidate_comb.way)) == i) begin
-                L2CacheMemory___evict_candidate_comb.valid = unsigned'(1'(L2CacheState___tag_ram__data_out[i][TAG_BITS + 'h1]));
-                L2CacheMemory___evict_candidate_comb.dirty = unsigned'(1'(L2CacheState___tag_ram__data_out[i][TAG_BITS]));
-                L2CacheMemory___evict_candidate_comb.tag = unsigned'(32'(unsigned'(64'(L2CacheState___tag_ram__data_out[i]['h0 +:TAG_BITS - 'h1 - 'h0 + 1]))));
+                L2CacheMemory___evict_candidate_comb.valid = unsigned'(1'(L2CacheState___lookup_tag_reg[i][TAG_BITS + 'h1]));
+                L2CacheMemory___evict_candidate_comb.dirty = unsigned'(1'(L2CacheState___lookup_tag_reg[i][TAG_BITS]));
+                L2CacheMemory___evict_candidate_comb.tag = unsigned'(32'(unsigned'(64'(L2CacheState___lookup_tag_reg[i]['h0 +:TAG_BITS - 'h1 - 'h0 + 1]))));
             end
         end
         for (i='h0;i < DATA_BANKS;i=i+1) begin
             way=i/LINE_WORDS;
             word=i % LINE_WORDS;
             if (unsigned'(32'(L2CacheMemory___evict_candidate_comb.way)) == way) begin
-                L2CacheMemory___evict_candidate_comb.line[word*'h20 +:32] = L2CacheState___data_ram__data_out[i];
+                L2CacheMemory___evict_candidate_comb.line[word*'h20 +:32] = L2CacheState___lookup_data_reg[i];
             end
         end
     end
@@ -605,8 +619,8 @@ module L2CacheWait #(
         logic[31:0] index;
         L2CacheRequest___slave_request_novelty_comb = 0;
         for (index='h0;index < MEM_PORTS;index=index+1) begin
-            L2CacheRequest___slave_request_novelty_comb.aw[index] = (!L2CacheState___slave_aw_seen_reg[index].valid || (L2CacheState___slave_aw_seen_reg[index].addr != axi_in__awaddr_in[index])) || (L2CacheState___slave_aw_seen_reg[index].id != axi_in__awid_in[index]);
-            L2CacheRequest___slave_request_novelty_comb.ar[index] = (!L2CacheState___slave_ar_seen_reg[index].valid || (L2CacheState___slave_ar_seen_reg[index].addr != axi_in__araddr_in[index])) || (L2CacheState___slave_ar_seen_reg[index].id != axi_in__arid_in[index]);
+            L2CacheRequest___slave_request_novelty_comb.aw[index] = L2CacheState___slave_aw_novelty_reg[index];
+            L2CacheRequest___slave_request_novelty_comb.ar[index] = L2CacheState___slave_ar_novelty_reg[index];
         end
     end
 

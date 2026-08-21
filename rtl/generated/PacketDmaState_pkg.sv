@@ -1,6 +1,6 @@
 package PacketDmaState_pkg;
 
-typedef enum {
+typedef enum logic[8-1:0] {
     PACKET_DMA_IDLE,
     PACKET_DMA_ISSUE_NETWORK_READ,
     PACKET_DMA_WAIT_INPUT,

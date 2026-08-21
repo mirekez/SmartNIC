@@ -2,7 +2,7 @@ set script_dir [file dirname [file normalize [info script]]]
 set repo_dir [file dirname $script_dir]
 set generated_dir [file join $repo_dir build rtl processing generated_packet_dma]
 set report_dir [file normalize [file join $script_dir build packet_dma_check]]
-set part xc7k160tffg676-3
+set part xc7k325tffg676-3
 
 file mkdir $report_dir
 create_project -in_memory -part $part

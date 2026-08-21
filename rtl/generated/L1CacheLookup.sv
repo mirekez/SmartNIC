@@ -283,8 +283,10 @@ module L1CacheLookup #(
         L1CacheRefill___refill_lines_comb.odd = L1CacheState___refill_reg.odd_line;
         for (i='h0;i < PORT_WORDS;i=i+1) begin
             word=(unsigned'(32'(L1CacheState___refill_reg.beat))*PORT_WORDS) + i;
-            L1CacheRefill___refill_lines_comb.even[word*'h10 +:16] = unsigned'(32'(mem_out__read_data_in[i*'h20 +:16]));
-            L1CacheRefill___refill_lines_comb.odd[word*'h10 +:16] = unsigned'(32'(mem_out__read_data_in[(i*'h20) + 'h10 +:16]));
+            if (word < LINE_WORDS) begin
+                L1CacheRefill___refill_lines_comb.even[word*'h10 +:16] = unsigned'(32'(mem_out__read_data_in[i*'h20 +:16]));
+                L1CacheRefill___refill_lines_comb.odd[word*'h10 +:16] = unsigned'(32'(mem_out__read_data_in[(i*'h20) + 'h10 +:16]));
+            end
         end
     end
 

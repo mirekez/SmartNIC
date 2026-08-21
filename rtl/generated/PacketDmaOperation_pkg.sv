@@ -1,6 +1,6 @@
 package PacketDmaOperation_pkg;
 
-typedef enum {
+typedef enum logic[8-1:0] {
     DMA_SYSTEM_CPU = 'h0,
     DMA_CPU_SYSTEM = 'h1,
     DMA_CPU_NETWORK = 'h2,

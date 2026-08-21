@@ -123,6 +123,55 @@ struct PacketParserPipeWord
     u1 eop;
 } __PACKED;
 
+// Registered result of the lane scanner.  Frame membership is independent of
+// byte alignment, so it can be tracked one input word ahead.  Compacting the
+// input into at most two contiguous frame segments breaks the former serial
+// eight-lane SOP/EOP/align-state chain without reducing one-word-per-clock
+// throughput.
+struct PacketParserScanEvent
+{
+    logic<64> data0;
+    logic<64> data1;
+    u<4> bytes0;
+    u<4> bytes1;
+    u1 valid0;
+    u1 valid1;
+    u1 sop0;
+    u1 sop1;
+    u1 eop0;
+    u1 eop1;
+    u1 raw0;
+    u1 raw1;
+    u1 protocol_error;
+} __PACKED;
+
+// Registered result of the arithmetic byte realigner.  Keeping this separate
+// from the protocol pipeline prevents SOP/EOP lane selection and RAW assembly
+// from being synthesized into the pending-word and pipe[0] write controls.
+struct PacketParserRealignEvent
+{
+    logic<64> data0;
+    logic<64> data1;
+    logic<512> raw_data_low;
+    logic<512> raw_data_high;
+    u8 raw_count;
+    u8 word_cntr0;
+    u8 word_cntr1;
+    u<4> bytes0;
+    u<4> bytes1;
+    u1 valid0;
+    u1 valid1;
+    u1 raw0;
+    u1 raw1;
+    u1 sop0;
+    u1 sop1;
+    u1 eop0;
+    u1 eop1;
+    u1 frame_end;
+    u1 rollover;
+    u1 end_raw;
+} __PACKED;
+
 template<size_t LANE_WIDTH = 64, bool ENABLE_RAW = true>
 class PacketParser : public Module
 {
@@ -134,10 +183,12 @@ public:
     static constexpr size_t RAW_BYTES = 128;
     static constexpr size_t RAW_STORE_WORDS = 2;
     static constexpr size_t MARKUP_BITS = LANE_BYTES * 8;
-    // One registered boundary per protocol family. Repeated bounded headers
-    // retain their explicit parse_vlan1..4/parse_mpls1..4 function calls and
-    // execute in architectural order within the family stage.
-    static constexpr size_t PIPE_STAGES = 6;
+    // Protocol-family pipeline.  Each supported VLAN/MPLS occurrence owns a
+    // separate boundary; grouping two occurrences left a 26-LUT-level chain
+    // after the realigner was repaired.  The same packet word is carried to
+    // every boundary, so a header ending part-way through a word still hands
+    // the remaining bytes to the next occurrence at one input word/cycle.
+    static constexpr size_t PIPE_STAGES = 17;
 
     static_assert(LANE_WIDTH == 64);
 
@@ -227,7 +278,6 @@ private:
     reg<u<4>> align_count_reg;
     reg<logic<OUTPUT_WORD_BITS>> raw_data_low_reg;
     reg<logic<OUTPUT_WORD_BITS>> raw_data_high_reg;
-    reg<u8> raw_count_reg;
     reg<u<5>> raw_word_count_reg;
     reg<u1> in_frame_reg;
     reg<u1> frame_raw_reg;
@@ -241,8 +291,32 @@ private:
     reg<u8> align_word_cntr_reg;
     reg<u1> align_sop_pending_reg;
 
-    // 0: input, 1: Ethernet, 2: VLAN family, 3: MPLS family,
-    // 4: IP family, 5: transport/completion input.
+    // One-word elastic ingress boundary. The InputBalancer output is a
+    // synchronous BRAM word; registering it here prevents Vivado from merging
+    // the BRAM output through the complete byte realigner into pipe_reg[0].
+    // A consumed word may be replaced on the same clock, preserving one word
+    // per cycle throughput.
+    reg<u1> ingress_valid_reg;
+    reg<logic<LANE_WIDTH>> ingress_data_reg;
+    reg<logic<LANE_BYTES>> ingress_keep_reg;
+    reg<logic<LANE_BYTES>> ingress_sop_reg;
+    reg<logic<LANE_BYTES>> ingress_eop_reg;
+    reg<u1> ingress_raw_reg;
+
+    // Elastic boundary between lane scanning and alignment.  The scanner owns
+    // its frame-membership state, while the following stage owns partial-word
+    // alignment state; both stages can therefore accept one word every clock.
+    reg<u1> scan_in_frame_reg;
+    reg<u1> scan_valid_reg;
+    reg<PacketParserScanEvent> scan_event_reg;
+
+    // Elastic boundary between byte realignment and protocol injection.
+    reg<u1> realign_valid_reg;
+    reg<PacketParserRealignEvent> realign_event_reg;
+
+    // 0: input, 1: Ethernet, 2..5: VLAN 1..4,
+    // 6..9: MPLS 1..4, 10: IPv4, 11: IPv6,
+    // 12..15: IPv6 extension 1..4, 16: transport/completion input.
     reg<PacketParserPipeWord> pipe_reg[PIPE_STAGES];
     reg<u1> pipe_valid_reg[PIPE_STAGES];
 
@@ -273,6 +347,9 @@ private:
     bool output_valid_comb;
     bool output_last_comb;
     bool output_raw_comb;
+    bool parser_accept_comb;
+    bool realigner_accept_comb;
+    bool scanner_accept_comb;
     bool input_ready_comb;
 
     static bool is_vlan(uint16_t selector)
@@ -426,12 +503,16 @@ private:
         const logic<MARKUP_BITS>& markup_state, uint8_t header_id,
         PacketParserProgress progress)
     {
+        // Every parse_xxx wrapper has just marked header_id at markup_pos, and
+        // every stage passes progress.pos as markup_pos.  Those two checks are
+        // compile-time call-stack assertions, not runtime packet logic.  If
+        // repeated here, CppHDL must synthesize a variable-byte write followed
+        // by a variable-byte read for a value that is tautologically equal.
+        // Runtime ownership is completely represented by progress.
         return !(bool)progress.error
             && !(bool)progress.limit
             && !(bool)progress.done
-            && (uint8_t)progress.state == header_id
-            && (uint8_t)progress.pos == markup_pos
-            && marked_header(markup_state, markup_pos) == header_id;
+            && (uint8_t)progress.state == header_id;
     }
 
     static u8 select_l3(uint16_t selector)
@@ -1615,6 +1696,32 @@ private:
             else if (stage_index == occurrence)
                 progress = accept_ipv6_ext_upstream(progress, item.progress);
         }
+
+        // A terminal progress value can never require more work from this
+        // extension occurrence.  Make that invariant explicit before the
+        // header-size/protocol datapath.  Without this fast path synthesis
+        // must implement the unreachable combination of terminal progress
+        // with an active occurrence, carrying error/limit/done through the
+        // complete extension parser and stage-index update.
+        if ((bool)progress.error || (bool)progress.limit
+            || (bool)progress.done) {
+            stage_index = occurrence + 1;
+            ipv6_ext_progress_reg[occurrence]._next = progress;
+            ipv6_ext_stage_index_reg[occurrence]._next =
+                u<3>(stage_index);
+            result.progress = progress;
+            result.ipv6_ext_index = u<3>(stage_index);
+            if ((bool)ipv6_ext_seen_reg[occurrence]._next)
+                result.fields.protocol =
+                    ipv6_next_proto_reg[occurrence]._next;
+            if ((bool)item.eop
+                && (uint16_t)ipv6_fragment_reg[occurrence]._next != 0) {
+                flags = (uint8_t)result.fields.flags;
+                flags |= PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = u8(flags);
+            }
+            return result;
+        }
         if ((uint8_t)progress.state == PACKET_HEADER_IPV6_OPTIONS
             && stage_index == occurrence
             && (prior_state != PACKET_HEADER_IPV6_OPTIONS
@@ -1865,16 +1972,37 @@ private:
         return output_raw_comb;
     }
 
-    bool& input_ready_comb_func()
+    bool& parser_accept_comb_func()
     {
         uint8_t count;
         count = (uint8_t)output_reserved_reg;
         if ((uint8_t)fifo_count_reg != 0 && ready_in()) --count;
         // Two free entries are reserved because a RAW frame emits two words.
-        input_ready_comb = count <= OUTPUT_FIFO_WORDS - 2
+        parser_accept_comb = count <= OUTPUT_FIFO_WORDS - 2
             && !(bool)pending_valid_reg
             && (uint8_t)raw_store_count_reg < RAW_STORE_WORDS;
+        return parser_accept_comb;
+    }
+
+    bool& input_ready_comb_func()
+    {
+        input_ready_comb = !(bool)ingress_valid_reg
+            || scanner_accept_comb_func();
         return input_ready_comb;
+    }
+
+    bool& scanner_accept_comb_func()
+    {
+        scanner_accept_comb = !(bool)scan_valid_reg
+            || realigner_accept_comb_func();
+        return scanner_accept_comb;
+    }
+
+    bool& realigner_accept_comb_func()
+    {
+        realigner_accept_comb = !(bool)realign_valid_reg
+            || parser_accept_comb_func();
+        return realigner_accept_comb;
     }
 
 public:
@@ -1893,6 +2021,7 @@ public:
     {
         uint32_t slot;
         uint32_t stage;
+        uint32_t segment;
         uint32_t lane;
         uint32_t flat;
         uint8_t head;
@@ -1903,7 +2032,6 @@ public:
         uint8_t raw_store_count;
         uint8_t output_reserved;
         uint8_t align_count;
-        uint8_t raw_count;
         uint8_t raw_word_count;
         uint8_t align_word_cntr;
         uint8_t emit_word_cntr;
@@ -1928,7 +2056,16 @@ public:
         bool pending_rollover;
         bool parse_valid;
         bool consume_pending;
+        bool consume_realign;
+        bool consume_scan;
+        bool scan_in_frame;
+        bool scan_accepting;
+        bool scan_second_segment;
+        bool scan_first_eop;
+        bool scan_second_eop;
         uint8_t input_byte;
+        uint8_t segment_bytes;
+        uint8_t total_count;
         uint8_t emit_bytes;
         uint8_t emit2_bytes;
         uint8_t pending_bytes;
@@ -1937,7 +2074,9 @@ public:
         bool parse_sop;
         bool parse_eop;
         bool align_sop_pending;
+        bool ingress_valid;
         logic<64> align_data;
+        logic<64> segment_data;
         logic<64> emit_data;
         logic<64> emit2_data;
         logic<64> pending_data;
@@ -1946,11 +2085,17 @@ public:
         logic<OUTPUT_WORD_BITS> raw_data_high;
         logic<OUTPUT_WORD_BITS> end_raw_data_low;
         logic<OUTPUT_WORD_BITS> end_raw_data_high;
+        logic<128> combined_data;
         uint8_t end_raw_count;
         uint8_t end_raw_word_count;
+        uint16_t completed_raw_count;
         PacketParserWord parsed;
         PacketParserPipeWord pipe_item;
         PacketParserProgress empty_progress;
+        PacketParserRealignEvent event;
+        PacketParserRealignEvent scan_event;
+        PacketParserScanEvent compact_event;
+        PacketParserScanEvent compact_input;
 
         if (reset) {
             reset_parser();
@@ -1958,7 +2103,6 @@ public:
             align_count_reg._next = 0;
             raw_data_low_reg._next = 0;
             raw_data_high_reg._next = 0;
-            raw_count_reg._next = 0;
             raw_word_count_reg._next = 0;
             in_frame_reg._next = 0;
             frame_raw_reg._next = 0;
@@ -1971,6 +2115,17 @@ public:
             pending_eop_reg._next = 0;
             align_word_cntr_reg._next = 0;
             align_sop_pending_reg._next = 0;
+            ingress_valid_reg._next = 0;
+            ingress_data_reg._next = 0;
+            ingress_keep_reg._next = 0;
+            ingress_sop_reg._next = 0;
+            ingress_eop_reg._next = 0;
+            ingress_raw_reg._next = 0;
+            scan_in_frame_reg._next = 0;
+            scan_valid_reg._next = 0;
+            scan_event_reg._next = {};
+            realign_valid_reg._next = 0;
+            realign_event_reg._next = {};
             for (stage = 0; stage < PIPE_STAGES; ++stage) {
                 pipe_reg[stage]._next = {};
                 pipe_valid_reg[stage]._next = 0;
@@ -2037,6 +2192,7 @@ public:
             raw_store_head = (uint8_t)raw_store_head_reg;
             raw_store_tail = (uint8_t)raw_store_tail_reg;
             raw_store_count = (uint8_t)raw_store_count_reg;
+            ingress_valid = (bool)ingress_valid_reg;
             if (fifo_count != 0 && (bool)ready_in()) {
                 head = (head + 1) & (OUTPUT_FIFO_WORDS - 1);
                 --fifo_count;
@@ -2098,48 +2254,73 @@ public:
                     }
                 }
             }
+            if ((bool)pipe_valid_reg[15]) {
+                pipe_reg[16]._next = transport_stage(pipe_reg[15]);
+                pipe_valid_reg[16]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[14]) {
+                pipe_reg[15]._next = ipv6_ext4_stage(pipe_reg[14]);
+                pipe_valid_reg[15]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[13]) {
+                pipe_reg[14]._next = ipv6_ext3_stage(pipe_reg[13]);
+                pipe_valid_reg[14]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[12]) {
+                pipe_reg[13]._next = ipv6_ext2_stage(pipe_reg[12]);
+                pipe_valid_reg[13]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[11]) {
+                pipe_reg[12]._next = ipv6_ext1_stage(pipe_reg[11]);
+                pipe_valid_reg[12]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[10]) {
+                pipe_reg[11]._next = ipv6_stage(pipe_reg[10]);
+                pipe_valid_reg[11]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[9]) {
+                pipe_reg[10]._next = ipv4_stage(pipe_reg[9]);
+                pipe_valid_reg[10]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[8]) {
+                pipe_reg[9]._next = mpls4_stage(pipe_reg[8]);
+                pipe_valid_reg[9]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[7]) {
+                pipe_reg[8]._next = mpls3_stage(pipe_reg[7]);
+                pipe_valid_reg[8]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[6]) {
+                pipe_reg[7]._next = mpls2_stage(pipe_reg[6]);
+                pipe_valid_reg[7]._next = 1;
+            }
+            if ((bool)pipe_valid_reg[5]) {
+                pipe_reg[6]._next = mpls1_stage(pipe_reg[5]);
+                pipe_valid_reg[6]._next = 1;
+            }
             if ((bool)pipe_valid_reg[4]) {
-                pipe_reg[5]._next = transport_stage(pipe_reg[4]);
+                pipe_reg[5]._next = vlan4_stage(pipe_reg[4]);
                 pipe_valid_reg[5]._next = 1;
             }
             if ((bool)pipe_valid_reg[3]) {
-                pipe_item = ipv4_stage(pipe_reg[3]);
-                pipe_item = ipv6_stage(pipe_item);
-                pipe_item = ipv6_ext1_stage(pipe_item);
-                pipe_item = ipv6_ext2_stage(pipe_item);
-                pipe_item = ipv6_ext3_stage(pipe_item);
-                pipe_item = ipv6_ext4_stage(pipe_item);
-                pipe_reg[4]._next = pipe_item;
+                pipe_reg[4]._next = vlan3_stage(pipe_reg[3]);
                 pipe_valid_reg[4]._next = 1;
             }
             if ((bool)pipe_valid_reg[2]) {
-                pipe_item = mpls1_stage(pipe_reg[2]);
-                pipe_item = mpls2_stage(pipe_item);
-                pipe_item = mpls3_stage(pipe_item);
-                pipe_item = mpls4_stage(pipe_item);
-                pipe_reg[3]._next = pipe_item;
+                pipe_reg[3]._next = vlan2_stage(pipe_reg[2]);
                 pipe_valid_reg[3]._next = 1;
             }
             if ((bool)pipe_valid_reg[1]) {
-                pipe_item = vlan1_stage(pipe_reg[1]);
-                pipe_item = vlan2_stage(pipe_item);
-                pipe_item = vlan3_stage(pipe_item);
-                pipe_item = vlan4_stage(pipe_item);
-                pipe_reg[2]._next = pipe_item;
+                pipe_reg[2]._next = vlan1_stage(pipe_reg[1]);
                 pipe_valid_reg[2]._next = 1;
             }
             if ((bool)pipe_valid_reg[0]) {
                 pipe_reg[1]._next = ethernet_stage(pipe_reg[0]);
                 pipe_valid_reg[1]._next = 1;
             }
-            align_data = align_data_reg;
-            align_count = (uint8_t)align_count_reg;
-            raw_data_low = raw_data_low_reg;
-            raw_data_high = raw_data_high_reg;
-            raw_count = (uint8_t)raw_count_reg;
-            raw_word_count = (uint8_t)raw_word_count_reg;
-            in_frame = (bool)in_frame_reg;
-            frame_raw = (bool)frame_raw_reg;
+            // Consume only the registered realigner result here.  This is a
+            // hard timing boundary: none of the current ingress byte scan is
+            // allowed to feed pending state or pipe[0] in this cycle.
             pending_valid = (bool)pending_valid_reg;
             pending_rollover = (bool)pending_rollover_reg;
             pending_data = pending_data_reg;
@@ -2147,6 +2328,112 @@ public:
             pending_word_cntr_reg._next = pending_word_cntr_reg;
             pending_sop_reg._next = pending_sop_reg;
             pending_eop_reg._next = pending_eop_reg;
+            event = realign_event_reg;
+            consume_pending = pending_valid;
+            consume_realign = (bool)realign_valid_reg
+                && (bool)parser_accept_comb_func();
+            parse_valid = consume_pending || (consume_realign
+                && (bool)event.valid0 && !(bool)event.raw0);
+            parse_data = consume_pending ? pending_data : event.data0;
+            parse_bytes = consume_pending ? pending_bytes
+                : (uint8_t)event.bytes0;
+            parse_word_cntr = consume_pending
+                ? (uint8_t)pending_word_cntr_reg
+                : (uint8_t)event.word_cntr0;
+            parse_sop = consume_pending
+                ? (bool)pending_sop_reg : (bool)event.sop0;
+            parse_eop = consume_pending
+                ? (bool)pending_eop_reg : (bool)event.eop0;
+            if (parse_valid) {
+                empty_progress = {};
+                pipe_item = {};
+                pipe_item.data = parse_data;
+                pipe_item.fields = {};
+                pipe_item.progress = empty_progress;
+                pipe_item.word_cntr = u8(parse_word_cntr);
+                pipe_item.bytes = u<4>(parse_bytes);
+                pipe_item.sop = parse_sop;
+                pipe_item.eop = parse_eop;
+                pipe_reg[0]._next = pipe_item;
+                pipe_valid_reg[0]._next = 1;
+                if (parse_eop) ++output_reserved;
+            }
+
+            if (consume_pending) {
+                pending_valid = false;
+                pending_rollover = false;
+            }
+            else if (consume_realign) {
+                if ((bool)event.valid1 && !(bool)event.raw1) {
+                    pending_valid = true;
+                    pending_data = event.data1;
+                    pending_bytes = (uint8_t)event.bytes1;
+                    pending_rollover = event.rollover;
+                    pending_word_cntr_reg._next = event.word_cntr1;
+                    pending_sop_reg._next = event.sop1;
+                    pending_eop_reg._next = event.eop1;
+                }
+                if ((bool)event.frame_end && (bool)event.end_raw) {
+                    if (raw_store_count < RAW_STORE_WORDS && !parse_valid) {
+                        raw_store_low_reg[raw_store_tail]._next =
+                            event.raw_data_low;
+                        raw_store_high_reg[raw_store_tail]._next =
+                            event.raw_data_high;
+                        raw_store_count_bytes_reg[raw_store_tail]._next =
+                            event.raw_count;
+                        raw_store_tail = (raw_store_tail + 1)
+                            & (RAW_STORE_WORDS - 1);
+                        ++raw_store_count;
+
+                        // RAW payload bypasses protocol logic, but its EOP
+                        // token observes identical protocol-pipeline latency.
+                        empty_progress = {};
+                        pipe_item = {};
+                        pipe_item.progress = empty_progress;
+                        pipe_item.raw = 1;
+                        pipe_item.sop = 1;
+                        pipe_item.eop = 1;
+                        pipe_reg[0]._next = pipe_item;
+                        pipe_valid_reg[0]._next = 1;
+                        output_reserved += 2;
+                    }
+                    else protocol_error_reg._next = 1;
+                }
+            }
+
+            pending_valid_reg._next = pending_valid;
+            pending_rollover_reg._next = pending_rollover;
+            pending_data_reg._next = pending_data;
+            pending_bytes_reg._next = u<4>(pending_bytes);
+            if (!pending_valid) {
+                pending_word_cntr_reg._next = 0;
+                pending_sop_reg._next = 0;
+                pending_eop_reg._next = 0;
+            }
+
+            realign_valid_reg._next = realign_valid_reg;
+            realign_event_reg._next = realign_event_reg;
+            if (consume_realign) realign_valid_reg._next = 0;
+
+            scan_valid_reg._next = scan_valid_reg;
+            scan_event_reg._next = scan_event_reg;
+            compact_input = scan_event_reg;
+            consume_scan = (bool)scan_valid_reg
+                && (bool)realigner_accept_comb_func();
+            if (consume_scan) scan_valid_reg._next = 0;
+
+            // Merge the scanner's compact segments into aligned words.  A
+            // segment is appended with one 128-bit shift/OR instead of eight
+            // serial per-byte state transitions.  The scanner and aligner own
+            // separate frame state, so consecutive input words still advance
+            // every clock.
+            align_data = align_data_reg;
+            align_count = (uint8_t)align_count_reg;
+            raw_data_low = raw_data_low_reg;
+            raw_data_high = raw_data_high_reg;
+            raw_word_count = (uint8_t)raw_word_count_reg;
+            in_frame = (bool)in_frame_reg;
+            frame_raw = (bool)frame_raw_reg;
             align_word_cntr = (uint8_t)align_word_cntr_reg;
             align_sop_pending = (bool)align_sop_pending_reg;
             emit_valid = false;
@@ -2168,118 +2455,131 @@ public:
             end_raw = frame_raw;
             end_raw_data_low = raw_data_low;
             end_raw_data_high = raw_data_high;
-            end_raw_count = raw_count;
+            end_raw_count = 0;
             end_raw_word_count = raw_word_count;
 
-            if ((bool)valid_in() && (bool)input_ready_comb_func()) {
-                for (lane = 0; lane < LANE_BYTES; ++lane) {
-                    flat = lane;
-                    keep = (bool)keep_in()[flat];
-                    sop = (bool)sop_in()[flat];
-                    eop = (bool)eop_in()[flat];
-                    if (!keep) {
-                        if (sop || eop) protocol_error_reg._next = 1;
-                    }
-                    else {
-                        if (sop) {
-                            if (in_frame) protocol_error_reg._next = 1;
-                            if (frame_end) rollover = true;
-                            if (!frame_end) {
-                                end_raw_data_low = 0;
-                                end_raw_data_high = 0;
-                                end_raw_count = 0;
-                                end_raw_word_count = 0;
-                            }
-                            align_data = 0;
-                            align_count = 0;
-                            raw_data_low = 0;
-                            raw_data_high = 0;
-                            raw_count = 0;
-                            raw_word_count = 0;
-                            align_word_cntr = 0;
-                            align_sop_pending = true;
-                            frame_raw = ENABLE_RAW && (bool)raw_in();
-                            in_frame = true;
-                        }
-                        else if (!in_frame) protocol_error_reg._next = 1;
+            if (consume_scan) {
+                if ((bool)compact_input.protocol_error)
+                    protocol_error_reg._next = 1;
+                for (segment = 0; segment < 2; ++segment) {
+                    keep = segment == 0 ? (bool)compact_input.valid0
+                        : (bool)compact_input.valid1;
+                    sop = segment == 0 ? (bool)compact_input.sop0
+                        : (bool)compact_input.sop1;
+                    eop = segment == 0 ? (bool)compact_input.eop0
+                        : (bool)compact_input.eop1;
+                    segment_data = segment == 0 ? compact_input.data0
+                        : compact_input.data1;
+                    segment_bytes = segment == 0
+                        ? (uint8_t)compact_input.bytes0
+                        : (uint8_t)compact_input.bytes1;
 
-                        if (in_frame) {
-                            input_byte = (uint8_t)data_in().bits(flat * 8 + 7,
-                                flat * 8);
-                            align_data = store_aligned_byte(align_data,
-                                u8(input_byte), align_count);
-                            ++align_count;
-                            if (frame_raw && raw_count < RAW_BYTES) ++raw_count;
-                            if (align_count == LANE_BYTES || eop) {
-                                if (emit_valid) {
-                                    if (eop) {
-                                        emit2_valid = true;
-                                        emit2_raw = frame_raw;
-                                        emit2_bytes = align_count;
-                                        emit2_data = align_data;
-                                        emit2_word_cntr = align_word_cntr;
-                                        emit2_sop = align_sop_pending;
-                                        emit2_eop = eop;
-                                        align_sop_pending = false;
-                                        ++align_word_cntr;
-                                        align_data = 0;
-                                        align_count = 0;
-                                    }
-                                    else protocol_error_reg._next = 1;
-                                }
-                                else {
+                    if (sop) {
+                        if (in_frame) protocol_error_reg._next = 1;
+                        if (frame_end) rollover = true;
+                        if (!frame_end) {
+                            end_raw_data_low = 0;
+                            end_raw_data_high = 0;
+                            end_raw_word_count = 0;
+                        }
+                        align_data = 0;
+                        align_count = 0;
+                        raw_data_low = 0;
+                        raw_data_high = 0;
+                        raw_word_count = 0;
+                        align_word_cntr = 0;
+                        align_sop_pending = true;
+                        frame_raw = ENABLE_RAW && (segment == 0
+                            ? (bool)compact_input.raw0
+                            : (bool)compact_input.raw1);
+                        in_frame = true;
+                    }
+
+                    if (keep) {
+                        if (!in_frame) protocol_error_reg._next = 1;
+                        combined_data = logic<128>(align_data)
+                            | (logic<128>(segment_data)
+                                << (align_count * 8));
+                        total_count = align_count + segment_bytes;
+                        if (total_count >= LANE_BYTES) {
+                            if (!emit_valid) {
+                                emit_valid = true;
+                                emit_raw = frame_raw;
+                                emit_bytes = LANE_BYTES;
+                                emit_data = combined_data.bits(63, 0);
+                                emit_word_cntr = align_word_cntr;
+                                emit_sop = align_sop_pending;
+                                emit_eop = eop
+                                    && total_count == LANE_BYTES;
+                            }
+                            else if (!emit2_valid) {
+                                emit2_valid = true;
+                                emit2_raw = frame_raw;
+                                emit2_bytes = LANE_BYTES;
+                                emit2_data = combined_data.bits(63, 0);
+                                emit2_word_cntr = align_word_cntr;
+                                emit2_sop = align_sop_pending;
+                                emit2_eop = eop
+                                    && total_count == LANE_BYTES;
+                            }
+                            else protocol_error_reg._next = 1;
+                            ++align_word_cntr;
+                            align_sop_pending = false;
+                            align_data = combined_data.bits(127, 64);
+                            align_count = total_count - LANE_BYTES;
+                        }
+                        else {
+                            align_data = combined_data.bits(63, 0);
+                            align_count = total_count;
+                        }
+
+                        if (eop) {
+                            if (align_count != 0) {
+                                if (!emit_valid) {
                                     emit_valid = true;
                                     emit_raw = frame_raw;
                                     emit_bytes = align_count;
                                     emit_data = align_data;
                                     emit_word_cntr = align_word_cntr;
                                     emit_sop = align_sop_pending;
-                                    emit_eop = eop;
-                                    align_sop_pending = false;
-                                    ++align_word_cntr;
-                                    align_data = 0;
-                                    align_count = 0;
+                                    emit_eop = true;
                                 }
+                                else if (!emit2_valid) {
+                                    emit2_valid = true;
+                                    emit2_raw = frame_raw;
+                                    emit2_bytes = align_count;
+                                    emit2_data = align_data;
+                                    emit2_word_cntr = align_word_cntr;
+                                    emit2_sop = align_sop_pending;
+                                    emit2_eop = true;
+                                }
+                                else protocol_error_reg._next = 1;
+                                ++align_word_cntr;
+                                align_sop_pending = false;
                             }
-                            if (eop) {
-                                end_raw = frame_raw;
-                                end_raw_data_low = raw_data_low;
-                                end_raw_data_high = raw_data_high;
-                                end_raw_count = raw_count;
-                                end_raw_word_count = raw_word_count;
-                                if (frame_end) protocol_error_reg._next = 1;
-                                frame_end = true;
-                                in_frame = false;
+                            align_data = 0;
+                            align_count = 0;
+                            end_raw = frame_raw;
+                            end_raw_data_low = raw_data_low;
+                            end_raw_data_high = raw_data_high;
+                            if (emit2_valid && emit2_eop) {
+                                completed_raw_count = emit2_word_cntr
+                                    * LANE_BYTES + emit2_bytes;
                             }
+                            else {
+                                completed_raw_count = emit_word_cntr
+                                    * LANE_BYTES + emit_bytes;
+                            }
+                            end_raw_count = completed_raw_count > RAW_BYTES
+                                ? RAW_BYTES : completed_raw_count;
+                            end_raw_word_count = raw_word_count;
+                            if (frame_end) protocol_error_reg._next = 1;
+                            frame_end = true;
+                            in_frame = false;
                         }
-                        else if (eop) protocol_error_reg._next = 1;
                     }
+                    else if (sop || eop) protocol_error_reg._next = 1;
                 }
-            }
-
-            consume_pending = pending_valid;
-            parse_valid = consume_pending || (emit_valid && !emit_raw);
-            parse_data = consume_pending ? pending_data : emit_data;
-            parse_bytes = consume_pending ? pending_bytes : emit_bytes;
-            parse_word_cntr = consume_pending
-                ? (uint8_t)pending_word_cntr_reg : emit_word_cntr;
-            parse_sop = consume_pending
-                ? (bool)pending_sop_reg : emit_sop;
-            parse_eop = consume_pending
-                ? (bool)pending_eop_reg : emit_eop;
-            if (parse_valid) {
-                empty_progress = {};
-                pipe_item = {};
-                pipe_item.data = parse_data;
-                pipe_item.fields = {};
-                pipe_item.progress = empty_progress;
-                pipe_item.word_cntr = u8(parse_word_cntr);
-                pipe_item.bytes = u<4>(parse_bytes);
-                pipe_item.sop = parse_sop;
-                pipe_item.eop = parse_eop;
-                pipe_reg[0]._next = pipe_item;
-                pipe_valid_reg[0]._next = 1;
-                if (parse_eop) ++output_reserved;
             }
 
             if (emit_valid && emit_raw
@@ -2299,10 +2599,11 @@ public:
             }
             if (emit2_valid) {
                 if (emit2_raw && end_raw_word_count < RAW_BYTES / LANE_BYTES) {
-                    end_raw_data_low = store_raw_word(end_raw_data_low, emit2_data,
-                        end_raw_word_count,
+                    end_raw_data_low = store_raw_word(end_raw_data_low,
+                        emit2_data, end_raw_word_count,
                         end_raw_word_count < OUTPUT_BYTES / LANE_BYTES);
-                    end_raw_data_high = store_raw_word(end_raw_data_high, emit2_data,
+                    end_raw_data_high = store_raw_word(end_raw_data_high,
+                        emit2_data,
                         end_raw_word_count - OUTPUT_BYTES / LANE_BYTES,
                         end_raw_word_count >= OUTPUT_BYTES / LANE_BYTES);
                     ++end_raw_word_count;
@@ -2312,69 +2613,116 @@ public:
                         raw_word_count = end_raw_word_count;
                     }
                 }
-                else if (!emit2_raw) {
-                    pending_valid = true;
-                    pending_data = emit2_data;
-                    pending_bytes = emit2_bytes;
-                    pending_rollover = rollover;
-                    pending_word_cntr_reg._next = u8(emit2_word_cntr);
-                    pending_sop_reg._next = emit2_sop;
-                    pending_eop_reg._next = emit2_eop;
-                    frame_end = false;
-                }
             }
 
-            if (consume_pending) {
-                pending_valid = false;
-                pending_rollover = false;
+            if (consume_scan) {
+                scan_event = {};
+                scan_event.data0 = emit_data;
+                scan_event.data1 = emit2_data;
+                scan_event.raw_data_low = end_raw_data_low;
+                scan_event.raw_data_high = end_raw_data_high;
+                scan_event.raw_count = u8(end_raw_count);
+                scan_event.word_cntr0 = u8(emit_word_cntr);
+                scan_event.word_cntr1 = u8(emit2_word_cntr);
+                scan_event.bytes0 = u<4>(emit_bytes);
+                scan_event.bytes1 = u<4>(emit2_bytes);
+                scan_event.valid0 = emit_valid;
+                scan_event.valid1 = emit2_valid;
+                scan_event.raw0 = emit_raw;
+                scan_event.raw1 = emit2_raw;
+                scan_event.sop0 = emit_sop;
+                scan_event.sop1 = emit2_sop;
+                scan_event.eop0 = emit_eop;
+                scan_event.eop1 = emit2_eop;
+                scan_event.frame_end = frame_end;
+                scan_event.rollover = rollover;
+                scan_event.end_raw = end_raw;
+                realign_event_reg._next = scan_event;
+                realign_valid_reg._next = 1;
             }
-            else if (frame_end) {
-                if (end_raw) {
-                    if (raw_store_count < RAW_STORE_WORDS && !parse_valid) {
-                        raw_store_low_reg[raw_store_tail]._next =
-                            end_raw_data_low;
-                        raw_store_high_reg[raw_store_tail]._next =
-                            end_raw_data_high;
-                        raw_store_count_bytes_reg[raw_store_tail]._next =
-                            u8(end_raw_count);
-                        raw_store_tail = (raw_store_tail + 1)
-                            & (RAW_STORE_WORDS - 1);
-                        ++raw_store_count;
 
-                        // RAW payload bypasses protocol logic, but its EOP
-                        // token observes identical pipeline latency so that
-                        // RAW and parsed descriptors cannot overtake.
-                        empty_progress = {};
-                        pipe_item = {};
-                        pipe_item.progress = empty_progress;
-                        pipe_item.raw = 1;
-                        pipe_item.sop = 1;
-                        pipe_item.eop = 1;
-                        pipe_reg[0]._next = pipe_item;
-                        pipe_valid_reg[0]._next = 1;
-                        output_reserved += 2;
+            // Scan the accepted ingress word into two compact frame segments.
+            // This stage does not read or write alignment state.
+            scan_in_frame = (bool)scan_in_frame_reg;
+            scan_accepting = scan_in_frame;
+            scan_second_segment = false;
+            scan_first_eop = false;
+            scan_second_eop = false;
+            compact_event = {};
+            if (ingress_valid && (bool)scanner_accept_comb_func()) {
+                for (lane = 0; lane < LANE_BYTES; ++lane) {
+                    flat = lane;
+                    keep = (bool)ingress_keep_reg[flat];
+                    sop = (bool)ingress_sop_reg[flat];
+                    eop = (bool)ingress_eop_reg[flat];
+                    if (!keep) {
+                        if (sop || eop) compact_event.protocol_error = 1;
                     }
-                    else protocol_error_reg._next = 1;
+                    else {
+                        if (sop) {
+                            if (scan_accepting || scan_second_eop)
+                                compact_event.protocol_error = 1;
+                            if (scan_first_eop) scan_second_segment = true;
+                            scan_accepting = true;
+                            if (scan_second_segment) {
+                                compact_event.sop1 = 1;
+                                compact_event.raw1 = ingress_raw_reg;
+                            }
+                            else {
+                                compact_event.sop0 = 1;
+                                compact_event.raw0 = ingress_raw_reg;
+                            }
+                        }
+                        else if (!scan_accepting)
+                            compact_event.protocol_error = 1;
+
+                        if (scan_accepting) {
+                            input_byte = (uint8_t)ingress_data_reg.bits(
+                                flat * 8 + 7, flat * 8);
+                            if (scan_second_segment) {
+                                compact_event.data1 |= logic<64>(input_byte)
+                                    << ((uint8_t)compact_event.bytes1 * 8);
+                                compact_event.bytes1 = u<4>(
+                                    (uint8_t)compact_event.bytes1 + 1);
+                                compact_event.valid1 = 1;
+                            }
+                            else {
+                                compact_event.data0 |= logic<64>(input_byte)
+                                    << ((uint8_t)compact_event.bytes0 * 8);
+                                compact_event.bytes0 = u<4>(
+                                    (uint8_t)compact_event.bytes0 + 1);
+                                compact_event.valid0 = 1;
+                            }
+                            if (eop) {
+                                if (scan_second_segment) {
+                                    compact_event.eop1 = 1;
+                                    scan_second_eop = true;
+                                }
+                                else {
+                                    compact_event.eop0 = 1;
+                                    scan_first_eop = true;
+                                }
+                                scan_accepting = false;
+                            }
+                        }
+                        else if (eop) compact_event.protocol_error = 1;
+                    }
                 }
+                scan_event_reg._next = compact_event;
+                scan_valid_reg._next = 1;
+                scan_in_frame = scan_accepting;
+                if ((bool)compact_event.protocol_error)
+                    protocol_error_reg._next = 1;
             }
+            scan_in_frame_reg._next = scan_in_frame;
 
             align_data_reg._next = align_data;
             align_count_reg._next = u<4>(align_count);
             raw_data_low_reg._next = raw_data_low;
             raw_data_high_reg._next = raw_data_high;
-            raw_count_reg._next = u8(raw_count);
             raw_word_count_reg._next = u<5>(raw_word_count);
             in_frame_reg._next = in_frame;
             frame_raw_reg._next = frame_raw;
-            pending_valid_reg._next = pending_valid;
-            pending_rollover_reg._next = pending_rollover;
-            pending_data_reg._next = pending_data;
-            pending_bytes_reg._next = u<4>(pending_bytes);
-            if (!pending_valid) {
-                pending_word_cntr_reg._next = 0;
-                pending_sop_reg._next = 0;
-                pending_eop_reg._next = 0;
-            }
             align_word_cntr_reg._next = u8(align_word_cntr);
             align_sop_pending_reg._next = align_sop_pending;
             raw_store_head_reg._next = raw_store_head != 0;
@@ -2384,6 +2732,26 @@ public:
             fifo_tail_reg._next = u<2>(tail);
             fifo_count_reg._next = u<3>(fifo_count);
             output_reserved_reg._next = u<3>(output_reserved);
+
+            // Consume the registered word only when the realigner has room.
+            // A newly accepted external word replaces it without a bubble.
+            ingress_valid_reg._next = ingress_valid_reg;
+            ingress_data_reg._next = ingress_data_reg;
+            ingress_keep_reg._next = ingress_keep_reg;
+            ingress_sop_reg._next = ingress_sop_reg;
+            ingress_eop_reg._next = ingress_eop_reg;
+            ingress_raw_reg._next = ingress_raw_reg;
+            if (ingress_valid && (bool)scanner_accept_comb_func()) {
+                ingress_valid_reg._next = 0;
+            }
+            if ((bool)valid_in() && (bool)input_ready_comb_func()) {
+                ingress_valid_reg._next = 1;
+                ingress_data_reg._next = data_in();
+                ingress_keep_reg._next = keep_in();
+                ingress_sop_reg._next = sop_in();
+                ingress_eop_reg._next = eop_in();
+                ingress_raw_reg._next = raw_in();
+            }
     }
 
 #ifdef SMARTNIC_TWO_CLOCKS
@@ -2445,13 +2813,19 @@ public:
             destination_port_reg.strobe(); tcp_header_bytes_reg.strobe();
             align_data_reg.strobe(); align_count_reg.strobe();
             raw_data_low_reg.strobe(); raw_data_high_reg.strobe();
-            raw_count_reg.strobe(); raw_word_count_reg.strobe();
+            raw_word_count_reg.strobe();
             in_frame_reg.strobe(); frame_raw_reg.strobe();
             pending_valid_reg.strobe(); pending_rollover_reg.strobe();
             pending_data_reg.strobe(); pending_bytes_reg.strobe();
             pending_word_cntr_reg.strobe(); pending_sop_reg.strobe();
             pending_eop_reg.strobe(); align_word_cntr_reg.strobe();
             align_sop_pending_reg.strobe();
+            ingress_valid_reg.strobe(); ingress_data_reg.strobe();
+            ingress_keep_reg.strobe(); ingress_sop_reg.strobe();
+            ingress_eop_reg.strobe(); ingress_raw_reg.strobe();
+            scan_in_frame_reg.strobe(); scan_valid_reg.strobe();
+            scan_event_reg.strobe();
+            realign_valid_reg.strobe(); realign_event_reg.strobe();
             raw_store_head_reg.strobe(); raw_store_tail_reg.strobe();
             raw_store_count_reg.strobe();
             fifo_head_reg.strobe(); fifo_tail_reg.strobe();
@@ -2534,13 +2908,19 @@ public:
             destination_port_reg.strobe(); tcp_header_bytes_reg.strobe();
             align_data_reg.strobe(); align_count_reg.strobe();
             raw_data_low_reg.strobe(); raw_data_high_reg.strobe();
-            raw_count_reg.strobe(); raw_word_count_reg.strobe();
+            raw_word_count_reg.strobe();
             in_frame_reg.strobe(); frame_raw_reg.strobe();
             pending_valid_reg.strobe(); pending_rollover_reg.strobe();
             pending_data_reg.strobe(); pending_bytes_reg.strobe();
             pending_word_cntr_reg.strobe(); pending_sop_reg.strobe();
             pending_eop_reg.strobe(); align_word_cntr_reg.strobe();
             align_sop_pending_reg.strobe();
+            ingress_valid_reg.strobe(); ingress_data_reg.strobe();
+            ingress_keep_reg.strobe(); ingress_sop_reg.strobe();
+            ingress_eop_reg.strobe(); ingress_raw_reg.strobe();
+            scan_in_frame_reg.strobe(); scan_valid_reg.strobe();
+            scan_event_reg.strobe();
+            realign_valid_reg.strobe(); realign_event_reg.strobe();
             raw_store_head_reg.strobe(); raw_store_tail_reg.strobe();
             raw_store_count_reg.strobe();
             fifo_head_reg.strobe(); fifo_tail_reg.strobe();

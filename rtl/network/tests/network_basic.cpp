@@ -966,7 +966,8 @@ int main(int argc, char** argv)
         const std::vector<std::string> modules = {
             "Predef_pkg", "PacketParserFields_pkg", "PacketParserWord_pkg",
             "PacketParserHeaderId_pkg", "PacketParserFlags_pkg",
-            "RxRAMWritePair_pkg", "RxDescriptor_pkg", "RxDescriptorWord_pkg",
+            "RxRAMWritePair_pkg", "RxRAMScanEvent_pkg", "RxDescriptor_pkg",
+            "RxDescriptorWord_pkg",
             "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser",
             "RxRAM", "RxFifo", "TxFifo", "OutputMerger"};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "Network_64",

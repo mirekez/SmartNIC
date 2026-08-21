@@ -84,6 +84,18 @@ private:
     RxFifo<RX_FIFO_DEPTH> rx_fifo;
     OutputMerger<LANE_WIDTH, TX_FIFO_WORDS, 12> output_merger;
 
+    // Per-channel elastic boundary between the balancer BRAMs and the two
+    // independent consumers.  Without this register, the synchronous BRAM
+    // output can feed the complete RxRAM byte-pack/completion cone in the
+    // same cycle.  The slot supports simultaneous consume/refill, preserving
+    // one word per channel per network clock.
+    reg<logic<LANE_WIDTH>> receive_data_reg[STREAMS];
+    reg<logic<LANE_BYTES>> receive_keep_reg[STREAMS];
+    reg<logic<LANE_BYTES>> receive_sop_reg[STREAMS];
+    reg<logic<LANE_BYTES>> receive_eop_reg[STREAMS];
+    reg<u1> receive_raw_reg[STREAMS];
+    reg<u1> receive_valid_reg[STREAMS];
+
     reg<logic<512>> parser_word0_reg[STREAMS];
     reg<logic<512>> parser_word1_reg[STREAMS];
     reg<u1> parser_raw_reg[STREAMS];
@@ -102,6 +114,10 @@ private:
     logic<STREAMS> parser_ready_comb;
     logic<STREAMS> ram_completion_ready_comb;
     logic<STREAMS> descriptor_valid_comb;
+    logic<INPUT_BITS> receive_data_comb;
+    logic<INPUT_BYTES> receive_keep_comb;
+    logic<INPUT_BYTES> receive_sop_comb;
+    logic<INPUT_BYTES> receive_eop_comb;
     RxDescriptorInputBus descriptor_input_comb;
     bool error_comb;
 
@@ -110,8 +126,10 @@ private:
         uint32_t stream;
         balanced_ready_comb = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
-            balanced_ready_comb[stream] = parser[stream].ready_out()
-                && rx_ram.ready_out()[stream];
+            balanced_ready_comb[stream] =
+                !(bool)receive_valid_reg[stream]
+                || (parser[stream].ready_out()
+                    && (bool)rx_ram.ready_out()[stream]);
         }
         return balanced_ready_comb;
     }
@@ -123,7 +141,7 @@ private:
         uint32_t stream;
         parser_valid_comb = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
-            parser_valid_comb[stream] = balancer.valid_out()[stream]
+            parser_valid_comb[stream] = (bool)receive_valid_reg[stream]
                 && rx_ram.ready_out()[stream];
         }
         return parser_valid_comb;
@@ -134,7 +152,7 @@ private:
         uint32_t stream;
         ram_valid_comb = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
-            ram_valid_comb[stream] = balancer.valid_out()[stream]
+            ram_valid_comb[stream] = (bool)receive_valid_reg[stream]
                 && parser[stream].ready_out();
         }
         return ram_valid_comb;
@@ -145,7 +163,8 @@ private:
         uint32_t stream;
         raw_mask_comb = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
-            raw_mask_comb[stream] = ENABLE_RAW && raw_in();
+            raw_mask_comb[stream] = ENABLE_RAW
+                && (bool)receive_raw_reg[stream];
         }
         return raw_mask_comb;
     }
@@ -180,6 +199,54 @@ private:
                 && ram_complete_reg[stream];
         }
         return descriptor_valid_comb;
+    }
+
+    logic<INPUT_BITS>& receive_data_comb_func()
+    {
+        uint32_t stream;
+        receive_data_comb = 0;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            receive_data_comb.bits(
+                stream * LANE_WIDTH + LANE_WIDTH - 1,
+                stream * LANE_WIDTH) = receive_data_reg[stream];
+        }
+        return receive_data_comb;
+    }
+
+    logic<INPUT_BYTES>& receive_keep_comb_func()
+    {
+        uint32_t stream;
+        receive_keep_comb = 0;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            receive_keep_comb.bits(
+                stream * LANE_BYTES + LANE_BYTES - 1,
+                stream * LANE_BYTES) = receive_keep_reg[stream];
+        }
+        return receive_keep_comb;
+    }
+
+    logic<INPUT_BYTES>& receive_sop_comb_func()
+    {
+        uint32_t stream;
+        receive_sop_comb = 0;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            receive_sop_comb.bits(
+                stream * LANE_BYTES + LANE_BYTES - 1,
+                stream * LANE_BYTES) = receive_sop_reg[stream];
+        }
+        return receive_sop_comb;
+    }
+
+    logic<INPUT_BYTES>& receive_eop_comb_func()
+    {
+        uint32_t stream;
+        receive_eop_comb = 0;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            receive_eop_comb.bits(
+                stream * LANE_BYTES + LANE_BYTES - 1,
+                stream * LANE_BYTES) = receive_eop_reg[stream];
+        }
+        return receive_eop_comb;
     }
 
     RxDescriptorInputBus& descriptor_input_comb_func()
@@ -255,14 +322,10 @@ public:
 #define NETWORK_BIND_PARSER(number) \
         parser[number].valid_in = \
             _ASSIGN((bool)parser_valid_comb_func()[number]); \
-        parser[number].data_in = _ASSIGN(balancer.data_out().bits( \
-            number * LANE_WIDTH + LANE_WIDTH - 1, number * LANE_WIDTH)); \
-        parser[number].keep_in = _ASSIGN(balancer.keep_out().bits( \
-            number * LANE_BYTES + LANE_BYTES - 1, number * LANE_BYTES)); \
-        parser[number].sop_in = _ASSIGN(balancer.sop_out().bits( \
-            number * LANE_BYTES + LANE_BYTES - 1, number * LANE_BYTES)); \
-        parser[number].eop_in = _ASSIGN(balancer.eop_out().bits( \
-            number * LANE_BYTES + LANE_BYTES - 1, number * LANE_BYTES)); \
+        parser[number].data_in = _ASSIGN_REG(receive_data_reg[number]); \
+        parser[number].keep_in = _ASSIGN_REG(receive_keep_reg[number]); \
+        parser[number].sop_in = _ASSIGN_REG(receive_sop_reg[number]); \
+        parser[number].eop_in = _ASSIGN_REG(receive_eop_reg[number]); \
         parser[number].raw_in = _ASSIGN((bool)raw_mask_comb_func()[number]); \
         parser[number].ready_in = \
             _ASSIGN((bool)parser_ready_comb_func()[number]); \
@@ -273,10 +336,10 @@ public:
 #undef NETWORK_BIND_PARSER
 
         rx_ram.valid_in = _ASSIGN_COMB(ram_valid_comb_func());
-        rx_ram.data_in = _ASSIGN(balancer.data_out());
-        rx_ram.keep_in = _ASSIGN(balancer.keep_out());
-        rx_ram.sop_in = _ASSIGN(balancer.sop_out());
-        rx_ram.eop_in = _ASSIGN(balancer.eop_out());
+        rx_ram.data_in = _ASSIGN_COMB(receive_data_comb_func());
+        rx_ram.keep_in = _ASSIGN_COMB(receive_keep_comb_func());
+        rx_ram.sop_in = _ASSIGN_COMB(receive_sop_comb_func());
+        rx_ram.eop_in = _ASSIGN_COMB(receive_eop_comb_func());
         rx_ram.packet_ready_in =
             _ASSIGN_COMB(ram_completion_ready_comb_func());
         rx_ram.read_valid_in = read_valid_in;
@@ -338,6 +401,12 @@ public:
 
         if (reset) {
             for (stream = 0; stream < STREAMS; ++stream) {
+                receive_data_reg[stream].clr();
+                receive_keep_reg[stream].clr();
+                receive_sop_reg[stream].clr();
+                receive_eop_reg[stream].clr();
+                receive_raw_reg[stream].clr();
+                receive_valid_reg[stream].clr();
                 parser_word0_reg[stream].clr();
                 parser_word1_reg[stream].clr();
                 parser_raw_reg[stream].clr();
@@ -360,6 +429,29 @@ public:
         handles = rx_ram.packet_handle_out();
         lengths = rx_ram.packet_length_out();
         for (stream = 0; stream < STREAMS; ++stream) {
+            if ((bool)balanced_ready_comb_func()[stream]) {
+                receive_valid_reg[stream]._next =
+                    (bool)balancer.valid_out()[stream];
+                if ((bool)balancer.valid_out()[stream]) {
+                    receive_data_reg[stream]._next =
+                        balancer.data_out().bits(
+                            stream * LANE_WIDTH + LANE_WIDTH - 1,
+                            stream * LANE_WIDTH);
+                    receive_keep_reg[stream]._next =
+                        balancer.keep_out().bits(
+                            stream * LANE_BYTES + LANE_BYTES - 1,
+                            stream * LANE_BYTES);
+                    receive_sop_reg[stream]._next =
+                        balancer.sop_out().bits(
+                            stream * LANE_BYTES + LANE_BYTES - 1,
+                            stream * LANE_BYTES);
+                    receive_eop_reg[stream]._next =
+                        balancer.eop_out().bits(
+                            stream * LANE_BYTES + LANE_BYTES - 1,
+                            stream * LANE_BYTES);
+                    receive_raw_reg[stream]._next = raw_in();
+                }
+            }
             fifo_fire = (bool)descriptor_valid_comb_func()[stream]
                 && (bool)rx_fifo.ready_out()[stream];
             if (fifo_fire) {
@@ -431,6 +523,12 @@ public:
     {
         uint32_t stream;
         for (stream = 0; stream < STREAMS; ++stream) {
+            receive_data_reg[stream].strobe();
+            receive_keep_reg[stream].strobe();
+            receive_sop_reg[stream].strobe();
+            receive_eop_reg[stream].strobe();
+            receive_raw_reg[stream].strobe();
+            receive_valid_reg[stream].strobe();
             parser_word0_reg[stream].strobe();
             parser_word1_reg[stream].strobe();
             parser_raw_reg[stream].strobe();
@@ -454,6 +552,9 @@ public:
     {
         uint32_t stream;
         for (stream = 0; stream < STREAMS; ++stream) {
+            receive_data_reg[stream].strobe(); receive_keep_reg[stream].strobe();
+            receive_sop_reg[stream].strobe(); receive_eop_reg[stream].strobe();
+            receive_raw_reg[stream].strobe(); receive_valid_reg[stream].strobe();
             parser_word0_reg[stream].strobe(); parser_word1_reg[stream].strobe();
             parser_raw_reg[stream].strobe(); parser_first_reg[stream].strobe();
             parser_complete_reg[stream].strobe(); ram_address_reg[stream].strobe();

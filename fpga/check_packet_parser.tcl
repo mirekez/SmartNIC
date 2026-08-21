@@ -8,7 +8,7 @@ set generated_dir [file join $repo_dir rtl generated]
 if {$argc > 0} {
     set generated_dir [file normalize [lindex $argv 0]]
 }
-set part xc7k160tffg676-3
+set part xc7k325tffg676-3
 
 file mkdir $report_dir
 create_project -in_memory -part $part
@@ -19,6 +19,8 @@ read_verilog -sv [list \
     [file join $generated_dir PacketParserFields_pkg.sv] \
     [file join $generated_dir PacketParserWord_pkg.sv] \
     [file join $generated_dir PacketParserProgress_pkg.sv] \
+    [file join $generated_dir PacketParserScanEvent_pkg.sv] \
+    [file join $generated_dir PacketParserRealignEvent_pkg.sv] \
     [file join $generated_dir PacketParserPipeWord_pkg.sv] \
     [file join $generated_dir PacketParserCall_pkg.sv] \
     [file join $generated_dir PacketParserHeaderId_pkg.sv] \

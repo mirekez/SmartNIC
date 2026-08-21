@@ -2,7 +2,7 @@ set script_dir [file dirname [file normalize [info script]]]
 set repo_dir [file dirname $script_dir]
 set report_dir [file normalize [file join $script_dir build packet_stream_check]]
 set generated_dir [file join $repo_dir rtl generated]
-set part xc7k160tffg676-3
+set part xc7k325tffg676-3
 
 file mkdir $report_dir
 foreach direction {{64 256 up} {256 64 down}} {

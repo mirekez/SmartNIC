@@ -1,9 +1,13 @@
 #pragma once
 
-// Two packet-committed TxFifos merged into one ordered 2-lane Ethernet
-// stream.  Packets are selected round-robin at frame boundaries.  A one-word
-// carry absorbs arbitrary output alignment; the merger inserts exactly the
-// configured IPG whenever another committed packet is immediately available.
+// Merge two packet-committed transmit FIFOs onto one 128-bit Ethernet stream.
+//
+// The implementation has two deliberately registered stages.  The scheduler
+// removes at most two 64-bit words from one FIFO and records that packet-only
+// batch.  A separate wire-time queue appends the batch and, at EOP, twelve
+// invalid byte slots for the Ethernet IPG.  Keeping FIFO dequeue independent
+// from byte alignment prevents the formatter from feeding a long combinational
+// path back into both FIFO BRAM read addresses.
 
 #include "TxFifo.h"
 #include "../common/ClockDomains.h"
@@ -22,9 +26,9 @@ public:
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t OUTPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t OUTPUT_BYTES = STREAMS * LANE_BYTES;
-    static constexpr size_t MAX_LANE_WIDTH = 64;
-    static constexpr size_t MAX_LANE_BYTES = MAX_LANE_WIDTH / 8;
-    static constexpr size_t GAP_BITS = clog2(MIN_IPG_BYTES + 1);
+
+    static_assert(LANE_WIDTH == 64,
+        "OutputMerger supports two 64-bit 10GbE MAC lanes");
 
     _PORT(logic<STREAMS>) tx_valid_in;
     _PORT(logic<STREAMS * LANE_WIDTH>) tx_data_in;
@@ -44,63 +48,63 @@ public:
     _PORT(bool) protocol_error_out;
 
 private:
-    static constexpr size_t FIFO_DATA_BITS =
-        STREAMS * WINDOW_WORDS * LANE_WIDTH;
-    static constexpr size_t FIFO_KEEP_BITS =
-        STREAMS * WINDOW_WORDS * LANE_BYTES;
-    static constexpr size_t FIFO_FLAG_BITS = STREAMS * WINDOW_WORDS;
-    static constexpr size_t MAX_FIFO_DATA_BITS =
-        STREAMS * WINDOW_WORDS * MAX_LANE_WIDTH;
-    static constexpr size_t MAX_FIFO_KEEP_BITS =
-        STREAMS * WINDOW_WORDS * MAX_LANE_BYTES;
-    static constexpr size_t READ_COUNT_BITS = STREAMS * 4;
+    static constexpr size_t BATCH_BYTES = OUTPUT_BYTES;
+    static constexpr size_t TIME_QUEUE_BYTES = 64;
+    static constexpr size_t TIME_QUEUE_BITS = TIME_QUEUE_BYTES * 8;
+    static constexpr size_t TIME_COUNT_BITS =
+        clog2(TIME_QUEUE_BYTES + 1);
+    static constexpr size_t BATCH_COUNT_BITS = clog2(BATCH_BYTES + 1);
 
-    static constexpr size_t RESULT_DATA = 0;
-    static constexpr size_t RESULT_KEEP = RESULT_DATA + OUTPUT_BITS;
-    static constexpr size_t RESULT_SOP = RESULT_KEEP + OUTPUT_BYTES;
-    static constexpr size_t RESULT_EOP = RESULT_SOP + OUTPUT_BYTES;
-    static constexpr size_t RESULT_VALID = RESULT_EOP + OUTPUT_BYTES;
-    static constexpr size_t RESULT_NEXT_RR = RESULT_VALID + 1;
-    static constexpr size_t RESULT_NEXT_ACTIVE = RESULT_NEXT_RR + 1;
-    static constexpr size_t RESULT_NEXT_STREAM = RESULT_NEXT_ACTIVE + 1;
-    static constexpr size_t RESULT_NEXT_GAP = RESULT_NEXT_STREAM + 1;
-    static constexpr size_t RESULT_NEXT_CARRY_VALID =
-        RESULT_NEXT_GAP + GAP_BITS;
-    static constexpr size_t RESULT_NEXT_CARRY_DATA =
-        RESULT_NEXT_CARRY_VALID + 1;
-    static constexpr size_t RESULT_NEXT_CARRY_KEEP =
-        RESULT_NEXT_CARRY_DATA + LANE_WIDTH;
-    static constexpr size_t RESULT_NEXT_CARRY_SOP =
-        RESULT_NEXT_CARRY_KEEP + LANE_BYTES;
-    static constexpr size_t RESULT_NEXT_CARRY_EOP =
-        RESULT_NEXT_CARRY_SOP + 1;
-    static constexpr size_t RESULT_ERROR = RESULT_NEXT_CARRY_EOP + 1;
-    static constexpr size_t RESULT_BITS = RESULT_ERROR + 1;
+    // Packed scheduler result.  It is registered before it reaches the
+    // byte/IPG formatter.
+    static constexpr size_t SCHED_VALID = 0;
+    static constexpr size_t SCHED_SELECTED = SCHED_VALID + 1;
+    static constexpr size_t SCHED_READ_COUNT = SCHED_SELECTED + 1;
+    static constexpr size_t SCHED_DATA = SCHED_READ_COUNT + 2;
+    static constexpr size_t SCHED_KEEP = SCHED_DATA + OUTPUT_BITS;
+    static constexpr size_t SCHED_SOP = SCHED_KEEP + OUTPUT_BYTES;
+    static constexpr size_t SCHED_EOP = SCHED_SOP + OUTPUT_BYTES;
+    static constexpr size_t SCHED_BYTES = SCHED_EOP + OUTPUT_BYTES;
+    static constexpr size_t SCHED_NEXT_RR =
+        SCHED_BYTES + BATCH_COUNT_BITS;
+    static constexpr size_t SCHED_NEXT_ACTIVE = SCHED_NEXT_RR + 1;
+    static constexpr size_t SCHED_NEXT_STREAM = SCHED_NEXT_ACTIVE + 1;
+    static constexpr size_t SCHED_ERROR = SCHED_NEXT_STREAM + 1;
+    static constexpr size_t SCHED_BITS = SCHED_ERROR + 1;
 
     TxFifo<LANE_WIDTH, FIFO_WORDS> fifos[STREAMS];
 
-    reg<u1> rr_reg;
-    reg<u1> active_reg;
-    reg<u1> stream_reg;
-    reg<u<GAP_BITS>> gap_reg;
-    reg<u1> carry_valid_reg;
-    reg<logic<LANE_WIDTH>> carry_data_reg;
-    reg<logic<LANE_BYTES>> carry_keep_reg;
-    reg<u1> carry_sop_reg;
-    reg<u1> carry_eop_reg;
+    reg<u1> scheduler_rr_reg;
+    reg<u1> scheduler_active_reg;
+    reg<u1> scheduler_stream_reg;
+
+    reg<u1> batch_valid_reg;
+    reg<logic<OUTPUT_BITS>> batch_data_reg;
+    reg<logic<OUTPUT_BYTES>> batch_keep_reg;
+    reg<logic<OUTPUT_BYTES>> batch_sop_reg;
+    reg<logic<OUTPUT_BYTES>> batch_eop_reg;
+    reg<u<BATCH_COUNT_BITS>> batch_bytes_reg;
+
+    // Each position is a wire byte-time.  Invalid positions are Ethernet IPG.
+    reg<logic<TIME_QUEUE_BITS>> time_data_reg;
+    reg<logic<TIME_QUEUE_BYTES>> time_keep_reg;
+    reg<logic<TIME_QUEUE_BYTES>> time_sop_reg;
+    reg<logic<TIME_QUEUE_BYTES>> time_eop_reg;
+    reg<u<TIME_COUNT_BITS>> time_count_reg;
     reg<u1> protocol_error_reg;
 
     logic<STREAMS> tx_ready_comb;
     logic<STREAMS> tx_almost_full_comb;
     logic<STREAMS> tx_fifo_error_comb;
-    logic<READ_COUNT_BITS> merge_read_counts_comb;
+
 #define OUTPUT_MERGER_DECLARE_INPUT(number) \
     logic<LANE_WIDTH> tx_data_##number##_comb; \
     logic<LANE_WIDTH>& tx_data_##number##_comb_func() \
     { \
         size_t bit; \
         for (bit = 0; bit < LANE_WIDTH; ++bit) \
-            tx_data_##number##_comb[bit] = tx_data_in()[number * LANE_WIDTH + bit]; \
+            tx_data_##number##_comb[bit] = \
+                tx_data_in()[number * LANE_WIDTH + bit]; \
         return tx_data_##number##_comb; \
     } \
     logic<LANE_BYTES> tx_keep_##number##_comb; \
@@ -108,7 +112,8 @@ private:
     { \
         size_t byte; \
         for (byte = 0; byte < LANE_BYTES; ++byte) \
-            tx_keep_##number##_comb[byte] = tx_keep_in()[number * LANE_BYTES + byte]; \
+            tx_keep_##number##_comb[byte] = \
+                tx_keep_in()[number * LANE_BYTES + byte]; \
         return tx_keep_##number##_comb; \
     }
     OUTPUT_MERGER_FOR_EACH_STREAM(OUTPUT_MERGER_DECLARE_INPUT)
@@ -116,388 +121,246 @@ private:
 
     logic<STREAMS>& tx_ready_comb_func()
     {
-        size_t stream;
         tx_ready_comb = 0;
-        for (stream = 0; stream < STREAMS; ++stream) {
-            tx_ready_comb[stream] = fifos[stream].ready_out();
-        }
+        tx_ready_comb[0] = fifos[0].ready_out();
+        tx_ready_comb[1] = fifos[1].ready_out();
         return tx_ready_comb;
     }
 
     logic<STREAMS>& tx_almost_full_comb_func()
     {
-        size_t stream;
         tx_almost_full_comb = 0;
-        for (stream = 0; stream < STREAMS; ++stream) {
-            tx_almost_full_comb[stream] = fifos[stream].almost_full_out();
-        }
+        tx_almost_full_comb[0] = fifos[0].almost_full_out();
+        tx_almost_full_comb[1] = fifos[1].almost_full_out();
         return tx_almost_full_comb;
     }
 
     logic<STREAMS>& tx_fifo_error_comb_func()
     {
-        size_t stream;
         tx_fifo_error_comb = 0;
-        for (stream = 0; stream < STREAMS; ++stream) {
-            tx_fifo_error_comb[stream] = fifos[stream].protocol_error_out();
-        }
+        tx_fifo_error_comb[0] = fifos[0].protocol_error_out();
+        tx_fifo_error_comb[1] = fifos[1].protocol_error_out();
         return tx_fifo_error_comb;
     }
 
-    _LAZY_COMB(fifo_data_comb, logic<FIFO_DATA_BITS>)
-        size_t stream;
-        size_t bit;
-        logic<WINDOW_WORDS * MAX_LANE_WIDTH> value;
-        fifo_data_comb = 0;
-        for (stream = 0; stream < STREAMS; ++stream) {
-            value = fifos[stream].data_out();
-            for (bit = 0; bit < WINDOW_WORDS * LANE_WIDTH; ++bit) {
-                fifo_data_comb[stream * WINDOW_WORDS * LANE_WIDTH + bit] =
-                    value[bit];
-            }
+    static uint32_t prefix_bytes(logic<LANE_BYTES> keep)
+    {
+        uint32_t count;
+        uint32_t byte;
+        count = 0;
+        for (byte = 0; byte < LANE_BYTES; ++byte) {
+            if ((bool)keep[byte]) ++count;
         }
-        return fifo_data_comb;
+        return count;
     }
 
-    _LAZY_COMB(fifo_keep_comb, logic<FIFO_KEEP_BITS>)
-        size_t stream;
-        size_t bit;
-        logic<WINDOW_WORDS * MAX_LANE_BYTES> value;
-        fifo_keep_comb = 0;
-        for (stream = 0; stream < STREAMS; ++stream) {
-            value = fifos[stream].keep_out();
-            for (bit = 0; bit < WINDOW_WORDS * LANE_BYTES; ++bit) {
-                fifo_keep_comb[stream * WINDOW_WORDS * LANE_BYTES + bit] =
-                    value[bit];
-            }
+    static bool prefix_keep_valid(logic<LANE_BYTES> keep)
+    {
+        uint32_t byte;
+        bool seen_zero;
+        bool malformed;
+        seen_zero = false;
+        malformed = false;
+        for (byte = 0; byte < LANE_BYTES; ++byte) {
+            if (!(bool)keep[byte]) seen_zero = true;
+            else if (seen_zero) malformed = true;
         }
-        return fifo_keep_comb;
+        return !malformed && (uint64_t)keep != 0;
     }
 
-    _LAZY_COMB(fifo_sop_comb, logic<FIFO_FLAG_BITS>)
-        size_t stream;
-        size_t slot;
-        logic<WINDOW_WORDS> value;
-        fifo_sop_comb = 0;
-        for (stream = 0; stream < STREAMS; ++stream) {
-            value = fifos[stream].sop_out();
-            for (slot = 0; slot < WINDOW_WORDS; ++slot) {
-                fifo_sop_comb[stream * WINDOW_WORDS + slot] = value[slot];
-            }
-        }
-        return fifo_sop_comb;
-    }
-
-    _LAZY_COMB(fifo_eop_comb, logic<FIFO_FLAG_BITS>)
-        size_t stream;
-        size_t slot;
-        logic<WINDOW_WORDS> value;
-        fifo_eop_comb = 0;
-        for (stream = 0; stream < STREAMS; ++stream) {
-            value = fifos[stream].eop_out();
-            for (slot = 0; slot < WINDOW_WORDS; ++slot) {
-                fifo_eop_comb[stream * WINDOW_WORDS + slot] = value[slot];
-            }
-        }
-        return fifo_eop_comb;
-    }
-
-    _LAZY_COMB(fifo_valid_comb, logic<FIFO_FLAG_BITS>)
-        size_t stream;
-        size_t slot;
-        logic<WINDOW_WORDS> value;
-        fifo_valid_comb = 0;
-        for (stream = 0; stream < STREAMS; ++stream) {
-            value = fifos[stream].valid_out();
-            for (slot = 0; slot < WINDOW_WORDS; ++slot) {
-                fifo_valid_comb[stream * WINDOW_WORDS + slot] = value[slot];
-            }
-        }
-        return fifo_valid_comb;
-    }
-
-    _LAZY_COMB(merge_result_comb, logic<RESULT_BITS>)
-        size_t piece;
-        uint8_t rr;
-        uint8_t selected;
-        uint8_t slot;
-        uint8_t slot0;
-        uint8_t slot1;
-        uint8_t gap;
-        uint8_t position;
-        uint8_t space;
-        uint8_t bytes;
-        uint8_t take;
-        uint8_t keep_mask;
-        uint64_t data_mask;
+    _LAZY_COMB(scheduler_result_comb, logic<SCHED_BITS>)
+        uint32_t selected;
+        uint32_t read_count;
+        uint32_t bytes0;
+        uint32_t bytes1;
+        uint32_t total_bytes;
         bool active;
-        bool loaded;
-        bool found;
-        bool any_data;
+        bool valid0;
+        bool valid1;
+        bool eop0;
+        bool eop1;
+        bool sop0;
+        bool sop1;
         bool error;
-        bool blocked;
-        bool expect_sop;
-        bool available0;
-        bool available1;
-        bool word_sop;
-        bool word_eop;
-        logic<READ_COUNT_BITS> read_counts;
-        logic<MAX_LANE_WIDTH> word_data;
-        logic<MAX_LANE_BYTES> word_keep;
-        logic<MAX_FIFO_DATA_BITS> all_data;
-        logic<MAX_FIFO_KEEP_BITS> all_keep;
-        logic<FIFO_FLAG_BITS> all_sop;
-        logic<FIFO_FLAG_BITS> all_eop;
-        logic<FIFO_FLAG_BITS> all_valid;
-        logic<OUTPUT_BITS> output_data;
-        logic<OUTPUT_BYTES> output_keep;
-        logic<OUTPUT_BYTES> output_sop;
-        logic<OUTPUT_BYTES> output_eop;
+        logic<2 * LANE_WIDTH> words_data;
+        logic<2 * LANE_BYTES> words_keep;
+        logic<2> words_sop;
+        logic<2> words_eop;
+        logic<2> words_valid;
+        logic<OUTPUT_BITS> batch_data;
+        logic<OUTPUT_BYTES> batch_keep;
+        logic<OUTPUT_BYTES> batch_sop;
+        logic<OUTPUT_BYTES> batch_eop;
 
-        merge_result_comb = 0;
-        merge_read_counts_comb = 0;
-        read_counts = 0;
-        output_data = 0;
-        output_keep = 0;
-        output_sop = 0;
-        output_eop = 0;
-        all_data = fifo_data_comb_func();
-        all_keep = fifo_keep_comb_func();
-        all_sop = fifo_sop_comb_func();
-        all_eop = fifo_eop_comb_func();
-        all_valid = fifo_valid_comb_func();
-        rr = (uint8_t)rr_reg;
-        selected = (uint8_t)stream_reg;
-        gap = (uint8_t)gap_reg;
-        position = 0;
-        active = active_reg;
-        expect_sop = !active;
-        loaded = carry_valid_reg;
-        word_data = carry_data_reg;
-        word_keep = carry_keep_reg;
-        word_sop = carry_sop_reg;
-        word_eop = carry_eop_reg;
-        any_data = false;
-        error = false;
-        blocked = false;
-        slot = 0;
-        slot0 = 0;
-        slot1 = 0;
-        space = 0;
-        bytes = 0;
-        take = 0;
-        keep_mask = 0;
-        data_mask = 0;
-        found = false;
-        available0 = false;
-        available1 = false;
-
-        // At most three packet-word fragments can contribute to one 16-byte
-        // aggregate word: an old carry, two aligned words, or a post-IPG
-        // prefix.  Keeping this loop at three prevents a byte-serial path.
-        for (piece = 0; piece < 3; ++piece) {
-            if (!blocked && position < OUTPUT_BYTES) {
-                if (gap != 0) {
-                    space = OUTPUT_BYTES - position;
-                    take = gap < space ? gap : space;
-                    position += take;
-                    gap -= take;
-                }
-
-                if (gap == 0 && position < OUTPUT_BYTES) {
-                    if (!active) {
-                        slot0 = (uint8_t)(uint64_t)read_counts.bits(3, 0);
-                        slot1 = (uint8_t)(uint64_t)read_counts.bits(7, 4);
-                        available0 = slot0 < WINDOW_WORDS
-                            && (slot0 == 0 ? (bool)all_valid[0]
-                                : (bool)all_valid[1]);
-                        available1 = slot1 < WINDOW_WORDS
-                            && (slot1 == 0 ? (bool)all_valid[2]
-                                : (bool)all_valid[3]);
-                        found = available0 || available1;
-                        if (rr == 0) selected = available0 ? 0 : 1;
-                        else selected = available1 ? 1 : 0;
-                        if (!found) blocked = true;
-                        else {
-                            active = true;
-                            expect_sop = true;
-                            loaded = false;
-                        }
-                    }
-
-                    if (!blocked && !loaded) {
-                        slot = selected == 0
-                            ? (uint8_t)(uint64_t)read_counts.bits(3, 0)
-                            : (uint8_t)(uint64_t)read_counts.bits(7, 4);
-                        if (slot >= WINDOW_WORDS
-                            || (selected == 0
-                                ? (slot == 0 ? !(bool)all_valid[0]
-                                    : !(bool)all_valid[1])
-                                : (slot == 0 ? !(bool)all_valid[2]
-                                    : !(bool)all_valid[3]))) {
-                            blocked = true;
-                        }
-                        else {
-                            if (selected == 0 && slot == 0) {
-                                word_data = all_data.bits(63, 0);
-                                word_keep = all_keep.bits(7, 0);
-                                word_sop = all_sop[0];
-                                word_eop = all_eop[0];
-                            }
-                            else if (selected == 0) {
-                                word_data = all_data.bits(127, 64);
-                                word_keep = all_keep.bits(15, 8);
-                                word_sop = all_sop[1];
-                                word_eop = all_eop[1];
-                            }
-                            else if (slot == 0) {
-                                word_data = all_data.bits(191, 128);
-                                word_keep = all_keep.bits(23, 16);
-                                word_sop = all_sop[2];
-                                word_eop = all_eop[2];
-                            }
-                            else {
-                                word_data = all_data.bits(255, 192);
-                                word_keep = all_keep.bits(31, 24);
-                                word_sop = all_sop[3];
-                                word_eop = all_eop[3];
-                            }
-                            if (selected == 0)
-                                read_counts.bits(3, 0) = slot + 1;
-                            else
-                                read_counts.bits(7, 4) = slot + 1;
-                            loaded = true;
-                            if (word_sop != expect_sop) error = true;
-                            expect_sop = false;
-                        }
-                    }
-
-                    if (!blocked && loaded) {
-                        bytes = 0;
-                        if (word_keep[7]) bytes = 8;
-                        else if (word_keep[6]) bytes = 7;
-                        else if (word_keep[5]) bytes = 6;
-                        else if (word_keep[4]) bytes = 5;
-                        else if (word_keep[3]) bytes = 4;
-                        else if (word_keep[2]) bytes = 3;
-                        else if (word_keep[1]) bytes = 2;
-                        else if (word_keep[0]) bytes = 1;
-                        if (bytes == 0) {
-                            error = true;
-                            blocked = true;
-                        }
-                        else {
-                            space = OUTPUT_BYTES - position;
-                            take = bytes < space ? bytes : space;
-                            data_mask = take == LANE_BYTES ? ~uint64_t(0)
-                                : ((uint64_t(1) << (take * 8)) - 1);
-                            keep_mask = (1u << take) - 1;
-                            output_data = output_data
-                                | ((logic<OUTPUT_BITS>)(word_data & data_mask)
-                                    << (position * 8));
-                            output_keep = output_keep
-                                | (logic<OUTPUT_BYTES>)(keep_mask << position);
-                            if (word_sop) output_sop[position] = 1;
-                            any_data = true;
-                            position += take;
-
-                            if (take < bytes) {
-                                word_data = word_data >> (take * 8);
-                                word_keep = word_keep >> take;
-                                word_sop = false;
-                                loaded = true;
-                            }
-                            else {
-                                loaded = false;
-                                if (word_eop) {
-                                    output_eop[position - 1] = 1;
-                                    active = false;
-                                    expect_sop = true;
-                                    gap = MIN_IPG_BYTES;
-                                    rr = (selected + 1) & (STREAMS - 1);
-
-                                    // Consume as much of the mandatory gap as
-                                    // fits in this aggregate word immediately.
-                                    // Otherwise an EOP handled by the final
-                                    // piece would add an unnecessary whole
-                                    // output word to the inter-packet gap.
-                                    space = OUTPUT_BYTES - position;
-                                    take = gap < space ? gap : space;
-                                    position += take;
-                                    gap -= take;
-                                }
-                            }
-                        }
-                    }
-                }
+        scheduler_result_comb = 0;
+        selected = (uint32_t)scheduler_stream_reg;
+        active = (bool)scheduler_active_reg;
+        if (!active) {
+            if ((bool)scheduler_rr_reg) {
+                selected = (bool)fifos[1].valid_out()[0] ? 1 : 0;
+            }
+            else {
+                selected = (bool)fifos[0].valid_out()[0] ? 0 : 1;
             }
         }
 
-        merge_read_counts_comb = read_counts;
-        merge_result_comb.bits(RESULT_DATA + OUTPUT_BITS - 1,
-            RESULT_DATA) = output_data;
-        merge_result_comb.bits(RESULT_KEEP + OUTPUT_BYTES - 1,
-            RESULT_KEEP) = output_keep;
-        merge_result_comb.bits(RESULT_SOP + OUTPUT_BYTES - 1,
-            RESULT_SOP) = output_sop;
-        merge_result_comb.bits(RESULT_EOP + OUTPUT_BYTES - 1,
-            RESULT_EOP) = output_eop;
-        merge_result_comb[RESULT_VALID] = any_data;
-        merge_result_comb[RESULT_NEXT_RR] = rr;
-        merge_result_comb[RESULT_NEXT_ACTIVE] = active;
-        merge_result_comb[RESULT_NEXT_STREAM] = selected;
-        merge_result_comb.bits(RESULT_NEXT_GAP + GAP_BITS - 1,
-            RESULT_NEXT_GAP) = gap;
-        merge_result_comb[RESULT_NEXT_CARRY_VALID] = loaded;
-        if (loaded) {
-            merge_result_comb.bits(RESULT_NEXT_CARRY_DATA + LANE_WIDTH - 1,
-                RESULT_NEXT_CARRY_DATA) = word_data;
-            merge_result_comb.bits(RESULT_NEXT_CARRY_KEEP + LANE_BYTES - 1,
-                RESULT_NEXT_CARRY_KEEP) = word_keep;
-            merge_result_comb[RESULT_NEXT_CARRY_SOP] = word_sop;
-            merge_result_comb[RESULT_NEXT_CARRY_EOP] = word_eop;
+        if (selected == 0) {
+            words_data = fifos[0].data_out();
+            words_keep = fifos[0].keep_out();
+            words_sop = fifos[0].sop_out();
+            words_eop = fifos[0].eop_out();
+            words_valid = fifos[0].valid_out();
         }
-        merge_result_comb[RESULT_ERROR] = error;
-        return merge_result_comb;
-    }
+        else {
+            words_data = fifos[1].data_out();
+            words_keep = fifos[1].keep_out();
+            words_sop = fifos[1].sop_out();
+            words_eop = fifos[1].eop_out();
+            words_valid = fifos[1].valid_out();
+        }
 
-    logic<OUTPUT_BITS> output_data_comb;
-    logic<OUTPUT_BITS>& output_data_comb_func()
-    {
-        output_data_comb = merge_result_comb_func().bits(
-            RESULT_DATA + OUTPUT_BITS - 1, RESULT_DATA);
-        return output_data_comb;
-    }
+        valid0 = (bool)words_valid[0];
+        valid1 = (bool)words_valid[1];
+        eop0 = (bool)words_eop[0];
+        eop1 = (bool)words_eop[1];
+        sop0 = (bool)words_sop[0];
+        sop1 = (bool)words_sop[1];
+        read_count = 0;
+        bytes0 = 0;
+        bytes1 = 0;
+        total_bytes = 0;
+        error = false;
+        batch_data = 0;
+        batch_keep = 0;
+        batch_sop = 0;
+        batch_eop = 0;
 
-    logic<OUTPUT_BYTES> output_keep_comb;
-    logic<OUTPUT_BYTES>& output_keep_comb_func()
-    {
-        output_keep_comb = merge_result_comb_func().bits(
-            RESULT_KEEP + OUTPUT_BYTES - 1, RESULT_KEEP);
-        return output_keep_comb;
-    }
+        if (valid0) {
+            read_count = 1;
+            bytes0 = prefix_bytes(words_keep.bits(LANE_BYTES - 1, 0));
+            if (!prefix_keep_valid(words_keep.bits(LANE_BYTES - 1, 0)))
+                error = true;
+            if (sop0 == active) error = true;
+            if (!eop0 && bytes0 != LANE_BYTES) error = true;
 
-    logic<OUTPUT_BYTES> output_sop_comb;
-    logic<OUTPUT_BYTES>& output_sop_comb_func()
-    {
-        output_sop_comb = merge_result_comb_func().bits(
-            RESULT_SOP + OUTPUT_BYTES - 1, RESULT_SOP);
-        return output_sop_comb;
-    }
+            batch_data.bits(LANE_WIDTH - 1, 0) =
+                words_data.bits(LANE_WIDTH - 1, 0);
+            batch_keep.bits(LANE_BYTES - 1, 0) =
+                words_keep.bits(LANE_BYTES - 1, 0);
+            if (sop0) batch_sop[0] = 1;
+            total_bytes = bytes0;
 
-    logic<OUTPUT_BYTES> output_eop_comb;
-    logic<OUTPUT_BYTES>& output_eop_comb_func()
-    {
-        output_eop_comb = merge_result_comb_func().bits(
-            RESULT_EOP + OUTPUT_BYTES - 1, RESULT_EOP);
-        return output_eop_comb;
+            if (!eop0) {
+                if (!valid1) {
+                    error = true;
+                }
+                else {
+                    read_count = 2;
+                    // Literal bounds avoid leaving a parameter expression in
+                    // the generated indexed part-select.
+                    bytes1 = prefix_bytes(words_keep.bits(15, 8));
+                    if (!prefix_keep_valid(words_keep.bits(15, 8)))
+                        error = true;
+                    if (sop1) error = true;
+                    if (!eop1 && bytes1 != LANE_BYTES) error = true;
+                    batch_data.bits(OUTPUT_BITS - 1, LANE_WIDTH) =
+                        words_data.bits(127, 64);
+                    batch_keep.bits(OUTPUT_BYTES - 1, LANE_BYTES) =
+                        words_keep.bits(15, 8);
+                    total_bytes += bytes1;
+                }
+            }
+
+            if ((eop0 || (read_count == 2 && eop1))
+                && total_bytes != 0) {
+                batch_eop[total_bytes - 1] = 1;
+            }
+            scheduler_result_comb[SCHED_VALID] = 1;
+            scheduler_result_comb[SCHED_SELECTED] = selected;
+            scheduler_result_comb.bits(SCHED_READ_COUNT + 1,
+                SCHED_READ_COUNT) = read_count;
+            scheduler_result_comb.bits(SCHED_DATA + OUTPUT_BITS - 1,
+                SCHED_DATA) = batch_data;
+            scheduler_result_comb.bits(SCHED_KEEP + OUTPUT_BYTES - 1,
+                SCHED_KEEP) = batch_keep;
+            scheduler_result_comb.bits(SCHED_SOP + OUTPUT_BYTES - 1,
+                SCHED_SOP) = batch_sop;
+            scheduler_result_comb.bits(SCHED_EOP + OUTPUT_BYTES - 1,
+                SCHED_EOP) = batch_eop;
+            scheduler_result_comb.bits(SCHED_BYTES + BATCH_COUNT_BITS - 1,
+                SCHED_BYTES) = total_bytes;
+
+            if (eop0 || (read_count == 2 && eop1)) {
+                scheduler_result_comb[SCHED_NEXT_RR] = selected ^ 1;
+                scheduler_result_comb[SCHED_NEXT_ACTIVE] = 0;
+                scheduler_result_comb[SCHED_NEXT_STREAM] = selected;
+            }
+            else {
+                scheduler_result_comb[SCHED_NEXT_RR] =
+                    (bool)scheduler_rr_reg;
+                scheduler_result_comb[SCHED_NEXT_ACTIVE] = 1;
+                scheduler_result_comb[SCHED_NEXT_STREAM] = selected;
+            }
+        }
+        else {
+            scheduler_result_comb[SCHED_NEXT_RR] =
+                (bool)scheduler_rr_reg;
+            scheduler_result_comb[SCHED_NEXT_ACTIVE] = active;
+            scheduler_result_comb[SCHED_NEXT_STREAM] = selected;
+        }
+        scheduler_result_comb[SCHED_ERROR] = error;
+        return scheduler_result_comb;
     }
 
     bool output_valid_comb;
     bool& output_valid_comb_func()
     {
-        output_valid_comb = (bool)merge_result_comb_func()[RESULT_VALID];
+        uint32_t count;
+        count = (uint32_t)time_count_reg;
+        // Do not expose a short aggregate in the middle of a frame.  At a
+        // packet boundary it is held long enough for the next packet and its
+        // exact IPG to be appended, or flushed when no work remains.
+        output_valid_comb = count != 0
+            && (count >= OUTPUT_BYTES
+                || (!(bool)batch_valid_reg
+                    && !(bool)scheduler_active_reg));
         return output_valid_comb;
+    }
+
+    bool output_drain_comb;
+    bool& output_drain_comb_func()
+    {
+        output_drain_comb = output_valid_comb_func() && ready_in();
+        return output_drain_comb;
+    }
+
+    uint32_t queue_count_after_drain()
+    {
+        uint32_t count;
+        count = (uint32_t)time_count_reg;
+        if (output_drain_comb_func()) {
+            count = count > OUTPUT_BYTES ? count - OUTPUT_BYTES : 0;
+        }
+        return count;
+    }
+
+    bool queue_append_comb;
+    bool& queue_append_comb_func()
+    {
+        uint32_t span;
+        span = (uint32_t)batch_bytes_reg;
+        if ((uint64_t)batch_eop_reg != 0) span += MIN_IPG_BYTES;
+        queue_append_comb = (bool)batch_valid_reg
+            && queue_count_after_drain() + span <= TIME_QUEUE_BYTES;
+        return queue_append_comb;
+    }
+
+    bool batch_slot_ready_comb;
+    bool& batch_slot_ready_comb_func()
+    {
+        batch_slot_ready_comb = !(bool)batch_valid_reg
+            || queue_append_comb_func();
+        return batch_slot_ready_comb;
     }
 
 #define OUTPUT_MERGER_DECLARE_READ_COUNT(number) \
@@ -505,15 +368,45 @@ private:
     u<4>& read_count_##number##_comb_func() \
     { \
         read_count_##number##_comb = 0; \
-        if (output_valid_comb_func() && ready_in()) { \
-            read_count_##number##_comb = \
-                ((uint32_t)(uint64_t)merge_read_counts_comb \
-                    >> (number * 4)) & 15; \
+        if (batch_slot_ready_comb_func() \
+            && (bool)scheduler_result_comb_func()[SCHED_VALID] \
+            && ((bool)scheduler_result_comb_func()[SCHED_SELECTED] \
+                == (number != 0))) { \
+            read_count_##number##_comb = scheduler_result_comb_func().bits( \
+                SCHED_READ_COUNT + 1, SCHED_READ_COUNT); \
         } \
         return read_count_##number##_comb; \
     }
     OUTPUT_MERGER_FOR_EACH_STREAM(OUTPUT_MERGER_DECLARE_READ_COUNT)
 #undef OUTPUT_MERGER_DECLARE_READ_COUNT
+
+    logic<OUTPUT_BITS> output_data_comb;
+    logic<OUTPUT_BITS>& output_data_comb_func()
+    {
+        output_data_comb = time_data_reg.bits(OUTPUT_BITS - 1, 0);
+        return output_data_comb;
+    }
+
+    logic<OUTPUT_BYTES> output_keep_comb;
+    logic<OUTPUT_BYTES>& output_keep_comb_func()
+    {
+        output_keep_comb = time_keep_reg.bits(OUTPUT_BYTES - 1, 0);
+        return output_keep_comb;
+    }
+
+    logic<OUTPUT_BYTES> output_sop_comb;
+    logic<OUTPUT_BYTES>& output_sop_comb_func()
+    {
+        output_sop_comb = time_sop_reg.bits(OUTPUT_BYTES - 1, 0);
+        return output_sop_comb;
+    }
+
+    logic<OUTPUT_BYTES> output_eop_comb;
+    logic<OUTPUT_BYTES>& output_eop_comb_func()
+    {
+        output_eop_comb = time_eop_reg.bits(OUTPUT_BYTES - 1, 0);
+        return output_eop_comb;
+    }
 
     bool error_comb;
     bool& error_comb_func()
@@ -533,9 +426,11 @@ public:
         fifos[number].keep_in = _ASSIGN_COMB(tx_keep_##number##_comb_func()); \
         fifos[number].sop_in = _ASSIGN((bool)tx_sop_in()[number]); \
         fifos[number].eop_in = _ASSIGN((bool)tx_eop_in()[number]); \
-        fifos[number].read_count_in = _ASSIGN_COMB(read_count_##number##_comb_func()); \
+        fifos[number].read_count_in = \
+            _ASSIGN_COMB(read_count_##number##_comb_func()); \
         fifos[number].clear_in = _ASSIGN(false); \
-        fifos[number].__inst_name = __inst_name + "/tx_fifo" + std::to_string(number); \
+        fifos[number].__inst_name = __inst_name + "/tx_fifo" \
+            + std::to_string(number); \
         fifos[number]._assign();
         OUTPUT_MERGER_FOR_EACH_STREAM(OUTPUT_MERGER_BIND_FIFO)
 #undef OUTPUT_MERGER_BIND_FIFO
@@ -554,50 +449,104 @@ public:
     void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         size_t stream;
+        uint32_t count;
+        uint32_t append_position;
+        uint32_t append_span;
+        logic<TIME_QUEUE_BITS> queue_data;
+        logic<TIME_QUEUE_BYTES> queue_keep;
+        logic<TIME_QUEUE_BYTES> queue_sop;
+        logic<TIME_QUEUE_BYTES> queue_eop;
+        logic<SCHED_BITS> candidate;
+
+        for (stream = 0; stream < STREAMS; ++stream) {
+            fifos[stream]._work(reset);
+        }
+
         if (reset) {
-            rr_reg.clr();
-            active_reg.clr();
-            stream_reg.clr();
-            gap_reg.clr();
-            carry_valid_reg.clr();
-            carry_data_reg.clr();
-            carry_keep_reg.clr();
-            carry_sop_reg.clr();
-            carry_eop_reg.clr();
+            scheduler_rr_reg.clr();
+            scheduler_active_reg.clr();
+            scheduler_stream_reg.clr();
+            batch_valid_reg.clr();
+            batch_data_reg.clr();
+            batch_keep_reg.clr();
+            batch_sop_reg.clr();
+            batch_eop_reg.clr();
+            batch_bytes_reg.clr();
+            time_data_reg.clr();
+            time_keep_reg.clr();
+            time_sop_reg.clr();
+            time_eop_reg.clr();
+            time_count_reg.clr();
             protocol_error_reg.clr();
-            for (stream = 0; stream < STREAMS; ++stream) {
-                fifos[stream]._work(true);
-            }
             return;
         }
 
-        if ((bool)merge_result_comb_func()[RESULT_VALID] && ready_in()) {
-            rr_reg._next = (bool)merge_result_comb_func()[RESULT_NEXT_RR];
-            active_reg._next = (bool)merge_result_comb_func()[
-                RESULT_NEXT_ACTIVE];
-            stream_reg._next = (bool)merge_result_comb_func()[
-                RESULT_NEXT_STREAM];
-            gap_reg._next = merge_result_comb_func().bits(
-                RESULT_NEXT_GAP + GAP_BITS - 1,
-                RESULT_NEXT_GAP);
-            carry_valid_reg._next = (bool)merge_result_comb_func()[
-                RESULT_NEXT_CARRY_VALID];
-            carry_data_reg._next = merge_result_comb_func().bits(
-                RESULT_NEXT_CARRY_DATA + LANE_WIDTH - 1,
-                RESULT_NEXT_CARRY_DATA);
-            carry_keep_reg._next = merge_result_comb_func().bits(
-                RESULT_NEXT_CARRY_KEEP + LANE_BYTES - 1,
-                RESULT_NEXT_CARRY_KEEP);
-            carry_sop_reg._next = (bool)merge_result_comb_func()[
-                RESULT_NEXT_CARRY_SOP];
-            carry_eop_reg._next = (bool)merge_result_comb_func()[
-                RESULT_NEXT_CARRY_EOP];
-            if ((bool)merge_result_comb_func()[RESULT_ERROR]) {
-                protocol_error_reg._next = 1;
-            }
+        queue_data = time_data_reg;
+        queue_keep = time_keep_reg;
+        queue_sop = time_sop_reg;
+        queue_eop = time_eop_reg;
+        count = (uint32_t)time_count_reg;
+
+        if (output_drain_comb_func()) {
+            queue_data = queue_data >> OUTPUT_BITS;
+            queue_keep = queue_keep >> OUTPUT_BYTES;
+            queue_sop = queue_sop >> OUTPUT_BYTES;
+            queue_eop = queue_eop >> OUTPUT_BYTES;
+            count = count > OUTPUT_BYTES ? count - OUTPUT_BYTES : 0;
         }
-        for (stream = 0; stream < STREAMS; ++stream) {
-            fifos[stream]._work(false);
+
+        if (queue_append_comb_func()) {
+            append_position = count;
+            append_span = (uint32_t)batch_bytes_reg;
+            queue_data = queue_data
+                | (logic<TIME_QUEUE_BITS>(batch_data_reg)
+                    << (append_position * 8));
+            queue_keep = queue_keep
+                | (logic<TIME_QUEUE_BYTES>(batch_keep_reg)
+                    << append_position);
+            queue_sop = queue_sop
+                | (logic<TIME_QUEUE_BYTES>(batch_sop_reg)
+                    << append_position);
+            queue_eop = queue_eop
+                | (logic<TIME_QUEUE_BYTES>(batch_eop_reg)
+                    << append_position);
+            if ((uint64_t)batch_eop_reg != 0)
+                append_span += MIN_IPG_BYTES;
+            count += append_span;
+        }
+
+        time_data_reg._next = queue_data;
+        time_keep_reg._next = queue_keep;
+        time_sop_reg._next = queue_sop;
+        time_eop_reg._next = queue_eop;
+        time_count_reg._next = count;
+
+        if (batch_slot_ready_comb_func()) {
+            candidate = scheduler_result_comb_func();
+            if ((bool)candidate[SCHED_VALID]) {
+                batch_valid_reg._next = 1;
+                batch_data_reg._next = candidate.bits(
+                    SCHED_DATA + OUTPUT_BITS - 1, SCHED_DATA);
+                batch_keep_reg._next = candidate.bits(
+                    SCHED_KEEP + OUTPUT_BYTES - 1, SCHED_KEEP);
+                batch_sop_reg._next = candidate.bits(
+                    SCHED_SOP + OUTPUT_BYTES - 1, SCHED_SOP);
+                batch_eop_reg._next = candidate.bits(
+                    SCHED_EOP + OUTPUT_BYTES - 1, SCHED_EOP);
+                batch_bytes_reg._next = candidate.bits(
+                    SCHED_BYTES + BATCH_COUNT_BITS - 1, SCHED_BYTES);
+                scheduler_rr_reg._next =
+                    (bool)candidate[SCHED_NEXT_RR];
+                scheduler_active_reg._next =
+                    (bool)candidate[SCHED_NEXT_ACTIVE];
+                scheduler_stream_reg._next =
+                    (bool)candidate[SCHED_NEXT_STREAM];
+                if ((bool)candidate[SCHED_ERROR])
+                    protocol_error_reg._next = 1;
+            }
+            else {
+                batch_valid_reg._next = 0;
+            }
         }
     }
 
@@ -605,18 +554,22 @@ public:
     void _strobe_net_clk()
     {
         size_t stream;
-        for (stream = 0; stream < STREAMS; ++stream) {
+        for (stream = 0; stream < STREAMS; ++stream)
             fifos[stream]._strobe();
-        }
-        rr_reg.strobe();
-        active_reg.strobe();
-        stream_reg.strobe();
-        gap_reg.strobe();
-        carry_valid_reg.strobe();
-        carry_data_reg.strobe();
-        carry_keep_reg.strobe();
-        carry_sop_reg.strobe();
-        carry_eop_reg.strobe();
+        scheduler_rr_reg.strobe();
+        scheduler_active_reg.strobe();
+        scheduler_stream_reg.strobe();
+        batch_valid_reg.strobe();
+        batch_data_reg.strobe();
+        batch_keep_reg.strobe();
+        batch_sop_reg.strobe();
+        batch_eop_reg.strobe();
+        batch_bytes_reg.strobe();
+        time_data_reg.strobe();
+        time_keep_reg.strobe();
+        time_sop_reg.strobe();
+        time_eop_reg.strobe();
+        time_count_reg.strobe();
         protocol_error_reg.strobe();
     }
 #endif
@@ -624,11 +577,16 @@ public:
     void _strobe()
     {
         size_t stream;
-        for (stream = 0; stream < STREAMS; ++stream) fifos[stream]._strobe();
-        rr_reg.strobe(); active_reg.strobe(); stream_reg.strobe();
-        gap_reg.strobe(); carry_valid_reg.strobe();
-        carry_data_reg.strobe(); carry_keep_reg.strobe(); carry_sop_reg.strobe();
-        carry_eop_reg.strobe(); protocol_error_reg.strobe();
+        for (stream = 0; stream < STREAMS; ++stream)
+            fifos[stream]._strobe();
+        scheduler_rr_reg.strobe(); scheduler_active_reg.strobe();
+        scheduler_stream_reg.strobe(); batch_valid_reg.strobe();
+        batch_data_reg.strobe(); batch_keep_reg.strobe();
+        batch_sop_reg.strobe(); batch_eop_reg.strobe();
+        batch_bytes_reg.strobe(); time_data_reg.strobe();
+        time_keep_reg.strobe(); time_sop_reg.strobe();
+        time_eop_reg.strobe(); time_count_reg.strobe();
+        protocol_error_reg.strobe();
     }
 
     SMARTNIC_NETWORK_CLOCK_METHODS()

@@ -71,17 +71,17 @@ module klusterlab_top (
     wire [1:0]  mac_tx_valid;
     wire [1:0]  mac_tx_ready;
 
-    // Heartbeats make the otherwise clock-like startup and TX-user domains
-    // observable from ILAs clocked by net_clk without routing clocks as data.
-    reg [7:0] dclk_heartbeat = 8'd0;
-    reg [7:0] txusr_heartbeat = 8'd0;
+    // Source-domain counters make the startup and TX-user clocks observable.
+    // They deliberately have no cross-domain reset: FPGA INIT supplies the
+    // initial value and avoids routing startup_reset to TXUSRCLK registers.
+    // Only a slow counter bit crosses into net_clk below.
+    reg [7:0] dclk_heartbeat_source = 8'd0;
+    reg [7:0] txusr_heartbeat_source = 8'd0;
     reg [15:0] net_heartbeat = 16'd0;
     always @(posedge startup_clk_50)
-        if (startup_reset) dclk_heartbeat <= 8'd0;
-        else dclk_heartbeat <= dclk_heartbeat + 1'b1;
+        dclk_heartbeat_source <= dclk_heartbeat_source + 1'b1;
     always @(posedge eth_txusrclk2)
-        if (startup_reset) txusr_heartbeat <= 8'd0;
-        else txusr_heartbeat <= txusr_heartbeat + 1'b1;
+        txusr_heartbeat_source <= txusr_heartbeat_source + 1'b1;
 
     // Configuration-vector bit 1 enables each MAC; VLAN/custom-preamble and
     // PCS loopback remain disabled.  FCS is generated/checked by the MAC.
@@ -152,22 +152,12 @@ module klusterlab_top (
     // the Ethernet subsystem exposes SFP TX_DISABLE (active high).
     assign sfp_tx_en = ~eth_tx_disable;
 
-    wire cpu_clk_fb;
-    wire cpu_clk_fb_buf;
-    wire cpu_clk_unbuf;
-    wire cpu_clk;
-    wire cpu_clk_locked;
-    MMCME2_BASE #(
-        .BANDWIDTH("OPTIMIZED"), .CLKIN1_PERIOD(6.400),
-        .DIVCLK_DIVIDE(1), .CLKFBOUT_MULT_F(6.000),
-        .CLKOUT0_DIVIDE_F(3.000), .STARTUP_WAIT("FALSE")
-    ) cpu_mmcm (
-        .CLKIN1(net_clk), .CLKFBIN(cpu_clk_fb_buf),
-        .RST(startup_reset), .PWRDWN(1'b0),
-        .CLKFBOUT(cpu_clk_fb), .CLKOUT0(cpu_clk_unbuf),
-        .LOCKED(cpu_clk_locked));
-    BUFG cpu_fb_bufg (.I(cpu_clk_fb), .O(cpu_clk_fb_buf));
-    BUFG cpu_clk_bufg (.I(cpu_clk_unbuf), .O(cpu_clk));
+    // Processing, its L1/L2 caches, PacketDMA, DescriptorFetcher, and the
+    // SmartNIC streams form one synchronous 156.25 MHz island.  In particular,
+    // the Processing stream ports have no asynchronous FIFO at the Network
+    // boundary, so multiplying only Processing.clk to 312.5 MHz is unsafe.
+    wire cpu_clk = net_clk;
+    wire cpu_clk_locked = 1'b1;
 
     (* ASYNC_REG = "TRUE" *) reg [3:0] net_reset_sync = 4'hf;
     always @(posedge net_clk)
@@ -178,6 +168,37 @@ module klusterlab_top (
     always @(posedge net_clk)
         if (design_reset) net_heartbeat <= 16'd0;
         else net_heartbeat <= net_heartbeat + 1'b1;
+
+    // Synchronize one sufficiently slow toggle from each source domain and
+    // count observed transitions in the ILA/net clock domain.  These counters
+    // prove the clocks are alive without sampling an asynchronous multibit
+    // binary count in the system ILA.
+    (* ASYNC_REG = "TRUE" *) reg dclk_toggle_meta = 1'b0;
+    (* ASYNC_REG = "TRUE" *) reg dclk_toggle_sync = 1'b0;
+    (* ASYNC_REG = "TRUE" *) reg txusr_toggle_meta = 1'b0;
+    (* ASYNC_REG = "TRUE" *) reg txusr_toggle_sync = 1'b0;
+    reg dclk_toggle_previous = 1'b0;
+    reg txusr_toggle_previous = 1'b0;
+    reg [7:0] dclk_heartbeat = 8'd0;
+    reg [7:0] txusr_heartbeat = 8'd0;
+    always @(posedge net_clk) begin
+        dclk_toggle_meta <= dclk_heartbeat_source[0];
+        dclk_toggle_sync <= dclk_toggle_meta;
+        txusr_toggle_meta <= txusr_heartbeat_source[3];
+        txusr_toggle_sync <= txusr_toggle_meta;
+        dclk_toggle_previous <= dclk_toggle_sync;
+        txusr_toggle_previous <= txusr_toggle_sync;
+        if (design_reset) begin
+            dclk_heartbeat <= 8'd0;
+            txusr_heartbeat <= 8'd0;
+        end
+        else begin
+            if (dclk_toggle_sync != dclk_toggle_previous)
+                dclk_heartbeat <= dclk_heartbeat + 1'b1;
+            if (txusr_toggle_sync != txusr_toggle_previous)
+                txusr_heartbeat <= txusr_heartbeat + 1'b1;
+        end
+    end
 
     reg [1:0] rx_in_frame = 2'b00;
     always @(posedge net_clk) begin
@@ -368,11 +389,20 @@ module klusterlab_top (
 
     // System/GTX/10G status capture.  All probes are sampled on the same
     // 156.25 MHz clock used by the MAC AXI interfaces and SmartNIC network.
-    wire [16:0] ila_system_state = {
+    wire [16:0] ila_system_state_raw = {
         startup_locked, startup_reset, cpu_clk_locked, design_reset,
         net_reset_from_ip, eth_reset_done, eth_reset_counter_done,
         eth_qpll_lock, eth_gttxreset, eth_gtrxreset, eth_txuserrdy,
         sfp_los, eth_tx_disable, nic_protocol_error, nic_storage_full};
+    // Status bits originate in several transceiver/startup domains.  ILA
+    // status is diagnostic, so independent two-flop synchronization is the
+    // correct representation; cross-bit atomicity is not required.
+    (* ASYNC_REG = "TRUE" *) reg [16:0] ila_system_state_meta = 17'd0;
+    (* ASYNC_REG = "TRUE" *) reg [16:0] ila_system_state = 17'd0;
+    always @(posedge net_clk) begin
+        ila_system_state_meta <= ila_system_state_raw;
+        ila_system_state <= ila_system_state_meta;
+    end
     wire [15:0] ila_processing_state = {
         ddr_awvalid[0], ddr_awready[0], ddr_wvalid[0], ddr_wready[0],
         ddr_bvalid[0], ddr_bready[0], ddr_arvalid[0], ddr_arready[0],
@@ -381,18 +411,20 @@ module klusterlab_top (
     wire [11:0] ila_mac_activity = {
         mac_rx_valid, mac_rx_last, mac_rx_error,
         mac_tx_valid, mac_tx_ready, mac_tx_last};
+    wire [15:0] ila_eth_status = {eth_status[1], eth_status[0]};
+    wire [31:0] ila_clock_activity = {
+        dclk_heartbeat, txusr_heartbeat, net_heartbeat};
 
     ila_system system_debug (
         .clk(net_clk),
         .probe0(ila_system_state),
-        .probe1(eth_status[0]),
-        .probe2(eth_status[1]),
-        .probe3(dclk_heartbeat),
-        .probe4(txusr_heartbeat),
-        .probe5(ila_processing_state),
-        .probe6(ila_mac_activity),
-        .probe7(net_heartbeat));
+        .probe1(ila_eth_status),
+        .probe2(ila_clock_activity),
+        .probe3(ila_processing_state),
+        .probe4(ila_mac_activity));
 
+    /* Per-channel payload ILAs require Vivado Core or higher.  The system ILA
+       above remains enabled for the Basic-licensed K325T build.
     ila_eth0 eth0_debug (
         .clk(net_clk),
         .probe0(mac_rx_data[0]), .probe1(mac_rx_keep[0]),
@@ -414,6 +446,7 @@ module klusterlab_top (
         .probe10(eth_status[1]), .probe11(sfp_los[1]),
         .probe12(rx_in_frame[1]), .probe13(txusr_heartbeat),
         .probe14(dclk_heartbeat));
+    */
 endmodule
 
 `default_nettype wire

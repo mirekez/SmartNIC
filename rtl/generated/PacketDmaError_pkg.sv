@@ -1,6 +1,6 @@
 package PacketDmaError_pkg;
 
-typedef enum {
+typedef enum logic[8-1:0] {
     PACKET_DMA_ERROR_NONE,
     PACKET_DMA_ERROR_COMMAND_QUEUE_FULL,
     PACKET_DMA_ERROR_ZERO_LENGTH,

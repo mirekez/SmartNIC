@@ -4,6 +4,8 @@ import Predef_pkg::*;
 import PacketParserFields_pkg::*;
 import PacketParserWord_pkg::*;
 import PacketParserProgress_pkg::*;
+import PacketParserScanEvent_pkg::*;
+import PacketParserRealignEvent_pkg::*;
 import PacketParserPipeWord_pkg::*;
 import PacketParserHeaderId_pkg::*;
 import PacketParserCall_pkg::*;
@@ -40,7 +42,7 @@ module PacketParser #(
     localparam  RAW_BYTES = 64'h80;
     localparam  RAW_STORE_WORDS = 64'h2;
     localparam  MARKUP_BITS = LANE_BYTES*'h8;
-    localparam  PIPE_STAGES = 64'h6;
+    localparam  PIPE_STAGES = 64'h11;
 
 
     // regs and combs
@@ -94,7 +96,6 @@ module PacketParser #(
     reg[4-1:0] align_count_reg;
     reg[512-1:0] raw_data_low_reg;
     reg[512-1:0] raw_data_high_reg;
-    reg[8-1:0] raw_count_reg;
     reg[5-1:0] raw_word_count_reg;
     reg in_frame_reg;
     reg frame_raw_reg;
@@ -107,8 +108,19 @@ module PacketParser #(
     reg pending_eop_reg;
     reg[8-1:0] align_word_cntr_reg;
     reg align_sop_pending_reg;
-    PacketParserPipeWord pipe_reg[6];
-    reg pipe_valid_reg[6];
+    reg ingress_valid_reg;
+    reg[LANE_WIDTH-1:0] ingress_data_reg;
+    reg[LANE_BYTES-1:0] ingress_keep_reg;
+    reg[LANE_BYTES-1:0] ingress_sop_reg;
+    reg[LANE_BYTES-1:0] ingress_eop_reg;
+    reg ingress_raw_reg;
+    reg scan_in_frame_reg;
+    reg scan_valid_reg;
+    PacketParserScanEvent scan_event_reg;
+    reg realign_valid_reg;
+    PacketParserRealignEvent realign_event_reg;
+    PacketParserPipeWord pipe_reg[17];
+    reg pipe_valid_reg[17];
     reg[512-1:0] raw_store_low_reg[2];
     reg[512-1:0] raw_store_high_reg[2];
     reg[8-1:0] raw_store_count_bytes_reg[2];
@@ -129,6 +141,9 @@ module PacketParser #(
     logic output_valid_comb;
     logic output_last_comb;
     logic output_raw_comb;
+    logic parser_accept_comb;
+    logic realigner_accept_comb;
+    logic scanner_accept_comb;
     logic input_ready_comb;
 
     // members
@@ -184,7 +199,6 @@ module PacketParser #(
     logic[4-1:0] align_count_reg_tmp;
     logic[512-1:0] raw_data_low_reg_tmp;
     logic[512-1:0] raw_data_high_reg_tmp;
-    logic[8-1:0] raw_count_reg_tmp;
     logic[5-1:0] raw_word_count_reg_tmp;
     logic in_frame_reg_tmp;
     logic frame_raw_reg_tmp;
@@ -197,8 +211,19 @@ module PacketParser #(
     logic pending_eop_reg_tmp;
     logic[8-1:0] align_word_cntr_reg_tmp;
     logic align_sop_pending_reg_tmp;
-    PacketParserPipeWord pipe_reg_tmp[6];
-    logic pipe_valid_reg_tmp[6];
+    logic ingress_valid_reg_tmp;
+    logic[LANE_WIDTH-1:0] ingress_data_reg_tmp;
+    logic[LANE_BYTES-1:0] ingress_keep_reg_tmp;
+    logic[LANE_BYTES-1:0] ingress_sop_reg_tmp;
+    logic[LANE_BYTES-1:0] ingress_eop_reg_tmp;
+    logic ingress_raw_reg_tmp;
+    logic scan_in_frame_reg_tmp;
+    logic scan_valid_reg_tmp;
+    PacketParserScanEvent scan_event_reg_tmp;
+    logic realign_valid_reg_tmp;
+    PacketParserRealignEvent realign_event_reg_tmp;
+    PacketParserPipeWord pipe_reg_tmp[17];
+    logic pipe_valid_reg_tmp[17];
     logic[512-1:0] raw_store_low_reg_tmp[2];
     logic[512-1:0] raw_store_high_reg_tmp[2];
     logic[8-1:0] raw_store_count_bytes_reg_tmp[2];
@@ -418,7 +443,7 @@ module PacketParser #(
 ,       input logic[7:0] header_id
 ,       input PacketParserProgress progress
     );
-        return ((((!progress.error && !progress.limit) && !progress.done) && (unsigned'(8'(progress.state)) == header_id)) && (unsigned'(8'(progress.pos)) == markup_pos)) && (marked_header(markup_state, markup_pos) == header_id);
+        return ((!progress.error && !progress.limit) && !progress.done) && (unsigned'(8'(progress.state)) == header_id);
     endfunction
 
     function logic[8-1:0] select_l3 (input logic[15:0] selector);
@@ -1630,6 +1655,22 @@ module PacketParser #(
                 end
             end
         end
+        if ((progress.error || progress.limit) || progress.done) begin
+            stage_index=occurrence + 'h1;
+            ipv6_ext_progress_reg_tmp[occurrence] = progress;
+            ipv6_ext_stage_index_reg_tmp[occurrence] = unsigned'(3'(unsigned'(3'(stage_index))));
+            result.progress = progress;
+            result.ipv6_ext_index = unsigned'(3'(unsigned'(3'(stage_index))));
+            if (ipv6_ext_seen_reg_tmp[occurrence]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp[occurrence];
+            end
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp[occurrence])) != 'h0)) begin
+                flags=unsigned'(8'(result.fields.flags));
+                flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+            end
+            return result;
+        end
         if (((unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) && (stage_index == occurrence)) && (((prior_state != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) || !ipv6_ext_seen_reg_tmp[occurrence]))) begin
             ipv6_next_proto_reg_tmp[occurrence] = item.fields.protocol;
             ipv6_ext_size_reg_tmp[occurrence] = unsigned'(8'h0);
@@ -1898,13 +1939,25 @@ module PacketParser #(
         end
     end
 
-    always_comb begin : input_ready_comb_func  // input_ready_comb_func
+    always_comb begin : parser_accept_comb_func  // parser_accept_comb_func
         logic[7:0] count;
         count=unsigned'(8'(output_reserved_reg));
         if ((unsigned'(8'(fifo_count_reg)) != 'h0) && ready_in) begin
             --count;
         end
-        input_ready_comb=(count<=(OUTPUT_FIFO_WORDS - 'h2) && !pending_valid_reg) && (unsigned'(8'(raw_store_count_reg)) < RAW_STORE_WORDS);
+        parser_accept_comb=(count<=(OUTPUT_FIFO_WORDS - 'h2) && !pending_valid_reg) && (unsigned'(8'(raw_store_count_reg)) < RAW_STORE_WORDS);
+    end
+
+    always_comb begin : realigner_accept_comb_func  // realigner_accept_comb_func
+        realigner_accept_comb=!realign_valid_reg || parser_accept_comb;
+    end
+
+    always_comb begin : scanner_accept_comb_func  // scanner_accept_comb_func
+        scanner_accept_comb=!scan_valid_reg || realigner_accept_comb;
+    end
+
+    always_comb begin : input_ready_comb_func  // input_ready_comb_func
+        input_ready_comb=!ingress_valid_reg || scanner_accept_comb;
     end
 
     generate  // _assign
@@ -1921,6 +1974,7 @@ module PacketParser #(
     begin: _work_net_clk
         logic[31:0] slot;
         logic[31:0] stage;
+        logic[31:0] segment;
         logic[31:0] lane;
         logic[31:0] flat;
         logic[7:0] head;
@@ -1931,7 +1985,6 @@ module PacketParser #(
         logic[7:0] raw_store_count;
         logic[7:0] output_reserved;
         logic[7:0] align_count;
-        logic[7:0] raw_count;
         logic[7:0] raw_word_count;
         logic[7:0] align_word_cntr;
         logic[7:0] emit_word_cntr;
@@ -1956,7 +2009,16 @@ module PacketParser #(
         logic pending_rollover;
         logic parse_valid;
         logic consume_pending;
+        logic consume_realign;
+        logic consume_scan;
+        logic scan_in_frame;
+        logic scan_accepting;
+        logic scan_second_segment;
+        logic scan_first_eop;
+        logic scan_second_eop;
         logic[7:0] input_byte;
+        logic[7:0] segment_bytes;
+        logic[7:0] total_count;
         logic[7:0] emit_bytes;
         logic[7:0] emit2_bytes;
         logic[7:0] pending_bytes;
@@ -1965,7 +2027,9 @@ module PacketParser #(
         logic parse_sop;
         logic parse_eop;
         logic align_sop_pending;
+        logic ingress_valid;
         logic[64-1:0] align_data;
+        logic[64-1:0] segment_data;
         logic[64-1:0] emit_data;
         logic[64-1:0] emit2_data;
         logic[64-1:0] pending_data;
@@ -1974,18 +2038,23 @@ module PacketParser #(
         logic[512-1:0] raw_data_high;
         logic[512-1:0] end_raw_data_low;
         logic[512-1:0] end_raw_data_high;
+        logic[128-1:0] combined_data;
         logic[7:0] end_raw_count;
         logic[7:0] end_raw_word_count;
+        logic[15:0] completed_raw_count;
         PacketParserWord parsed;
         PacketParserPipeWord pipe_item;
         PacketParserProgress empty_progress;
+        PacketParserRealignEvent _event;
+        PacketParserRealignEvent scan_event;
+        PacketParserScanEvent compact_event;
+        PacketParserScanEvent compact_input;
         if (reset) begin
             reset_parser();
             align_data_reg_tmp = 'h0;
             align_count_reg_tmp = 'h0;
             raw_data_low_reg_tmp = 'h0;
             raw_data_high_reg_tmp = 'h0;
-            raw_count_reg_tmp = unsigned'(8'h0);
             raw_word_count_reg_tmp = 'h0;
             in_frame_reg_tmp = unsigned'(1'h0);
             frame_raw_reg_tmp = unsigned'(1'h0);
@@ -1998,6 +2067,17 @@ module PacketParser #(
             pending_eop_reg_tmp = unsigned'(1'h0);
             align_word_cntr_reg_tmp = unsigned'(8'h0);
             align_sop_pending_reg_tmp = unsigned'(1'h0);
+            ingress_valid_reg_tmp = unsigned'(1'h0);
+            ingress_data_reg_tmp = 'h0;
+            ingress_keep_reg_tmp = 'h0;
+            ingress_sop_reg_tmp = 'h0;
+            ingress_eop_reg_tmp = 'h0;
+            ingress_raw_reg_tmp = unsigned'(1'h0);
+            scan_in_frame_reg_tmp = unsigned'(1'h0);
+            scan_valid_reg_tmp = unsigned'(1'h0);
+            scan_event_reg_tmp = 0;
+            realign_valid_reg_tmp = unsigned'(1'h0);
+            realign_event_reg_tmp = 0;
             for (stage='h0;stage < PIPE_STAGES;stage=stage+1) begin
                 pipe_reg_tmp[stage] = 0;
                 pipe_valid_reg_tmp[stage] = unsigned'(1'h0);
@@ -2058,6 +2138,7 @@ module PacketParser #(
         raw_store_head=unsigned'(8'(raw_store_head_reg));
         raw_store_tail=unsigned'(8'(raw_store_tail_reg));
         raw_store_count=unsigned'(8'(raw_store_count_reg));
+        ingress_valid=ingress_valid_reg;
         if ((fifo_count != 'h0) && ready_in) begin
             head=((head + 'h1)) & ((OUTPUT_FIFO_WORDS - 'h1));
             --fifo_count;
@@ -2110,48 +2191,70 @@ module PacketParser #(
                 end
             end
         end
+        if (pipe_valid_reg['hF]) begin
+            pipe_reg_tmp['h10] = transport_stage(pipe_reg['hF]);
+            pipe_valid_reg_tmp['h10] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['hE]) begin
+            pipe_reg_tmp['hF] = ipv6_ext4_stage(pipe_reg['hE]);
+            pipe_valid_reg_tmp['hF] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['hD]) begin
+            pipe_reg_tmp['hE] = ipv6_ext3_stage(pipe_reg['hD]);
+            pipe_valid_reg_tmp['hE] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['hC]) begin
+            pipe_reg_tmp['hD] = ipv6_ext2_stage(pipe_reg['hC]);
+            pipe_valid_reg_tmp['hD] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['hB]) begin
+            pipe_reg_tmp['hC] = ipv6_ext1_stage(pipe_reg['hB]);
+            pipe_valid_reg_tmp['hC] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['hA]) begin
+            pipe_reg_tmp['hB] = ipv6_stage(pipe_reg['hA]);
+            pipe_valid_reg_tmp['hB] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['h9]) begin
+            pipe_reg_tmp['hA] = ipv4_stage(pipe_reg['h9]);
+            pipe_valid_reg_tmp['hA] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['h8]) begin
+            pipe_reg_tmp['h9] = mpls4_stage(pipe_reg['h8]);
+            pipe_valid_reg_tmp['h9] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['h7]) begin
+            pipe_reg_tmp['h8] = mpls3_stage(pipe_reg['h7]);
+            pipe_valid_reg_tmp['h8] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['h6]) begin
+            pipe_reg_tmp['h7] = mpls2_stage(pipe_reg['h6]);
+            pipe_valid_reg_tmp['h7] = unsigned'(1'h1);
+        end
+        if (pipe_valid_reg['h5]) begin
+            pipe_reg_tmp['h6] = mpls1_stage(pipe_reg['h5]);
+            pipe_valid_reg_tmp['h6] = unsigned'(1'h1);
+        end
         if (pipe_valid_reg['h4]) begin
-            pipe_reg_tmp['h5] = transport_stage(pipe_reg['h4]);
+            pipe_reg_tmp['h5] = vlan4_stage(pipe_reg['h4]);
             pipe_valid_reg_tmp['h5] = unsigned'(1'h1);
         end
         if (pipe_valid_reg['h3]) begin
-            pipe_item = ipv4_stage(pipe_reg['h3]);
-            pipe_item = ipv6_stage(pipe_item);
-            pipe_item = ipv6_ext1_stage(pipe_item);
-            pipe_item = ipv6_ext2_stage(pipe_item);
-            pipe_item = ipv6_ext3_stage(pipe_item);
-            pipe_item = ipv6_ext4_stage(pipe_item);
-            pipe_reg_tmp['h4] = pipe_item;
+            pipe_reg_tmp['h4] = vlan3_stage(pipe_reg['h3]);
             pipe_valid_reg_tmp['h4] = unsigned'(1'h1);
         end
         if (pipe_valid_reg['h2]) begin
-            pipe_item = mpls1_stage(pipe_reg['h2]);
-            pipe_item = mpls2_stage(pipe_item);
-            pipe_item = mpls3_stage(pipe_item);
-            pipe_item = mpls4_stage(pipe_item);
-            pipe_reg_tmp['h3] = pipe_item;
+            pipe_reg_tmp['h3] = vlan2_stage(pipe_reg['h2]);
             pipe_valid_reg_tmp['h3] = unsigned'(1'h1);
         end
         if (pipe_valid_reg['h1]) begin
-            pipe_item = vlan1_stage(pipe_reg['h1]);
-            pipe_item = vlan2_stage(pipe_item);
-            pipe_item = vlan3_stage(pipe_item);
-            pipe_item = vlan4_stage(pipe_item);
-            pipe_reg_tmp['h2] = pipe_item;
+            pipe_reg_tmp['h2] = vlan1_stage(pipe_reg['h1]);
             pipe_valid_reg_tmp['h2] = unsigned'(1'h1);
         end
         if (pipe_valid_reg['h0]) begin
             pipe_reg_tmp['h1] = ethernet_stage(pipe_reg['h0]);
             pipe_valid_reg_tmp['h1] = unsigned'(1'h1);
         end
-        align_data = align_data_reg;
-        align_count=unsigned'(8'(align_count_reg));
-        raw_data_low = raw_data_low_reg;
-        raw_data_high = raw_data_high_reg;
-        raw_count=unsigned'(8'(raw_count_reg));
-        raw_word_count=unsigned'(8'(raw_word_count_reg));
-        in_frame=in_frame_reg;
-        frame_raw=frame_raw_reg;
         pending_valid=pending_valid_reg;
         pending_rollover=pending_rollover_reg;
         pending_data = pending_data_reg;
@@ -2159,6 +2262,97 @@ module PacketParser #(
         pending_word_cntr_reg_tmp = pending_word_cntr_reg;
         pending_sop_reg_tmp = pending_sop_reg;
         pending_eop_reg_tmp = pending_eop_reg;
+        _event = realign_event_reg;
+        consume_pending=pending_valid;
+        consume_realign=realign_valid_reg && parser_accept_comb;
+        parse_valid=consume_pending || (((consume_realign && _event.valid0) && !_event.raw0));
+        parse_data = (consume_pending) ? (pending_data) : (_event.data0);
+        parse_bytes=(consume_pending) ? (pending_bytes) : (unsigned'(8'(_event.bytes0)));
+        parse_word_cntr=(consume_pending) ? (unsigned'(8'(pending_word_cntr_reg))) : (unsigned'(8'(_event.word_cntr0)));
+        parse_sop=(consume_pending) ? (pending_sop_reg) : (_event.sop0);
+        parse_eop=(consume_pending) ? (pending_eop_reg) : (_event.eop0);
+        if (parse_valid) begin
+            empty_progress = 0;
+            pipe_item = 0;
+            pipe_item.data = parse_data;
+            pipe_item.fields = 0;
+            pipe_item.progress = empty_progress;
+            pipe_item.word_cntr = unsigned'(8'(unsigned'(8'(parse_word_cntr))));
+            pipe_item.bytes = unsigned'(4'(unsigned'(4'(parse_bytes))));
+            pipe_item.sop = unsigned'(1'(parse_sop));
+            pipe_item.eop = unsigned'(1'(parse_eop));
+            pipe_reg_tmp['h0] = pipe_item;
+            pipe_valid_reg_tmp['h0] = unsigned'(1'h1);
+            if (parse_eop) begin
+                output_reserved=output_reserved+1;
+            end
+        end
+        if (consume_pending) begin
+            pending_valid=0;
+            pending_rollover=0;
+        end
+        else begin
+            if (consume_realign) begin
+                if (_event.valid1 && !_event.raw1) begin
+                    pending_valid=1;
+                    pending_data = _event.data1;
+                    pending_bytes=unsigned'(8'(_event.bytes1));
+                    pending_rollover=_event.rollover;
+                    pending_word_cntr_reg_tmp = _event.word_cntr1;
+                    pending_sop_reg_tmp = _event.sop1;
+                    pending_eop_reg_tmp = _event.eop1;
+                end
+                if (_event.frame_end && _event.end_raw) begin
+                    if ((raw_store_count < RAW_STORE_WORDS) && !parse_valid) begin
+                        raw_store_low_reg_tmp[raw_store_tail] = _event.raw_data_low;
+                        raw_store_high_reg_tmp[raw_store_tail] = _event.raw_data_high;
+                        raw_store_count_bytes_reg_tmp[raw_store_tail] = _event.raw_count;
+                        raw_store_tail=((raw_store_tail + 'h1)) & ((RAW_STORE_WORDS - 'h1));
+                        raw_store_count=raw_store_count+1;
+                        empty_progress = 0;
+                        pipe_item = 0;
+                        pipe_item.progress = empty_progress;
+                        pipe_item.raw = unsigned'(1'h1);
+                        pipe_item.sop = unsigned'(1'h1);
+                        pipe_item.eop = unsigned'(1'h1);
+                        pipe_reg_tmp['h0] = pipe_item;
+                        pipe_valid_reg_tmp['h0] = unsigned'(1'h1);
+                        output_reserved+='h2;
+                    end
+                    else begin
+                        protocol_error_reg_tmp = unsigned'(1'h1);
+                    end
+                end
+            end
+        end
+        pending_valid_reg_tmp = unsigned'(1'(pending_valid));
+        pending_rollover_reg_tmp = unsigned'(1'(pending_rollover));
+        pending_data_reg_tmp = pending_data;
+        pending_bytes_reg_tmp = unsigned'(4'(unsigned'(4'(pending_bytes))));
+        if (!pending_valid) begin
+            pending_word_cntr_reg_tmp = unsigned'(8'h0);
+            pending_sop_reg_tmp = unsigned'(1'h0);
+            pending_eop_reg_tmp = unsigned'(1'h0);
+        end
+        realign_valid_reg_tmp = realign_valid_reg;
+        realign_event_reg_tmp = realign_event_reg;
+        if (consume_realign) begin
+            realign_valid_reg_tmp = unsigned'(1'h0);
+        end
+        scan_valid_reg_tmp = scan_valid_reg;
+        scan_event_reg_tmp = scan_event_reg;
+        compact_input = scan_event_reg;
+        consume_scan=scan_valid_reg && realigner_accept_comb;
+        if (consume_scan) begin
+            scan_valid_reg_tmp = unsigned'(1'h0);
+        end
+        align_data = align_data_reg;
+        align_count=unsigned'(8'(align_count_reg));
+        raw_data_low = raw_data_low_reg;
+        raw_data_high = raw_data_high_reg;
+        raw_word_count=unsigned'(8'(raw_word_count_reg));
+        in_frame=in_frame_reg;
+        frame_raw=frame_raw_reg;
         align_word_cntr=unsigned'(8'(align_word_cntr_reg));
         align_sop_pending=align_sop_pending_reg;
         emit_valid=0;
@@ -2180,131 +2374,132 @@ module PacketParser #(
         end_raw=frame_raw;
         end_raw_data_low = raw_data_low;
         end_raw_data_high = raw_data_high;
-        end_raw_count=raw_count;
+        end_raw_count='h0;
         end_raw_word_count=raw_word_count;
-        if (valid_in && input_ready_comb) begin
-            for (lane='h0;lane < LANE_BYTES;lane=lane+1) begin
-                flat=lane;
-                keep=keep_in[flat];
-                sop=sop_in[flat];
-                eop=eop_in[flat];
-                if (!keep) begin
-                    if (sop || eop) begin
+        if (consume_scan) begin
+            if (compact_input.protocol_error) begin
+                protocol_error_reg_tmp = unsigned'(1'h1);
+            end
+            for (segment='h0;segment < 'h2;segment=segment+1) begin
+                keep=(segment == 'h0) ? (compact_input.valid0) : (compact_input.valid1);
+                sop=(segment == 'h0) ? (compact_input.sop0) : (compact_input.sop1);
+                eop=(segment == 'h0) ? (compact_input.eop0) : (compact_input.eop1);
+                segment_data = (segment == 'h0) ? (compact_input.data0) : (compact_input.data1);
+                segment_bytes=(segment == 'h0) ? (unsigned'(8'(compact_input.bytes0))) : (unsigned'(8'(compact_input.bytes1)));
+                if (sop) begin
+                    if (in_frame) begin
                         protocol_error_reg_tmp = unsigned'(1'h1);
                     end
+                    if (frame_end) begin
+                        rollover=1;
+                    end
+                    if (!frame_end) begin
+                        end_raw_data_low = 'h0;
+                        end_raw_data_high = 'h0;
+                        end_raw_word_count='h0;
+                    end
+                    align_data = 'h0;
+                    align_count='h0;
+                    raw_data_low = 'h0;
+                    raw_data_high = 'h0;
+                    raw_word_count='h0;
+                    align_word_cntr='h0;
+                    align_sop_pending=1;
+                    frame_raw=ENABLE_RAW && (((segment == 'h0)) ? (compact_input.raw0) : (compact_input.raw1));
+                    in_frame=1;
                 end
-                else begin
-                    if (sop) begin
-                        if (in_frame) begin
-                            protocol_error_reg_tmp = unsigned'(1'h1);
-                        end
-                        if (frame_end) begin
-                            rollover=1;
-                        end
-                        if (!frame_end) begin
-                            end_raw_data_low = 'h0;
-                            end_raw_data_high = 'h0;
-                            end_raw_count='h0;
-                            end_raw_word_count='h0;
-                        end
-                        align_data = 'h0;
-                        align_count='h0;
-                        raw_data_low = 'h0;
-                        raw_data_high = 'h0;
-                        raw_count='h0;
-                        raw_word_count='h0;
-                        align_word_cntr='h0;
-                        align_sop_pending=1;
-                        frame_raw=ENABLE_RAW && raw_in;
-                        in_frame=1;
+                if (keep) begin
+                    if (!in_frame) begin
+                        protocol_error_reg_tmp = unsigned'(1'h1);
                     end
-                    else begin
-                        if (!in_frame) begin
-                            protocol_error_reg_tmp = unsigned'(1'h1);
+                    combined_data = align_data | (segment_data << (align_count*'h8));
+                    total_count=align_count + segment_bytes;
+                    if (total_count>=LANE_BYTES) begin
+                        if (!emit_valid) begin
+                            emit_valid=1;
+                            emit_raw=frame_raw;
+                            emit_bytes=LANE_BYTES;
+                            emit_data = combined_data['h0 +:64];
+                            emit_word_cntr=align_word_cntr;
+                            emit_sop=align_sop_pending;
+                            emit_eop=eop && (total_count == LANE_BYTES);
                         end
-                    end
-                    if (in_frame) begin
-                        input_byte=unsigned'(8'(data_in[flat*'h8 +:8]));
-                        align_data = store_aligned_byte(align_data, unsigned'(8'(unsigned'(8'(input_byte)))), align_count);
-                        align_count=align_count+1;
-                        if (frame_raw && (raw_count < RAW_BYTES)) begin
-                            raw_count=raw_count+1;
-                        end
-                        if ((align_count == LANE_BYTES) || eop) begin
-                            if (emit_valid) begin
-                                if (eop) begin
-                                    emit2_valid=1;
-                                    emit2_raw=frame_raw;
-                                    emit2_bytes=align_count;
-                                    emit2_data = align_data;
-                                    emit2_word_cntr=align_word_cntr;
-                                    emit2_sop=align_sop_pending;
-                                    emit2_eop=eop;
-                                    align_sop_pending=0;
-                                    align_word_cntr=align_word_cntr+1;
-                                    align_data = 'h0;
-                                    align_count='h0;
-                                end
-                                else begin
-                                    protocol_error_reg_tmp = unsigned'(1'h1);
-                                end
+                        else begin
+                            if (!emit2_valid) begin
+                                emit2_valid=1;
+                                emit2_raw=frame_raw;
+                                emit2_bytes=LANE_BYTES;
+                                emit2_data = combined_data['h0 +:64];
+                                emit2_word_cntr=align_word_cntr;
+                                emit2_sop=align_sop_pending;
+                                emit2_eop=eop && (total_count == LANE_BYTES);
                             end
                             else begin
+                                protocol_error_reg_tmp = unsigned'(1'h1);
+                            end
+                        end
+                        align_word_cntr=align_word_cntr+1;
+                        align_sop_pending=0;
+                        align_data = combined_data['h40 +:64];
+                        align_count=total_count - LANE_BYTES;
+                    end
+                    else begin
+                        align_data = combined_data['h0 +:64];
+                        align_count=total_count;
+                    end
+                    if (eop) begin
+                        if (align_count != 'h0) begin
+                            if (!emit_valid) begin
                                 emit_valid=1;
                                 emit_raw=frame_raw;
                                 emit_bytes=align_count;
                                 emit_data = align_data;
                                 emit_word_cntr=align_word_cntr;
                                 emit_sop=align_sop_pending;
-                                emit_eop=eop;
-                                align_sop_pending=0;
-                                align_word_cntr=align_word_cntr+1;
-                                align_data = 'h0;
-                                align_count='h0;
+                                emit_eop=1;
                             end
-                        end
-                        if (eop) begin
-                            end_raw=frame_raw;
-                            end_raw_data_low = raw_data_low;
-                            end_raw_data_high = raw_data_high;
-                            end_raw_count=raw_count;
-                            end_raw_word_count=raw_word_count;
-                            if (frame_end) begin
-                                protocol_error_reg_tmp = unsigned'(1'h1);
+                            else begin
+                                if (!emit2_valid) begin
+                                    emit2_valid=1;
+                                    emit2_raw=frame_raw;
+                                    emit2_bytes=align_count;
+                                    emit2_data = align_data;
+                                    emit2_word_cntr=align_word_cntr;
+                                    emit2_sop=align_sop_pending;
+                                    emit2_eop=1;
+                                end
+                                else begin
+                                    protocol_error_reg_tmp = unsigned'(1'h1);
+                                end
                             end
-                            frame_end=1;
-                            in_frame=0;
+                            align_word_cntr=align_word_cntr+1;
+                            align_sop_pending=0;
                         end
-                    end
-                    else begin
-                        if (eop) begin
+                        align_data = 'h0;
+                        align_count='h0;
+                        end_raw=frame_raw;
+                        end_raw_data_low = raw_data_low;
+                        end_raw_data_high = raw_data_high;
+                        if (emit2_valid && emit2_eop) begin
+                            completed_raw_count=(emit2_word_cntr*LANE_BYTES) + emit2_bytes;
+                        end
+                        else begin
+                            completed_raw_count=(emit_word_cntr*LANE_BYTES) + emit_bytes;
+                        end
+                        end_raw_count=(completed_raw_count > RAW_BYTES) ? (RAW_BYTES) : (completed_raw_count);
+                        end_raw_word_count=raw_word_count;
+                        if (frame_end) begin
                             protocol_error_reg_tmp = unsigned'(1'h1);
                         end
+                        frame_end=1;
+                        in_frame=0;
                     end
                 end
-            end
-        end
-        consume_pending=pending_valid;
-        parse_valid=consume_pending || ((emit_valid && !emit_raw));
-        parse_data = (consume_pending) ? (pending_data) : (emit_data);
-        parse_bytes=(consume_pending) ? (pending_bytes) : (emit_bytes);
-        parse_word_cntr=(consume_pending) ? (unsigned'(8'(pending_word_cntr_reg))) : (emit_word_cntr);
-        parse_sop=(consume_pending) ? (pending_sop_reg) : (emit_sop);
-        parse_eop=(consume_pending) ? (pending_eop_reg) : (emit_eop);
-        if (parse_valid) begin
-            empty_progress = 0;
-            pipe_item = 0;
-            pipe_item.data = parse_data;
-            pipe_item.fields = 0;
-            pipe_item.progress = empty_progress;
-            pipe_item.word_cntr = unsigned'(8'(unsigned'(8'(parse_word_cntr))));
-            pipe_item.bytes = unsigned'(4'(unsigned'(4'(parse_bytes))));
-            pipe_item.sop = unsigned'(1'(parse_sop));
-            pipe_item.eop = unsigned'(1'(parse_eop));
-            pipe_reg_tmp['h0] = pipe_item;
-            pipe_valid_reg_tmp['h0] = unsigned'(1'h1);
-            if (parse_eop) begin
-                output_reserved=output_reserved+1;
+                else begin
+                    if (sop || eop) begin
+                        protocol_error_reg_tmp = unsigned'(1'h1);
+                    end
+                end
             end
         end
         if ((emit_valid && emit_raw) && (end_raw_word_count < (RAW_BYTES/LANE_BYTES))) begin
@@ -2328,65 +2523,118 @@ module PacketParser #(
                     raw_word_count=end_raw_word_count;
                 end
             end
-            else begin
-                if (!emit2_raw) begin
-                    pending_valid=1;
-                    pending_data = emit2_data;
-                    pending_bytes=emit2_bytes;
-                    pending_rollover=rollover;
-                    pending_word_cntr_reg_tmp = unsigned'(8'(unsigned'(8'(emit2_word_cntr))));
-                    pending_sop_reg_tmp = unsigned'(1'(emit2_sop));
-                    pending_eop_reg_tmp = unsigned'(1'(emit2_eop));
-                    frame_end=0;
+        end
+        if (consume_scan) begin
+            scan_event = 0;
+            scan_event.data0 = emit_data;
+            scan_event.data1 = emit2_data;
+            scan_event.raw_data_low = end_raw_data_low;
+            scan_event.raw_data_high = end_raw_data_high;
+            scan_event.raw_count = unsigned'(8'(unsigned'(8'(end_raw_count))));
+            scan_event.word_cntr0 = unsigned'(8'(unsigned'(8'(emit_word_cntr))));
+            scan_event.word_cntr1 = unsigned'(8'(unsigned'(8'(emit2_word_cntr))));
+            scan_event.bytes0 = unsigned'(4'(unsigned'(4'(emit_bytes))));
+            scan_event.bytes1 = unsigned'(4'(unsigned'(4'(emit2_bytes))));
+            scan_event.valid0 = unsigned'(1'(emit_valid));
+            scan_event.valid1 = unsigned'(1'(emit2_valid));
+            scan_event.raw0 = unsigned'(1'(emit_raw));
+            scan_event.raw1 = unsigned'(1'(emit2_raw));
+            scan_event.sop0 = unsigned'(1'(emit_sop));
+            scan_event.sop1 = unsigned'(1'(emit2_sop));
+            scan_event.eop0 = unsigned'(1'(emit_eop));
+            scan_event.eop1 = unsigned'(1'(emit2_eop));
+            scan_event.frame_end = unsigned'(1'(frame_end));
+            scan_event.rollover = unsigned'(1'(rollover));
+            scan_event.end_raw = unsigned'(1'(end_raw));
+            realign_event_reg_tmp = scan_event;
+            realign_valid_reg_tmp = unsigned'(1'h1);
+        end
+        scan_in_frame=scan_in_frame_reg;
+        scan_accepting=scan_in_frame;
+        scan_second_segment=0;
+        scan_first_eop=0;
+        scan_second_eop=0;
+        compact_event = 0;
+        if (ingress_valid && scanner_accept_comb) begin
+            for (lane='h0;lane < LANE_BYTES;lane=lane+1) begin
+                flat=lane;
+                keep=ingress_keep_reg[flat];
+                sop=ingress_sop_reg[flat];
+                eop=ingress_eop_reg[flat];
+                if (!keep) begin
+                    if (sop || eop) begin
+                        compact_event.protocol_error = unsigned'(1'h1);
+                    end
                 end
-            end
-        end
-        if (consume_pending) begin
-            pending_valid=0;
-            pending_rollover=0;
-        end
-        else begin
-            if (frame_end) begin
-                if (end_raw) begin
-                    if ((raw_store_count < RAW_STORE_WORDS) && !parse_valid) begin
-                        raw_store_low_reg_tmp[raw_store_tail] = end_raw_data_low;
-                        raw_store_high_reg_tmp[raw_store_tail] = end_raw_data_high;
-                        raw_store_count_bytes_reg_tmp[raw_store_tail] = unsigned'(8'(unsigned'(8'(end_raw_count))));
-                        raw_store_tail=((raw_store_tail + 'h1)) & ((RAW_STORE_WORDS - 'h1));
-                        raw_store_count=raw_store_count+1;
-                        empty_progress = 0;
-                        pipe_item = 0;
-                        pipe_item.progress = empty_progress;
-                        pipe_item.raw = unsigned'(1'h1);
-                        pipe_item.sop = unsigned'(1'h1);
-                        pipe_item.eop = unsigned'(1'h1);
-                        pipe_reg_tmp['h0] = pipe_item;
-                        pipe_valid_reg_tmp['h0] = unsigned'(1'h1);
-                        output_reserved+='h2;
+                else begin
+                    if (sop) begin
+                        if (scan_accepting || scan_second_eop) begin
+                            compact_event.protocol_error = unsigned'(1'h1);
+                        end
+                        if (scan_first_eop) begin
+                            scan_second_segment=1;
+                        end
+                        scan_accepting=1;
+                        if (scan_second_segment) begin
+                            compact_event.sop1 = unsigned'(1'h1);
+                            compact_event.raw1 = ingress_raw_reg;
+                        end
+                        else begin
+                            compact_event.sop0 = unsigned'(1'h1);
+                            compact_event.raw0 = ingress_raw_reg;
+                        end
                     end
                     else begin
-                        protocol_error_reg_tmp = unsigned'(1'h1);
+                        if (!scan_accepting) begin
+                            compact_event.protocol_error = unsigned'(1'h1);
+                        end
+                    end
+                    if (scan_accepting) begin
+                        input_byte=unsigned'(8'(ingress_data_reg[flat*'h8 +:8]));
+                        if (scan_second_segment) begin
+                            compact_event.data1 |= input_byte << (unsigned'(8'(compact_event.bytes1))*'h8);
+                            compact_event.bytes1 = unsigned'(4'(unsigned'(4'(unsigned'(8'(compact_event.bytes1)) + 'h1))));
+                            compact_event.valid1 = unsigned'(1'h1);
+                        end
+                        else begin
+                            compact_event.data0 |= input_byte << (unsigned'(8'(compact_event.bytes0))*'h8);
+                            compact_event.bytes0 = unsigned'(4'(unsigned'(4'(unsigned'(8'(compact_event.bytes0)) + 'h1))));
+                            compact_event.valid0 = unsigned'(1'h1);
+                        end
+                        if (eop) begin
+                            if (scan_second_segment) begin
+                                compact_event.eop1 = unsigned'(1'h1);
+                                scan_second_eop=1;
+                            end
+                            else begin
+                                compact_event.eop0 = unsigned'(1'h1);
+                                scan_first_eop=1;
+                            end
+                            scan_accepting=0;
+                        end
+                    end
+                    else begin
+                        if (eop) begin
+                            compact_event.protocol_error = unsigned'(1'h1);
+                        end
                     end
                 end
             end
+            scan_event_reg_tmp = compact_event;
+            scan_valid_reg_tmp = unsigned'(1'h1);
+            scan_in_frame=scan_accepting;
+            if (compact_event.protocol_error) begin
+                protocol_error_reg_tmp = unsigned'(1'h1);
+            end
         end
+        scan_in_frame_reg_tmp = unsigned'(1'(scan_in_frame));
         align_data_reg_tmp = align_data;
         align_count_reg_tmp = unsigned'(4'(unsigned'(4'(align_count))));
         raw_data_low_reg_tmp = raw_data_low;
         raw_data_high_reg_tmp = raw_data_high;
-        raw_count_reg_tmp = unsigned'(8'(unsigned'(8'(raw_count))));
         raw_word_count_reg_tmp = unsigned'(5'(unsigned'(5'(raw_word_count))));
         in_frame_reg_tmp = unsigned'(1'(in_frame));
         frame_raw_reg_tmp = unsigned'(1'(frame_raw));
-        pending_valid_reg_tmp = unsigned'(1'(pending_valid));
-        pending_rollover_reg_tmp = unsigned'(1'(pending_rollover));
-        pending_data_reg_tmp = pending_data;
-        pending_bytes_reg_tmp = unsigned'(4'(unsigned'(4'(pending_bytes))));
-        if (!pending_valid) begin
-            pending_word_cntr_reg_tmp = unsigned'(8'h0);
-            pending_sop_reg_tmp = unsigned'(1'h0);
-            pending_eop_reg_tmp = unsigned'(1'h0);
-        end
         align_word_cntr_reg_tmp = unsigned'(8'(unsigned'(8'(align_word_cntr))));
         align_sop_pending_reg_tmp = unsigned'(1'(align_sop_pending));
         raw_store_head_reg_tmp = unsigned'(1'(raw_store_head != 'h0));
@@ -2396,6 +2644,23 @@ module PacketParser #(
         fifo_tail_reg_tmp = unsigned'(2'(unsigned'(2'(tail))));
         fifo_count_reg_tmp = unsigned'(3'(unsigned'(3'(fifo_count))));
         output_reserved_reg_tmp = unsigned'(3'(unsigned'(3'(output_reserved))));
+        ingress_valid_reg_tmp = ingress_valid_reg;
+        ingress_data_reg_tmp = ingress_data_reg;
+        ingress_keep_reg_tmp = ingress_keep_reg;
+        ingress_sop_reg_tmp = ingress_sop_reg;
+        ingress_eop_reg_tmp = ingress_eop_reg;
+        ingress_raw_reg_tmp = ingress_raw_reg;
+        if (ingress_valid && scanner_accept_comb) begin
+            ingress_valid_reg_tmp = unsigned'(1'h0);
+        end
+        if (valid_in && input_ready_comb) begin
+            ingress_valid_reg_tmp = unsigned'(1'h1);
+            ingress_data_reg_tmp = data_in;
+            ingress_keep_reg_tmp = keep_in;
+            ingress_sop_reg_tmp = sop_in;
+            ingress_eop_reg_tmp = eop_in;
+            ingress_raw_reg_tmp = unsigned'(1'(raw_in));
+        end
     end
     endtask
 
@@ -2461,7 +2726,6 @@ module PacketParser #(
         align_count_reg_tmp = align_count_reg;
         raw_data_low_reg_tmp = raw_data_low_reg;
         raw_data_high_reg_tmp = raw_data_high_reg;
-        raw_count_reg_tmp = raw_count_reg;
         raw_word_count_reg_tmp = raw_word_count_reg;
         in_frame_reg_tmp = in_frame_reg;
         frame_raw_reg_tmp = frame_raw_reg;
@@ -2474,6 +2738,17 @@ module PacketParser #(
         pending_eop_reg_tmp = pending_eop_reg;
         align_word_cntr_reg_tmp = align_word_cntr_reg;
         align_sop_pending_reg_tmp = align_sop_pending_reg;
+        ingress_valid_reg_tmp = ingress_valid_reg;
+        ingress_data_reg_tmp = ingress_data_reg;
+        ingress_keep_reg_tmp = ingress_keep_reg;
+        ingress_sop_reg_tmp = ingress_sop_reg;
+        ingress_eop_reg_tmp = ingress_eop_reg;
+        ingress_raw_reg_tmp = ingress_raw_reg;
+        scan_in_frame_reg_tmp = scan_in_frame_reg;
+        scan_valid_reg_tmp = scan_valid_reg;
+        scan_event_reg_tmp = scan_event_reg;
+        realign_valid_reg_tmp = realign_valid_reg;
+        realign_event_reg_tmp = realign_event_reg;
         pipe_reg_tmp = pipe_reg;
         pipe_valid_reg_tmp = pipe_valid_reg;
         raw_store_low_reg_tmp = raw_store_low_reg;
@@ -2544,7 +2819,6 @@ module PacketParser #(
         align_count_reg <= align_count_reg_tmp;
         raw_data_low_reg <= raw_data_low_reg_tmp;
         raw_data_high_reg <= raw_data_high_reg_tmp;
-        raw_count_reg <= raw_count_reg_tmp;
         raw_word_count_reg <= raw_word_count_reg_tmp;
         in_frame_reg <= in_frame_reg_tmp;
         frame_raw_reg <= frame_raw_reg_tmp;
@@ -2557,6 +2831,17 @@ module PacketParser #(
         pending_eop_reg <= pending_eop_reg_tmp;
         align_word_cntr_reg <= align_word_cntr_reg_tmp;
         align_sop_pending_reg <= align_sop_pending_reg_tmp;
+        ingress_valid_reg <= ingress_valid_reg_tmp;
+        ingress_data_reg <= ingress_data_reg_tmp;
+        ingress_keep_reg <= ingress_keep_reg_tmp;
+        ingress_sop_reg <= ingress_sop_reg_tmp;
+        ingress_eop_reg <= ingress_eop_reg_tmp;
+        ingress_raw_reg <= ingress_raw_reg_tmp;
+        scan_in_frame_reg <= scan_in_frame_reg_tmp;
+        scan_valid_reg <= scan_valid_reg_tmp;
+        scan_event_reg <= scan_event_reg_tmp;
+        realign_valid_reg <= realign_valid_reg_tmp;
+        realign_event_reg <= realign_event_reg_tmp;
         pipe_reg <= pipe_reg_tmp;
         pipe_valid_reg <= pipe_valid_reg_tmp;
         raw_store_low_reg <= raw_store_low_reg_tmp;

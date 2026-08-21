@@ -21,6 +21,7 @@ import L2AxiRequestNoveltyComb_pkg::*;
 import CacheRequest_pkg::*;
 import L2ActiveRequestComb_pkg::*;
 import L2RequestGeometryComb_pkg::*;
+import L2HitLookupComb_pkg::*;
 import CacheResponse_pkg::*;
 import L2AxiAddressState_pkg::*;
 
@@ -148,6 +149,10 @@ module L2CacheMemory #(
 ;
     L2RequestGeometryComb L2CacheRequest___request_geometry_comb;
 ;
+    reg[DATA_BANKS-1:0][32-1:0] L2CacheState___lookup_data_reg;
+    reg[WAYS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] L2CacheState___lookup_tag_reg;
+    L2HitLookupComb L2CacheState___lookup_hit_reg;
+    L2EvictCandidateComb L2CacheState___lookup_evict_reg;
     reg[5-1:0] L2CacheState___state_reg;
     CacheRequest L2CacheState___req_reg;
     reg[3-1:0] L2CacheState___cpu_rr_reg;
@@ -157,6 +162,7 @@ module L2CacheMemory #(
     CacheResponse[16-1:0] L2CacheState___response_reg;
     reg[PORT_BITWIDTH-1:0] L2CacheState___cross_low_reg;
     reg[PORT_BITWIDTH-1:0] L2CacheState___cross_high_reg;
+    reg[PORT_BITWIDTH-1:0] L2CacheState___refill_data_reg;
     reg[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___fill_beat_reg;
     reg[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___evict_beat_reg;
     reg[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] L2CacheState___evict_tag_reg;
@@ -164,6 +170,8 @@ module L2CacheMemory #(
     L2AxiAddressState[8-1:0] L2CacheState___slave_aw_reg;
     L2AxiAddressState[8-1:0] L2CacheState___slave_aw_seen_reg;
     L2AxiAddressState[8-1:0] L2CacheState___slave_ar_seen_reg;
+    reg[8-1:0] L2CacheState___slave_aw_novelty_reg;
+    reg[8-1:0] L2CacheState___slave_ar_novelty_reg;
 
     // members
     genvar __i;
@@ -213,6 +221,10 @@ module L2CacheMemory #(
     endgenerate
 
     // tmp variables
+    logic[DATA_BANKS-1:0][32-1:0] L2CacheState___lookup_data_reg_tmp;
+    logic[WAYS-1:0][(((((((ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'h2) + 'h7))/'h8))*'h8-1:0] L2CacheState___lookup_tag_reg_tmp;
+    L2HitLookupComb L2CacheState___lookup_hit_reg_tmp;
+    L2EvictCandidateComb L2CacheState___lookup_evict_reg_tmp;
     logic[5-1:0] L2CacheState___state_reg_tmp;
     CacheRequest L2CacheState___req_reg_tmp;
     logic[3-1:0] L2CacheState___cpu_rr_reg_tmp;
@@ -222,6 +234,7 @@ module L2CacheMemory #(
     CacheResponse[16-1:0] L2CacheState___response_reg_tmp;
     logic[PORT_BITWIDTH-1:0] L2CacheState___cross_low_reg_tmp;
     logic[PORT_BITWIDTH-1:0] L2CacheState___cross_high_reg_tmp;
+    logic[PORT_BITWIDTH-1:0] L2CacheState___refill_data_reg_tmp;
     logic[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___fill_beat_reg_tmp;
     logic[((CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8))<='h1) ? ('h1) : ($clog2(CACHE_LINE_SIZE/((PORT_BITWIDTH/'h8)))))-1:0] L2CacheState___evict_beat_reg_tmp;
     logic[(ADDR_BITS - $clog2(((CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)-1:0] L2CacheState___evict_tag_reg_tmp;
@@ -229,6 +242,8 @@ module L2CacheMemory #(
     L2AxiAddressState[8-1:0] L2CacheState___slave_aw_reg_tmp;
     L2AxiAddressState[8-1:0] L2CacheState___slave_aw_seen_reg_tmp;
     L2AxiAddressState[8-1:0] L2CacheState___slave_ar_seen_reg_tmp;
+    logic[8-1:0] L2CacheState___slave_aw_novelty_reg_tmp;
+    logic[8-1:0] L2CacheState___slave_ar_novelty_reg_tmp;
 
 
     always_comb begin : io_write_payload_comb_func  // io_write_payload_comb_func
@@ -393,16 +408,16 @@ module L2CacheMemory #(
         evict_candidate_comb.way = unsigned'(32'(((L2CacheState___state_reg == L2CacheFsmState_pkg::ST_LOOKUP)) ? (unsigned'(32'(L2CacheState___victim_reg))) : (unsigned'(32'(L2CacheState___fill_way_reg)))));
         for (i='h0;i < WAYS;i=i+1) begin
             if (unsigned'(32'(evict_candidate_comb.way)) == i) begin
-                evict_candidate_comb.valid = unsigned'(1'(L2CacheState___tag_ram__data_out[i][TAG_BITS + 'h1]));
-                evict_candidate_comb.dirty = unsigned'(1'(L2CacheState___tag_ram__data_out[i][TAG_BITS]));
-                evict_candidate_comb.tag = unsigned'(32'(unsigned'(64'(L2CacheState___tag_ram__data_out[i]['h0 +:TAG_BITS - 'h1 - 'h0 + 1]))));
+                evict_candidate_comb.valid = unsigned'(1'(L2CacheState___lookup_tag_reg[i][TAG_BITS + 'h1]));
+                evict_candidate_comb.dirty = unsigned'(1'(L2CacheState___lookup_tag_reg[i][TAG_BITS]));
+                evict_candidate_comb.tag = unsigned'(32'(unsigned'(64'(L2CacheState___lookup_tag_reg[i]['h0 +:TAG_BITS - 'h1 - 'h0 + 1]))));
             end
         end
         for (i='h0;i < DATA_BANKS;i=i+1) begin
             way=i/LINE_WORDS;
             word=i % LINE_WORDS;
             if (unsigned'(32'(evict_candidate_comb.way)) == way) begin
-                evict_candidate_comb.line[word*'h20 +:32] = L2CacheState___data_ram__data_out[i];
+                evict_candidate_comb.line[word*'h20 +:32] = L2CacheState___lookup_data_reg[i];
             end
         end
     end
@@ -427,8 +442,8 @@ module L2CacheMemory #(
         logic[31:0] index;
         L2CacheRequest___slave_request_novelty_comb = 0;
         for (index='h0;index < MEM_PORTS;index=index+1) begin
-            L2CacheRequest___slave_request_novelty_comb.aw[index] = (!L2CacheState___slave_aw_seen_reg[index].valid || (L2CacheState___slave_aw_seen_reg[index].addr != axi_in__awaddr_in[index])) || (L2CacheState___slave_aw_seen_reg[index].id != axi_in__awid_in[index]);
-            L2CacheRequest___slave_request_novelty_comb.ar[index] = (!L2CacheState___slave_ar_seen_reg[index].valid || (L2CacheState___slave_ar_seen_reg[index].addr != axi_in__araddr_in[index])) || (L2CacheState___slave_ar_seen_reg[index].id != axi_in__arid_in[index]);
+            L2CacheRequest___slave_request_novelty_comb.aw[index] = L2CacheState___slave_aw_novelty_reg[index];
+            L2CacheRequest___slave_request_novelty_comb.ar[index] = L2CacheState___slave_ar_novelty_reg[index];
         end
     end
 

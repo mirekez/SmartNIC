@@ -3,8 +3,8 @@
 import Predef_pkg::*;
 import State_pkg::*;
 import Sys_pkg::*;
-import Trap_pkg::*;
 import Csr_pkg::*;
+import Trap_pkg::*;
 
 
 module CSR (
@@ -13,6 +13,9 @@ module CSR (
 ,   input wire reset
 ,   input wire State state_in
 ,   input wire State trap_check_state_in
+,   input wire State legality_state_in
+,   output wire legality_out
+,   input wire State redirect_state_in
 ,   input wire[2-1:0] reset_priv_in
 ,   input wire[31:0] hartid_in
 ,   input wire interrupt_valid_in
@@ -37,6 +40,7 @@ module CSR (
 ,   output wire[31:0] mstatus_out
 ,   output wire[31:0] mie_out
 ,   output wire[31:0] mideleg_out
+,   output wire[31:0] medeleg_out
 ,   output wire[31:0] mip_sw_out
 ,   output wire[31:0] satp_out
 ,   output wire[2-1:0] priv_out
@@ -94,6 +98,18 @@ module CSR (
     reg[64-1:0] cycle_reg;
     reg[64-1:0] instret_reg;
     reg[2-1:0] priv_reg;
+    reg commit_seen_valid_reg;
+    reg[32-1:0] commit_seen_pc_reg;
+    reg[12-1:0] commit_seen_csr_addr_reg;
+    reg[3-1:0] commit_seen_csr_op_reg;
+    reg[4-1:0] commit_seen_sys_op_reg;
+    reg[5-1:0] commit_seen_trap_op_reg;
+    reg[32-1:0] commit_seen_imm_reg;
+    reg[32-1:0] csr_read_data_reg;
+    logic commit_seen_match_comb;
+;
+    logic commit_new_comb;
+;
     logic[31:0] software_pending_comb;
 ;
     logic[31:0] interrupt_enable_comb;
@@ -103,6 +119,8 @@ module CSR (
     logic[31:0] epc_comb;
 ;
     logic illegal_trap_comb;
+;
+    logic legality_comb;
 ;
     logic[31:0] read_data_comb;
 ;
@@ -140,7 +158,102 @@ module CSR (
     logic[64-1:0] cycle_reg_tmp;
     logic[64-1:0] instret_reg_tmp;
     logic[2-1:0] priv_reg_tmp;
+    logic commit_seen_valid_reg_tmp;
+    logic[32-1:0] commit_seen_pc_reg_tmp;
+    logic[12-1:0] commit_seen_csr_addr_reg_tmp;
+    logic[3-1:0] commit_seen_csr_op_reg_tmp;
+    logic[4-1:0] commit_seen_sys_op_reg_tmp;
+    logic[5-1:0] commit_seen_trap_op_reg_tmp;
+    logic[32-1:0] commit_seen_imm_reg_tmp;
+    logic[32-1:0] csr_read_data_reg_tmp;
 
+
+    function logic csr_state_writes (input State st);
+        logic[31:0] op;
+        op = st.csr_op;
+        if (!st.valid || (op == Csr_pkg::CNONE)) begin
+            return 0;
+        end
+        if ((op == Csr_pkg::CSRRS) || (op == Csr_pkg::CSRRC)) begin
+            return st.rs1 != 'h0;
+        end
+        if ((op == Csr_pkg::CSRRSI) || (op == Csr_pkg::CSRRCI)) begin
+            return st.csr_imm != 'h0;
+        end
+        return 1;
+    endfunction
+
+    function logic csr_supported (input logic[31:0] addr);
+        if (((addr == 'h1) || (addr == 'h2)) || (addr == 'h3)) begin
+            return 1;
+        end
+        if ((((((((((addr == 'hC00) || (addr == 'hC80)) || (addr == 'hC01)) || (addr == 'hC81)) || (addr == 'hC02)) || (addr == 'hC82)) || (addr == 'hB00)) || (addr == 'hB80)) || (addr == 'hB02)) || (addr == 'hB82)) begin
+            return 1;
+        end
+        if (((((addr>='hC03 && addr<='hC1F)) || ((addr>='hC83 && addr<='hC9F))) || ((addr>='hB03 && addr<='hB1F))) || ((addr>='hB83 && addr<='hB9F))) begin
+            return 1;
+        end
+        if ((((addr>='h100 && addr<='h106)) || ((addr>='h140 && addr<='h144))) || (addr == 'h180)) begin
+            return 1;
+        end
+        if (((((((((addr>='h300 && addr<='h306)) || (addr == 'h310)) || (addr == 'h320)) || ((addr>='h340 && addr<='h344))) || (addr == 'h348)) || (addr == 'h349)) || ((addr>='h323 && addr<='h33F))) || ((addr>='h3A0 && addr<='h3EF))) begin
+            return 1;
+        end
+        if (addr>='hF11 && addr<='hF15) begin
+            return 1;
+        end
+        if (addr>='h7B0 && addr<='h7B3) begin
+            return 1;
+        end
+        if (((((addr>='h5A8 && addr<='h5AF)) || ((addr>='h7C0 && addr<='h7FF))) || ((addr>='h9C0 && addr<='h9FF))) || ((addr>='hA00 && addr<='hAFF))) begin
+            return 1;
+        end
+        return 0;
+    endfunction
+
+    function logic state_causes_illegal_trap (input State st);
+        logic[31:0] addr;
+        logic[31:0] csr_priv;
+        logic[31:0] index;
+        if (!st.valid) begin
+            return 0;
+        end
+        if (st.sys_op == Sys_pkg::MRET) begin
+            return priv_reg != PRIV_M;
+        end
+        if (st.sys_op == Sys_pkg::SRET) begin
+            return priv_reg < PRIV_S;
+        end
+        if (st.csr_op == Csr_pkg::CNONE) begin
+            return 0;
+        end
+        addr=st.csr_addr;
+        csr_priv=((addr >>> 'h8)) & 'h3;
+        if (csr_priv > priv_reg) begin
+            return 1;
+        end
+        if ((((((addr >>> 'hA)) & 'h3)) == 'h3) && csr_state_writes(st)) begin
+            return 1;
+        end
+        if (!csr_supported(addr)) begin
+            return 1;
+        end
+        if (((priv_reg != PRIV_M) && addr>='hC00) && addr<='hC9F) begin
+            index=addr & 'h1F;
+            if (((((mcounteren_reg >>> index)) & 'h1)) == 'h0) begin
+                return 1;
+            end
+        end
+        return 0;
+    endfunction
+
+    always_comb begin : legality_comb_func  // legality_comb_func
+        legality_comb=state_causes_illegal_trap(legality_state_in);
+    end
+
+    always_comb begin : commit_seen_match_comb_func  // commit_seen_match_comb_func
+        commit_seen_match_comb=((((((commit_seen_valid_reg && state_in.valid) && (unsigned'(32'(commit_seen_pc_reg)) == state_in.pc)) && (unsigned'(32'(commit_seen_csr_addr_reg)) == state_in.csr_addr)) && (unsigned'(32'(commit_seen_csr_op_reg)) == state_in.csr_op)) && (unsigned'(32'(commit_seen_sys_op_reg)) == state_in.sys_op)) && (unsigned'(32'(commit_seen_trap_op_reg)) == state_in.trap_op)) && (unsigned'(32'(commit_seen_imm_reg)) == state_in.imm);
+    end
 
     function logic[31:0] csr_read (input logic[31:0] addr);
         logic[63:0] cycle_value;
@@ -291,11 +404,11 @@ module CSR (
     endfunction
 
     always_comb begin : read_data_comb_func  // read_data_comb_func
-        read_data_comb=csr_read(state_in.csr_addr);
+        read_data_comb=(commit_seen_match_comb && (state_in.csr_op != Csr_pkg::CNONE)) ? (unsigned'(32'(csr_read_data_reg))) : (csr_read(state_in.csr_addr));
     end
 
-    function logic[31:0] trap_cause_code ();
-        if (state_in.sys_op == Sys_pkg::ECALL) begin
+    function logic[31:0] trap_cause_code (input State state);
+        if (state.sys_op == Sys_pkg::ECALL) begin
             if (priv_reg == PRIV_U) begin
                 return 'h8;
             end
@@ -304,10 +417,10 @@ module CSR (
             end
             return 'hB;
         end
-        if (state_in.sys_op == Sys_pkg::EBREAK) begin
+        if (state.sys_op == Sys_pkg::EBREAK) begin
             return 'h3;
         end
-        case (state_in.trap_op)
+        case (state.trap_op)
         Trap_pkg::TNONE: begin
             return 'h2;
         end
@@ -358,99 +471,20 @@ module CSR (
     always_comb begin : trap_vector_comb_func  // trap_vector_comb_func
         logic[31:0] cause;
         logic[31:0] tvec;
-        cause=trap_cause_code();
+        cause=trap_cause_code(redirect_state_in);
         tvec=(trap_to_supervisor(cause)) ? (unsigned'(32'(stvec_reg))) : (unsigned'(32'(mtvec_reg)));
         trap_vector_comb=tvec & ~'h3;
     end
 
     always_comb begin : epc_comb_func  // epc_comb_func
         epc_comb=mepc_reg;
-        if (state_in.sys_op == Sys_pkg::SRET) begin
+        if (redirect_state_in.sys_op == Sys_pkg::SRET) begin
             epc_comb=sepc_reg;
         end
     end
 
-    function logic csr_state_writes (input State st);
-        logic[31:0] op;
-        op = st.csr_op;
-        if (!st.valid || (op == Csr_pkg::CNONE)) begin
-            return 0;
-        end
-        if ((op == Csr_pkg::CSRRS) || (op == Csr_pkg::CSRRC)) begin
-            return st.rs1 != 'h0;
-        end
-        if ((op == Csr_pkg::CSRRSI) || (op == Csr_pkg::CSRRCI)) begin
-            return st.csr_imm != 'h0;
-        end
-        return 1;
-    endfunction
-
-    function logic csr_supported (input logic[31:0] addr);
-        if (((addr == 'h1) || (addr == 'h2)) || (addr == 'h3)) begin
-            return 1;
-        end
-        if ((((((((((addr == 'hC00) || (addr == 'hC80)) || (addr == 'hC01)) || (addr == 'hC81)) || (addr == 'hC02)) || (addr == 'hC82)) || (addr == 'hB00)) || (addr == 'hB80)) || (addr == 'hB02)) || (addr == 'hB82)) begin
-            return 1;
-        end
-        if (((((addr>='hC03 && addr<='hC1F)) || ((addr>='hC83 && addr<='hC9F))) || ((addr>='hB03 && addr<='hB1F))) || ((addr>='hB83 && addr<='hB9F))) begin
-            return 1;
-        end
-        if ((((addr>='h100 && addr<='h106)) || ((addr>='h140 && addr<='h144))) || (addr == 'h180)) begin
-            return 1;
-        end
-        if (((((((((addr>='h300 && addr<='h306)) || (addr == 'h310)) || (addr == 'h320)) || ((addr>='h340 && addr<='h344))) || (addr == 'h348)) || (addr == 'h349)) || ((addr>='h323 && addr<='h33F))) || ((addr>='h3A0 && addr<='h3EF))) begin
-            return 1;
-        end
-        if (addr>='hF11 && addr<='hF15) begin
-            return 1;
-        end
-        if (addr>='h7B0 && addr<='h7B3) begin
-            return 1;
-        end
-        if (((((addr>='h5A8 && addr<='h5AF)) || ((addr>='h7C0 && addr<='h7FF))) || ((addr>='h9C0 && addr<='h9FF))) || ((addr>='hA00 && addr<='hAFF))) begin
-            return 1;
-        end
-        return 0;
-    endfunction
-
-    function logic state_causes_illegal_trap (input State st);
-        logic[31:0] addr;
-        logic[31:0] csr_priv;
-        logic[31:0] index;
-        if (!st.valid) begin
-            return 0;
-        end
-        if (st.sys_op == Sys_pkg::MRET) begin
-            return priv_reg != PRIV_M;
-        end
-        if (st.sys_op == Sys_pkg::SRET) begin
-            return priv_reg < PRIV_S;
-        end
-        if (st.csr_op == Csr_pkg::CNONE) begin
-            return 0;
-        end
-        addr=st.csr_addr;
-        csr_priv=((addr >>> 'h8)) & 'h3;
-        if (csr_priv > priv_reg) begin
-            return 1;
-        end
-        if ((((((addr >>> 'hA)) & 'h3)) == 'h3) && csr_state_writes(st)) begin
-            return 1;
-        end
-        if (!csr_supported(addr)) begin
-            return 1;
-        end
-        if (((priv_reg != PRIV_M) && addr>='hC00) && addr<='hC9F) begin
-            index=addr & 'h1F;
-            if (((((mcounteren_reg >>> index)) & 'h1)) == 'h0) begin
-                return 1;
-            end
-        end
-        return 0;
-    endfunction
-
     always_comb begin : illegal_trap_comb_func  // illegal_trap_comb_func
-        illegal_trap_comb=state_causes_illegal_trap(trap_check_state_in);
+        illegal_trap_comb=trap_check_state_in.csr_illegal;
     end
 
     always_comb begin : interrupt_enable_comb_func  // interrupt_enable_comb_func
@@ -459,6 +493,10 @@ module CSR (
 
     always_comb begin : software_pending_comb_func  // software_pending_comb_func
         software_pending_comb=unsigned'(32'(mip_reg)) | unsigned'(32'(sip_reg));
+    end
+
+    always_comb begin : commit_new_comb_func  // commit_new_comb_func
+        commit_new_comb=state_in.valid && !commit_seen_match_comb;
     end
 
     function logic[31:0] sanitize_mstatus (input logic[31:0] value);
@@ -484,14 +522,11 @@ module CSR (
     endfunction
 
     function logic sync_trap ();
-        return state_in.valid && ((((((state_in.sys_op == Sys_pkg::ECALL) || (state_in.sys_op == Sys_pkg::EBREAK)) || (state_in.sys_op == Sys_pkg::TRAP)) || (state_in.trap_op != Trap_pkg::TNONE)) || state_causes_illegal_trap(state_in)));
+        return commit_new_comb && (((((state_in.sys_op == Sys_pkg::ECALL) || (state_in.sys_op == Sys_pkg::EBREAK)) || (state_in.sys_op == Sys_pkg::TRAP)) || (state_in.trap_op != Trap_pkg::TNONE)));
     endfunction
 
     function logic csr_writes ();
-        if (state_causes_illegal_trap(state_in)) begin
-            return 0;
-        end
-        return csr_state_writes(state_in);
+        return commit_new_comb && csr_state_writes(state_in);
     endfunction
 
     task csr_write (
@@ -612,7 +647,24 @@ module CSR (
         inhibit_instret=((mcountinhibit_reg >>> 'h2)) & 'h1;
         trace_csr_events=0;
         cycle_reg_tmp = unsigned'(64'((inhibit_cycle) ? (cycle_reg) : (unsigned'(64'(cycle_reg)) + 'h1)));
-        instret_reg_tmp = unsigned'(64'(((inhibit_instret || !state_in.valid)) ? (instret_reg) : (unsigned'(64'(instret_reg)) + 'h1)));
+        instret_reg_tmp = unsigned'(64'(((inhibit_instret || !commit_new_comb)) ? (instret_reg) : (unsigned'(64'(instret_reg)) + 'h1)));
+        if (commit_new_comb) begin
+            commit_seen_valid_reg_tmp = unsigned'(1'(1));
+            commit_seen_pc_reg_tmp = unsigned'(32'(state_in.pc));
+            commit_seen_csr_addr_reg_tmp = state_in.csr_addr;
+            commit_seen_csr_op_reg_tmp = state_in.csr_op;
+            commit_seen_sys_op_reg_tmp = state_in.sys_op;
+            commit_seen_trap_op_reg_tmp = state_in.trap_op;
+            commit_seen_imm_reg_tmp = unsigned'(32'(state_in.imm));
+            if (state_in.csr_op != Csr_pkg::CNONE) begin
+                csr_read_data_reg_tmp = unsigned'(32'(csr_read(state_in.csr_addr)));
+            end
+        end
+        else begin
+            if (!state_in.valid) begin
+                commit_seen_valid_reg_tmp = unsigned'(1'(0));
+            end
+        end
         if (csr_writes()) begin
             if (trace_csr_events && (((((state_in.csr_addr == 'h100) || (state_in.csr_addr == 'h140)) || (state_in.csr_addr == 'h141)) || (state_in.csr_addr == 'h180)))) begin
                 $write("trace-csr-write pc=%08x addr=%03x old=%08x new=%08x priv=%x\n", state_in.pc, unsigned'(32'(state_in.csr_addr)), read_data_comb, csr_write_value(read_data_comb), unsigned'(32'(priv_reg)));
@@ -620,7 +672,7 @@ module CSR (
             csr_write(state_in.csr_addr, csr_write_value(read_data_comb));
         end
         if (sync_trap()) begin
-            cause=trap_cause_code();
+            cause=trap_cause_code(state_in);
             is_interrupt=0;
             tval=((!is_interrupt && (((((cause == 'h2) || (cause == 'hC)) || (cause == 'hD)) || (cause == 'hF))))) ? (state_in.imm) : ('h0);
             to_s=trap_to_supervisor(cause);
@@ -642,7 +694,7 @@ module CSR (
                 priv_reg_tmp = PRIV_M;
             end
         end
-        if (state_in.valid && (state_in.sys_op == Sys_pkg::MRET)) begin
+        if (commit_new_comb && (state_in.sys_op == Sys_pkg::MRET)) begin
             logic[31:0] mpp;
             logic[31:0] mie_restore;
             mpp=((mstatus_reg & MSTATUS_MPP_MASK)) >>> MSTATUS_MPP_SHIFT;
@@ -650,7 +702,7 @@ module CSR (
             priv_reg_tmp = mpp;
             mstatus_reg_tmp = unsigned'(32'((((((mstatus_reg & ~MSTATUS_MIE)) | mie_restore) | MSTATUS_MPIE)) & ~MSTATUS_MPP_MASK));
         end
-        if (state_in.valid && (state_in.sys_op == Sys_pkg::SRET)) begin
+        if (commit_new_comb && (state_in.sys_op == Sys_pkg::SRET)) begin
             logic[31:0] spp;
             logic[31:0] sie_restore;
             spp=((mstatus_reg & MSTATUS_SPP)) ? (PRIV_S) : (PRIV_U);
@@ -701,6 +753,14 @@ module CSR (
             dscratch1_reg_tmp = '0;
             cycle_reg_tmp = '0;
             instret_reg_tmp = '0;
+            commit_seen_valid_reg_tmp = '0;
+            commit_seen_pc_reg_tmp = '0;
+            commit_seen_csr_addr_reg_tmp = '0;
+            commit_seen_csr_op_reg_tmp = '0;
+            commit_seen_sys_op_reg_tmp = '0;
+            commit_seen_trap_op_reg_tmp = '0;
+            commit_seen_imm_reg_tmp = '0;
+            csr_read_data_reg_tmp = '0;
             priv_reg_tmp = reset_priv_in;
         end
     end
@@ -745,6 +805,14 @@ module CSR (
         cycle_reg_tmp = cycle_reg;
         instret_reg_tmp = instret_reg;
         priv_reg_tmp = priv_reg;
+        commit_seen_valid_reg_tmp = commit_seen_valid_reg;
+        commit_seen_pc_reg_tmp = commit_seen_pc_reg;
+        commit_seen_csr_addr_reg_tmp = commit_seen_csr_addr_reg;
+        commit_seen_csr_op_reg_tmp = commit_seen_csr_op_reg;
+        commit_seen_sys_op_reg_tmp = commit_seen_sys_op_reg;
+        commit_seen_trap_op_reg_tmp = commit_seen_trap_op_reg;
+        commit_seen_imm_reg_tmp = commit_seen_imm_reg;
+        csr_read_data_reg_tmp = csr_read_data_reg;
 
         _work(reset);
 
@@ -778,6 +846,14 @@ module CSR (
         cycle_reg <= cycle_reg_tmp;
         instret_reg <= instret_reg_tmp;
         priv_reg <= priv_reg_tmp;
+        commit_seen_valid_reg <= commit_seen_valid_reg_tmp;
+        commit_seen_pc_reg <= commit_seen_pc_reg_tmp;
+        commit_seen_csr_addr_reg <= commit_seen_csr_addr_reg_tmp;
+        commit_seen_csr_op_reg <= commit_seen_csr_op_reg_tmp;
+        commit_seen_sys_op_reg <= commit_seen_sys_op_reg_tmp;
+        commit_seen_trap_op_reg <= commit_seen_trap_op_reg_tmp;
+        commit_seen_imm_reg <= commit_seen_imm_reg_tmp;
+        csr_read_data_reg <= csr_read_data_reg_tmp;
     end
 
     always_ff @(posedge l2_clock) begin
@@ -785,6 +861,8 @@ module CSR (
         _work_l2_clock(reset);
 
     end
+
+    assign legality_out = legality_comb;
 
     assign read_data_out = read_data_comb;
 
@@ -815,6 +893,8 @@ module CSR (
     assign mie_out = interrupt_enable_comb;
 
     assign mideleg_out = mideleg_reg;
+
+    assign medeleg_out = medeleg_reg;
 
     assign mip_sw_out = software_pending_comb;
 
