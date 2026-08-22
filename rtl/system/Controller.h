@@ -7,7 +7,6 @@
 
 #include "../../Config.h"
 #include "MasterDMA.h"
-#include "../common/Avalon.h"
 #include "../common/Memory.cpp"
 #include "../../cpphdl/tribe_cpu/common/Axi4.h"
 
@@ -60,11 +59,7 @@ public:
     static_assert(sizeof(SystemRingDescriptor) == 16,
         "System ring descriptor is 128 bits");
 
-#if HOST_AXI4
     Axi4If<32, 4, DATA_WIDTH> host_control;
-#else
-    AvalonIf<32, DATA_WIDTH> host_control;
-#endif
 
     _PORT(logic<QUEUES>) rx_empty_in;
     _PORT(logic<QUEUES * 16>) rx_packet_length_in;
@@ -76,7 +71,7 @@ public:
     _PORT(bool) dma_command_ready_in;
     _PORT(bool) dma_command_direction_out;
     _PORT(u<3>) dma_command_queue_out;
-    _PORT(u<64>) dma_command_address_out;
+    _PORT(u<HOST_ADDR_WIDTH>) dma_command_address_out;
     _PORT(u<16>) dma_command_length_out;
     _PORT(bool) dma_command_sop_out;
     _PORT(bool) dma_command_eop_out;
@@ -102,7 +97,7 @@ private:
     reg<u1> command_valid_reg;
     reg<u1> command_direction_reg;
     reg<u<3>> command_queue_reg;
-    reg<u<64>> command_address_reg;
+    reg<u<HOST_ADDR_WIDTH>> command_address_reg;
     reg<u<16>> command_length_reg;
     reg<u1> command_sop_reg;
     reg<u1> command_eop_reg;
@@ -111,7 +106,6 @@ private:
     reg<u<32>> completed_reg;
     reg<u1> protocol_error_reg;
 
-#if HOST_AXI4
     reg<u32> write_address_reg;
     reg<u<4>> write_id_reg;
     reg<u1> write_address_valid_reg;
@@ -119,10 +113,6 @@ private:
     reg<u<4>> read_id_reg;
     reg<logic<DATA_WIDTH>> read_data_reg;
     reg<u1> read_valid_reg;
-#else
-    reg<logic<DATA_WIDTH>> read_data_reg;
-    reg<u1> read_valid_reg;
-#endif
 
     logic<128> rx_ring_write_data_comb;
     logic<16> rx_ring_write_mask_comb;
@@ -138,38 +128,22 @@ private:
 
     uint32_t bus_write_address()
     {
-#if HOST_AXI4
         return (uint32_t)write_address_reg;
-#else
-        return (uint32_t)host_control.address_in();
-#endif
     }
 
     bool bus_write_fire()
     {
-#if HOST_AXI4
         return host_control.wvalid_in() && host_control.wready_out();
-#else
-        return host_control.write_in() && !host_control.waitrequest_out();
-#endif
     }
 
     logic<DATA_WIDTH> bus_write_data()
     {
-#if HOST_AXI4
         return host_control.wdata_in();
-#else
-        return host_control.writedata_in();
-#endif
     }
 
     logic<DATA_BYTES> bus_write_mask()
     {
-#if HOST_AXI4
         return host_control.wstrb_in();
-#else
-        return host_control.byteenable_in();
-#endif
     }
 
     uint32_t write_word_value()
@@ -183,20 +157,12 @@ private:
 
     uint32_t bus_read_address()
     {
-#if HOST_AXI4
         return (uint32_t)host_control.araddr_in();
-#else
-        return (uint32_t)host_control.address_in();
-#endif
     }
 
     bool bus_read_fire()
     {
-#if HOST_AXI4
         return host_control.arvalid_in() && host_control.arready_out();
-#else
-        return host_control.read_in() && !host_control.waitrequest_out();
-#endif
     }
 
     bool address_in_ring(uint32_t address, uint32_t base)
@@ -293,6 +259,11 @@ private:
             if (values[queue * 16 + bit]) value |= 1u << bit;
         }
         return value;
+    }
+
+    bool descriptor_address_valid(u64 address)
+    {
+        return ((uint64_t)address >> HOST_ADDR_WIDTH) == 0;
     }
 
     uint32_t register_value(uint32_t address)
@@ -424,7 +395,6 @@ public:
         rx_ring._assign();
         tx_ring._assign();
 
-#if HOST_AXI4
         host_control.awready_out = _ASSIGN(!write_address_valid_reg
             && !write_response_valid_reg);
         host_control.wready_out = _ASSIGN(write_address_valid_reg
@@ -436,11 +406,6 @@ public:
         host_control.rdata_out = _ASSIGN_REG(read_data_reg);
         host_control.rlast_out = _ASSIGN_REG(read_valid_reg);
         host_control.rid_out = _ASSIGN_REG(read_id_reg);
-#else
-        host_control.waitrequest_out = _ASSIGN(false);
-        host_control.readdata_out = _ASSIGN_REG(read_data_reg);
-        host_control.readdatavalid_out = _ASSIGN_REG(read_valid_reg);
-#endif
 
         dma_command_valid_out = _ASSIGN_REG(command_valid_reg);
         dma_command_direction_out = _ASSIGN((bool)command_direction_reg);
@@ -463,7 +428,6 @@ public:
         uint32_t packet_length;
         SystemRingDescriptorWord descriptor;
 
-#if HOST_AXI4
         if (host_control.awvalid_in() && host_control.awready_out()) {
             write_address_reg._next = host_control.awaddr_in();
             write_id_reg._next = host_control.awid_in();
@@ -482,13 +446,6 @@ public:
             read_valid_reg._next = true;
         }
         if (read_valid_reg && host_control.rready_in()) read_valid_reg._next = false;
-#else
-        read_valid_reg._next = false;
-        if (host_control.read_in() && !host_control.waitrequest_out()) {
-            read_data_reg._next = register_read_comb_func();
-            read_valid_reg._next = true;
-        }
-#endif
 
         if (bus_write_fire()) {
             address = bus_write_address() & ~3u;
@@ -533,16 +490,19 @@ public:
                 }
                 if (queue < QUEUES && !rx_empty_in()[queue]
                     && packet_length != 0
+                    && descriptor_address_valid(descriptor.descriptor.address)
                     && (uint32_t)descriptor.descriptor.length >= packet_length) {
                     command_direction_reg._next = MASTER_DMA_QUEUE_TO_HOST;
                     command_queue_reg._next = queue;
-                    command_address_reg._next = descriptor.descriptor.address;
+                    command_address_reg._next =
+                        (u<HOST_ADDR_WIDTH>)descriptor.descriptor.address;
                     command_length_reg._next = packet_length;
                     command_sop_reg._next = true;
                     command_eop_reg._next = true;
                     command_valid_reg._next = true;
                 }
                 else if (queue >= QUEUES
+                    || !descriptor_address_valid(descriptor.descriptor.address)
                     || ((uint32_t)descriptor.descriptor.length < packet_length
                         && packet_length != 0)) {
                     protocol_error_reg._next = true;
@@ -553,11 +513,13 @@ public:
                 queue = (uint32_t)descriptor.descriptor.queue;
                 if (queue < QUEUES && !tx_full_in()[queue]
                     && (uint32_t)descriptor.descriptor.length != 0
+                    && descriptor_address_valid(descriptor.descriptor.address)
                     && ((bool)tx_packet_start_reg
                         || queue == (uint32_t)tx_packet_queue_reg)) {
                     command_direction_reg._next = MASTER_DMA_HOST_TO_QUEUE;
                     command_queue_reg._next = queue;
-                    command_address_reg._next = descriptor.descriptor.address;
+                    command_address_reg._next =
+                        (u<HOST_ADDR_WIDTH>)descriptor.descriptor.address;
                     command_length_reg._next = descriptor.descriptor.length;
                     command_sop_reg._next = tx_packet_start_reg;
                     command_eop_reg._next =
@@ -567,6 +529,7 @@ public:
                     if (tx_packet_start_reg) tx_packet_queue_reg._next = queue;
                 }
                 else if (queue >= QUEUES
+                    || !descriptor_address_valid(descriptor.descriptor.address)
                     || (!(bool)tx_packet_start_reg
                         && queue != (uint32_t)tx_packet_queue_reg)) {
                     protocol_error_reg._next = true;
@@ -595,13 +558,11 @@ public:
             active_direction_reg.clr();
             completed_reg.clr();
             protocol_error_reg.clr();
-#if HOST_AXI4
             write_address_reg.clr();
             write_id_reg.clr();
             write_address_valid_reg.clr();
             write_response_valid_reg.clr();
             read_id_reg.clr();
-#endif
             read_data_reg.clr();
             read_valid_reg.clr();
         }
@@ -629,13 +590,11 @@ public:
         active_direction_reg.strobe();
         completed_reg.strobe();
         protocol_error_reg.strobe();
-#if HOST_AXI4
         write_address_reg.strobe();
         write_id_reg.strobe();
         write_address_valid_reg.strobe();
         write_response_valid_reg.strobe();
         read_id_reg.strobe();
-#endif
         read_data_reg.strobe();
         read_valid_reg.strobe();
     }

@@ -6,6 +6,13 @@ module klusterlab_top (
     input  wire       sys_clk_200_n,
     input  wire       eth_refclk_p,
     input  wire       eth_refclk_n,
+    input  wire       pcie_refclk_p,
+    input  wire       pcie_refclk_n,
+    input  wire       pcie_rx_p,
+    input  wire       pcie_rx_n,
+    output wire       pcie_tx_p,
+    output wire       pcie_tx_n,
+    input  wire       pcie_perst_n,
     input  wire [1:0] sfp_rx_p,
     input  wire [1:0] sfp_rx_n,
     output wire [1:0] sfp_tx_p,
@@ -298,6 +305,14 @@ module klusterlab_top (
     wire [255:0] proc_tx_data;
     wire [31:0] proc_tx_keep;
     wire proc_tx_sop, proc_tx_eop, proc_tx_ready;
+    wire proc_to_system_valid, proc_to_system_ready;
+    wire [255:0] proc_to_system_data;
+    wire [31:0] proc_to_system_keep;
+    wire proc_to_system_sop, proc_to_system_eop;
+    wire proc_from_system_valid, proc_from_system_ready;
+    wire [255:0] proc_from_system_data;
+    wire [31:0] proc_from_system_keep;
+    wire proc_from_system_sop, proc_from_system_eop;
     assign l2_tx_valid = {1'b0, proc_tx_valid};
     assign l2_tx_data = {256'd0, proc_tx_data};
     assign l2_tx_keep = {32'd0, proc_tx_keep};
@@ -366,9 +381,18 @@ module klusterlab_top (
         .rx_valid_in(l2_rx_valid), .rx_data_in(l2_rx_data),
         .rx_keep_in(l2_rx_keep), .rx_sop_in(l2_rx_sop),
         .rx_eop_in(l2_rx_eop), .rx_ready_out(l2_rx_ready),
-        .to_system_ready_in(1'b1), .from_system_valid_in(1'b0),
-        .from_system_data_in(256'd0), .from_system_keep_in(32'd0),
-        .from_system_sop_in(1'b0), .from_system_eop_in(1'b0),
+        .to_system_valid_out(proc_to_system_valid),
+        .to_system_data_out(proc_to_system_data),
+        .to_system_keep_out(proc_to_system_keep),
+        .to_system_sop_out(proc_to_system_sop),
+        .to_system_eop_out(proc_to_system_eop),
+        .to_system_ready_in(proc_to_system_ready),
+        .from_system_valid_in(proc_from_system_valid),
+        .from_system_data_in(proc_from_system_data),
+        .from_system_keep_in(proc_from_system_keep),
+        .from_system_sop_in(proc_from_system_sop),
+        .from_system_eop_in(proc_from_system_eop),
+        .from_system_ready_out(proc_from_system_ready),
         .to_network_valid_out(proc_tx_valid),
         .to_network_data_out(proc_tx_data), .to_network_keep_out(proc_tx_keep),
         .to_network_sop_out(proc_tx_sop), .to_network_eop_out(proc_tx_eop),
@@ -387,36 +411,77 @@ module klusterlab_top (
         .timer_irq_in(timer_irq), .external_irq_in(external_irq),
         .cache_invalidate_in(cache_invalidate));
 
-    // System/GTX/10G status capture.  All probes are sampled on the same
-    // 156.25 MHz clock used by the MAC AXI interfaces and SmartNIC network.
-    wire [16:0] ila_system_state_raw = {
+    wire pcie_system_clock;
+    wire pcie_link_up;
+    wire pcie_system_reset;
+    wire system_protocol_error;
+    wire [11:0] pcie_system_activity;
+    pcie_system host_system (
+        .startup_reset(startup_reset), .l2_clock(net_clk),
+        .pcie_perst_n(pcie_perst_n), .pcie_refclk_p(pcie_refclk_p),
+        .pcie_refclk_n(pcie_refclk_n), .pcie_rx_p(pcie_rx_p),
+        .pcie_rx_n(pcie_rx_n), .pcie_tx_p(pcie_tx_p), .pcie_tx_n(pcie_tx_n),
+        .l2_rx_valid(proc_to_system_valid), .l2_rx_data(proc_to_system_data),
+        .l2_rx_keep(proc_to_system_keep), .l2_rx_sop(proc_to_system_sop),
+        .l2_rx_eop(proc_to_system_eop), .l2_rx_ready(proc_to_system_ready),
+        .l2_tx_valid(proc_from_system_valid), .l2_tx_data(proc_from_system_data),
+        .l2_tx_keep(proc_from_system_keep), .l2_tx_sop(proc_from_system_sop),
+        .l2_tx_eop(proc_from_system_eop), .l2_tx_ready(proc_from_system_ready),
+        .system_clock(pcie_system_clock), .link_up(pcie_link_up),
+        .system_reset(pcie_system_reset), .protocol_error(system_protocol_error),
+        .activity(pcie_system_activity));
+
+    // System/GTX/10G status capture sampled by the actual 125 MHz PCIe/System
+    // clock.  Signals from Network/Processing are synchronized strictly for
+    // debug visibility and do not feed functional logic.
+    wire [19:0] ila_system_state_raw = {
         startup_locked, startup_reset, cpu_clk_locked, design_reset,
         net_reset_from_ip, eth_reset_done, eth_reset_counter_done,
         eth_qpll_lock, eth_gttxreset, eth_gtrxreset, eth_txuserrdy,
-        sfp_los, eth_tx_disable, nic_protocol_error, nic_storage_full};
+        sfp_los, eth_tx_disable, nic_protocol_error, nic_storage_full,
+        pcie_link_up, pcie_system_reset, system_protocol_error};
     // Status bits originate in several transceiver/startup domains.  ILA
     // status is diagnostic, so independent two-flop synchronization is the
     // correct representation; cross-bit atomicity is not required.
-    (* ASYNC_REG = "TRUE" *) reg [16:0] ila_system_state_meta = 17'd0;
-    (* ASYNC_REG = "TRUE" *) reg [16:0] ila_system_state = 17'd0;
-    always @(posedge net_clk) begin
-        ila_system_state_meta <= ila_system_state_raw;
-        ila_system_state <= ila_system_state_meta;
-    end
-    wire [15:0] ila_processing_state = {
+    (* ASYNC_REG = "TRUE" *) reg [19:0] ila_system_state_meta = 20'd0;
+    (* ASYNC_REG = "TRUE" *) reg [19:0] ila_system_state = 20'd0;
+    wire [31:0] ila_processing_state_raw = {
+        pcie_system_activity,
+        proc_to_system_valid, proc_to_system_ready,
+        proc_from_system_valid, proc_from_system_ready,
         ddr_awvalid[0], ddr_awready[0], ddr_wvalid[0], ddr_wready[0],
         ddr_bvalid[0], ddr_bready[0], ddr_arvalid[0], ddr_arready[0],
         ddr_rvalid[0], ddr_rready[0], descriptor_valid, descriptor_ready,
         rx_read_valid, rx_read_ready, proc_tx_valid, proc_tx_ready};
-    wire [11:0] ila_mac_activity = {
+    wire [11:0] ila_mac_activity_raw = {
         mac_rx_valid, mac_rx_last, mac_rx_error,
         mac_tx_valid, mac_tx_ready, mac_tx_last};
-    wire [15:0] ila_eth_status = {eth_status[1], eth_status[0]};
-    wire [31:0] ila_clock_activity = {
+    wire [15:0] ila_eth_status_raw = {eth_status[1], eth_status[0]};
+    wire [31:0] ila_clock_activity_raw = {
         dclk_heartbeat, txusr_heartbeat, net_heartbeat};
+    (* ASYNC_REG = "TRUE" *) reg [31:0] ila_processing_state_meta = 32'd0;
+    (* ASYNC_REG = "TRUE" *) reg [31:0] ila_processing_state = 32'd0;
+    (* ASYNC_REG = "TRUE" *) reg [11:0] ila_mac_activity_meta = 12'd0;
+    (* ASYNC_REG = "TRUE" *) reg [11:0] ila_mac_activity = 12'd0;
+    (* ASYNC_REG = "TRUE" *) reg [15:0] ila_eth_status_meta = 16'd0;
+    (* ASYNC_REG = "TRUE" *) reg [15:0] ila_eth_status = 16'd0;
+    (* ASYNC_REG = "TRUE" *) reg [31:0] ila_clock_activity_meta = 32'd0;
+    (* ASYNC_REG = "TRUE" *) reg [31:0] ila_clock_activity = 32'd0;
+    always @(posedge pcie_system_clock) begin
+        ila_system_state_meta <= ila_system_state_raw;
+        ila_system_state <= ila_system_state_meta;
+        ila_processing_state_meta <= ila_processing_state_raw;
+        ila_processing_state <= ila_processing_state_meta;
+        ila_mac_activity_meta <= ila_mac_activity_raw;
+        ila_mac_activity <= ila_mac_activity_meta;
+        ila_eth_status_meta <= ila_eth_status_raw;
+        ila_eth_status <= ila_eth_status_meta;
+        ila_clock_activity_meta <= ila_clock_activity_raw;
+        ila_clock_activity <= ila_clock_activity_meta;
+    end
 
     ila_system system_debug (
-        .clk(net_clk),
+        .clk(pcie_system_clock),
         .probe0(ila_system_state),
         .probe1(ila_eth_status),
         .probe2(ila_clock_activity),

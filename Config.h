@@ -4,14 +4,10 @@
 // KlusterLab r2.0 carries 1 GiB DDR3; the CPU address map may cover it even
 // though only the 64 KiB shared L2 and private L1s consume FPGA block RAM.
 #define CPU_MEMORY (1024*1024*1024)
-#ifndef HOST_AXI4
-#define HOST_AXI4 0
-#endif
-
-// KlusterLab routes one PCIe lane to the XC7K160T.  A 64-bit user datapath at
-// 125 MHz comfortably carries PCIe Gen2 x1 after 8b/10b encoding.
+// KlusterLab routes one PCIe lane to the Kintex-7.  The Xilinx AXI-MM PCIe
+// bridge exposes a 64-bit datapath and a 32-bit outbound translation window.
 #define HOST_DATA_WIDTH 64
-#define HOST_ADDR_WIDTH 64
+#define HOST_ADDR_WIDTH 32
 #define SYSTEM_CLK_HZ 125000000ULL
 #define SYSTEM_QUEUES 1
 

@@ -1,37 +1,63 @@
 `default_nettype none
 
-// Physical storage leaf for Tribe's CppHDL RAM. Cache organization and all
-// cache/CPU control remain generated from C++; this module only presents the
-// synchronous single-address RAM pattern expected by FPGA synthesis tools.
 module RAM #(
-    parameter integer WIDTH = 33,
-    parameter integer DEPTH = 16
+    parameter WIDTH = 32,
+    parameter DEPTH = 32
 ) (
-    input  wire                         clk,
-    input  wire                         l2_clock,
-    input  wire                         reset,
-    input  wire [$clog2(DEPTH)-1:0]     addr_in,
-    input  wire [WIDTH-1:0]             data_in,
-    input  wire                         wr_in,
-    input  wire                         rd_in,
-    output wire [WIDTH-1:0]             q_out,
-    input  wire signed [31:0]           id_in
+    input  wire                     clk,
+    input  wire                     l2_clock,
+    input  wire                     reset,
+    input  wire[$clog2(DEPTH)-1:0]  addr_in,
+    input  wire[WIDTH-1:0]          data_in,
+    input  wire                     wr_in,
+    input  wire                     rd_in,
+    output wire[WIDTH-1:0]          q_out,
+    input  wire signed[31:0]        id_in
 );
-    (* ram_style = "block" *)
-    reg [WIDTH-1:0] memory [0:DEPTH-1];
-    reg [WIDTH-1:0] read_data_reg;
+    // CppHDL's byte-lane memory representation generates a wide bank of
+    // individual registers.  Keep wide L1 data arrays in BRAM, but map the
+    // shallow, narrow tag arrays to distributed RAM.  Forcing a 16-entry tag
+    // array into RAMB18 adds a BRAM clock-to-output delay to every hit and was
+    // the startpoint of the routed tag-to-next-data-address critical path.
+    generate
+        if (WIDTH <= 64 && DEPTH <= 32) begin : gen_distributed_ram
+            (* ram_style = "distributed" *) reg [WIDTH-1:0] ram [0:DEPTH-1];
+            reg [WIDTH-1:0] q_out_reg;
 
-    always_ff @(posedge clk) begin
-        if (wr_in)
-            memory[addr_in] <= data_in;
-        if (reset)
-            read_data_reg <= '0;
-        else if (rd_in)
-            read_data_reg <= memory[addr_in];
-    end
+            always_ff @(posedge clk) begin
+                if (reset) begin
+                    q_out_reg <= '0;
+                end
+                else begin
+                    if (wr_in)
+                        ram[addr_in] <= data_in;
+                    if (rd_in)
+                        q_out_reg <= ram[addr_in];
+                end
+            end
 
-    assign q_out = read_data_reg;
+            assign q_out = q_out_reg;
+        end
+        else begin : gen_block_ram
+            (* ram_style = "block" *) reg [WIDTH-1:0] ram [0:DEPTH-1];
+            reg [WIDTH-1:0] q_out_reg;
 
-    wire unused_l2_clock = l2_clock;
-    wire signed [31:0] unused_id_in = id_in;
+            always_ff @(posedge clk) begin
+                if (reset) begin
+                    q_out_reg <= '0;
+                end
+                else begin
+                    if (wr_in)
+                        ram[addr_in] <= data_in;
+                    if (rd_in)
+                        q_out_reg <= ram[addr_in];
+                end
+            end
+
+            assign q_out = q_out_reg;
+        end
+    endgenerate
+
+    // l2_clock and id_in are part of the generated generic RAM interface but
+    // intentionally unused: every current RAM instance belongs to an L1 cache.
 endmodule

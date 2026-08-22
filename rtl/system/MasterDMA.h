@@ -6,7 +6,6 @@
 
 #include "../../Config.h"
 #include "../common/Axi4Master.h"
-#include "../common/Avalon.h"
 
 using namespace cpphdl;
 
@@ -40,6 +39,8 @@ public:
     static constexpr size_t CHUNK_BITS = clog2(CHUNKS);
     static_assert(DATA_WIDTH == 64,
         "Kintex-7 host DMA uses a 64-bit PCIe Gen2 x1 interface");
+    static_assert(ADDR_WIDTH == 32,
+        "Kintex-7 AXI PCIe outbound translation window is 32 bits");
     static_assert(QUEUE_DATA_WIDTH % DATA_WIDTH == 0);
 
     _PORT(bool) command_valid_in;
@@ -65,11 +66,7 @@ public:
     _PORT(bool) queue_output_eop_out;
     _PORT(bool) queue_output_ready_in;
 
-#if HOST_AXI4
     Axi4MasterIf<ADDR_WIDTH, ID_WIDTH, DATA_WIDTH> host;
-#else
-    AvalonIf<ADDR_WIDTH, DATA_WIDTH> host_out;
-#endif
 
     _PORT(bool) busy_out;
     _PORT(bool) completion_valid_out;
@@ -182,7 +179,6 @@ public:
         queue_output_sop_out = _ASSIGN_REG(queue_sop_reg);
         queue_output_eop_out = _ASSIGN_REG(queue_eop_reg);
 
-#if HOST_AXI4
         host.awvalid_out = _ASSIGN((uint32_t)state_reg
             == MASTER_DMA_WRITE_ADDRESS);
         host.awaddr_out = _ASSIGN_REG(address_reg);
@@ -198,13 +194,6 @@ public:
         host.araddr_out = _ASSIGN_REG(address_reg);
         host.arid_out = _ASSIGN((u<ID_WIDTH>)0);
         host.rready_out = _ASSIGN((uint32_t)state_reg == MASTER_DMA_READ_DATA);
-#else
-        host_out.address_in = _ASSIGN_REG(address_reg);
-        host_out.read_in = _ASSIGN((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS);
-        host_out.write_in = _ASSIGN((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS);
-        host_out.writedata_in = _ASSIGN_COMB(host_write_data_comb_func());
-        host_out.byteenable_in = _ASSIGN_COMB(host_write_keep_comb_func());
-#endif
 
         busy_out = _ASSIGN((uint32_t)state_reg != MASTER_DMA_IDLE);
         completion_valid_out = _ASSIGN_REG(completion_valid_reg);
@@ -260,17 +249,12 @@ public:
             }
             state_reg._next = MASTER_DMA_WRITE_ADDRESS;
         }
-#if HOST_AXI4
         else if ((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS
             && host.awready_in()) state_reg._next = MASTER_DMA_WRITE_DATA;
         else if ((uint32_t)state_reg == MASTER_DMA_WRITE_DATA
             && host.wready_in()) state_reg._next = MASTER_DMA_WRITE_RESPONSE;
         else if ((uint32_t)state_reg == MASTER_DMA_WRITE_RESPONSE
             && host.bvalid_in()) {
-#else
-        else if ((uint32_t)state_reg == MASTER_DMA_WRITE_ADDRESS
-            && !host_out.waitrequest_out()) {
-#endif
             bytes = kept_bytes(host_write_keep_comb_func());
             if (bytes == 0 || bytes > (uint32_t)remaining_reg)
                 protocol_error_reg._next = true;
@@ -294,7 +278,6 @@ public:
                 state_reg._next = MASTER_DMA_WAIT_QUEUE;
             }
         }
-#if HOST_AXI4
         else if ((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS
             && host.arready_in()) state_reg._next = MASTER_DMA_READ_DATA;
         else if ((uint32_t)state_reg == MASTER_DMA_READ_DATA
@@ -304,17 +287,6 @@ public:
                 ? (uint32_t)remaining_reg : DATA_BYTES;
             for (bit = 0; bit < DATA_WIDTH; ++bit)
                 queue_data_reg._next[base + bit] = host.rdata_in()[bit];
-#else
-        else if ((uint32_t)state_reg == MASTER_DMA_READ_ADDRESS
-            && !host_out.waitrequest_out()) state_reg._next = MASTER_DMA_READ_DATA;
-        else if ((uint32_t)state_reg == MASTER_DMA_READ_DATA
-            && host_out.readdatavalid_out()) {
-            base = (uint32_t)chunk_reg * DATA_WIDTH;
-            bytes = (uint32_t)remaining_reg < DATA_BYTES
-                ? (uint32_t)remaining_reg : DATA_BYTES;
-            for (bit = 0; bit < DATA_WIDTH; ++bit)
-                queue_data_reg._next[base + bit] = host_out.readdata_out()[bit];
-#endif
             base = (uint32_t)chunk_reg * DATA_BYTES;
             for (byte = 0; byte < DATA_BYTES; ++byte)
                 queue_keep_reg._next[base + byte] = byte < bytes;

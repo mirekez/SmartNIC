@@ -72,7 +72,7 @@ function(smartnic_add_capture_target sustained)
             COMMAND "$<TARGET_FILE:${target}>" "${CAPTURE_ELF}")
         set_tests_properties(system_capture_${rate}${suffix} PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-            LABELS "system;capture;cpu;avalon;${rate}${suffix}"
+            LABELS "system;capture;cpu;axi4;${rate}${suffix}"
             TIMEOUT 3600)
     endif()
 endfunction()

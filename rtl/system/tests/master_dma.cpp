@@ -1,4 +1,4 @@
-// MasterDMA test for both HOST_AXI4 variants.  It transfers an RxQueue packet
+// AXI4 MasterDMA test. It transfers an RxQueue packet
 // into simulated host memory, then reads two scatter-gather fragments from
 // host memory and verifies their SOP/EOP assembly into one TxQueue packet.
 
@@ -28,7 +28,7 @@ long _system_clock = -1;
 namespace
 {
 
-using Dma = MasterDMA<64, 64, 4, 16>;
+using Dma = MasterDMA<HOST_ADDR_WIDTH, 64, 4, 16>;
 
 template<typename T, typename V>
 static void copy_to_verilator(T& target, const V& value)
@@ -55,7 +55,7 @@ class MasterDmaTest
     bool command_valid = false;
     bool command_direction = false;
     u<3> command_queue = 0;
-    u<64> command_address = 0;
+    u<HOST_ADDR_WIDTH> command_address = 0;
     u<16> command_length = 0;
     bool command_sop = false;
     bool command_eop = false;
@@ -73,7 +73,6 @@ class MasterDmaTest
     std::mt19937 random{0x4d4d4101};
     bool error = false;
 
-#if HOST_AXI4
     Axi4Responder<4, 64> host = {};
     uint64_t pending_aw = 0;
     bool have_aw = false;
@@ -86,17 +85,6 @@ class MasterDmaTest
     bool snap_arvalid = false;
     uint64_t snap_araddr = 0;
     bool snap_rready = false;
-#else
-    bool host_waitrequest = false;
-    logic<64> host_readdata = 0;
-    bool host_readdatavalid = false;
-    bool snap_write = false;
-    bool snap_read = false;
-    uint64_t snap_address = 0;
-    logic<64> snap_writedata = 0;
-    logic<8> snap_byteenable = 0;
-    bool snap_waitrequest = false;
-#endif
 
     void fail(const char* message)
     {
@@ -106,11 +94,7 @@ class MasterDmaTest
 #else
             "CppHDL C++",
 #endif
-#if HOST_AXI4
             "AXI4",
-#else
-            "Avalon",
-#endif
             message);
         error = true;
     }
@@ -131,13 +115,7 @@ class MasterDmaTest
         dut.queue_input_sop_in = _ASSIGN(queue_input_sop);
         dut.queue_input_eop_in = _ASSIGN(queue_input_eop);
         dut.queue_output_ready_in = _ASSIGN(queue_output_ready);
-#if HOST_AXI4
         dut.host = host;
-#else
-        dut.host_out.waitrequest_out = _ASSIGN(host_waitrequest);
-        dut.host_out.readdata_out = _ASSIGN(host_readdata);
-        dut.host_out.readdatavalid_out = _ASSIGN(host_readdatavalid);
-#endif
         dut.__inst_name = "master_dma";
         dut._assign();
 #endif
@@ -161,7 +139,6 @@ class MasterDmaTest
         dut.queue_input_sop_in = queue_input_sop;
         dut.queue_input_eop_in = queue_input_eop;
         dut.queue_output_ready_in = queue_output_ready;
-#if HOST_AXI4
         dut.host___05Fawready_in = host.aw.ready;
         dut.host___05Fwready_in = host.w.ready;
         dut.host___05Fbvalid_in = host.b.valid;
@@ -171,11 +148,6 @@ class MasterDmaTest
         copy_to_verilator(dut.host___05Frdata_in, host.r.data);
         dut.host___05Frlast_in = host.r.last;
         dut.host___05Frid_in = (uint8_t)(uint32_t)host.r.id;
-#else
-        dut.host_out___05Fwaitrequest_in = host_waitrequest;
-        copy_to_verilator(dut.host_out___05Freaddata_in, host_readdata);
-        dut.host_out___05Freaddatavalid_in = host_readdatavalid;
-#endif
         dut.eval();
 #else
         (void)reset;
@@ -266,7 +238,6 @@ class MasterDmaTest
 #endif
     }
 
-#if HOST_AXI4
 #define HOST_VALUE(signal) host_value_##signal()
     bool host_value_awvalid()
     {
@@ -340,52 +311,9 @@ class MasterDmaTest
         return dut.host.rready_out();
 #endif
     }
-#else
-    uint64_t host_address_value()
-    {
-#ifdef VERILATOR
-        return dut.host_out___05Faddress_out;
-#else
-        return (uint64_t)dut.host_out.address_in();
-#endif
-    }
-    bool host_write_value()
-    {
-#ifdef VERILATOR
-        return dut.host_out___05Fwrite_out;
-#else
-        return dut.host_out.write_in();
-#endif
-    }
-    bool host_read_value()
-    {
-#ifdef VERILATOR
-        return dut.host_out___05Fread_out;
-#else
-        return dut.host_out.read_in();
-#endif
-    }
-    logic<64> host_writedata_value()
-    {
-#ifdef VERILATOR
-        return copy_from_verilator<logic<64>>(dut.host_out___05Fwritedata_out);
-#else
-        return dut.host_out.writedata_in();
-#endif
-    }
-    logic<8> host_byteenable_value()
-    {
-#ifdef VERILATOR
-        return logic<8>(dut.host_out___05Fbyteenable_out);
-#else
-        return dut.host_out.byteenable_in();
-#endif
-    }
-#endif
 
     void update_host_after_edge()
     {
-#if HOST_AXI4
         if (host.b.valid && snap_bready) host.b.valid = false;
         if (host.r.valid && snap_rready) host.r.valid = false;
         if (snap_awvalid && host.aw.ready) {
@@ -420,34 +348,10 @@ class MasterDmaTest
         host.aw.ready = (random() & 3u) != 0;
         host.w.ready = (random() & 3u) != 0;
         host.ar.ready = (random() & 3u) != 0;
-#else
-        host_readdatavalid = false;
-        if (snap_write && !snap_waitrequest) {
-            for (uint32_t byte = 0; byte < 8; ++byte) {
-                if (snap_byteenable[byte]
-                    && snap_address + byte < host_memory.size()) {
-                    host_memory[snap_address + byte] =
-                        (uint8_t)snap_writedata.bits(byte * 8 + 7, byte * 8);
-                }
-            }
-        }
-        if (snap_read && !snap_waitrequest) {
-            host_readdata = 0;
-            for (uint32_t byte = 0; byte < 8; ++byte) {
-                if (snap_address + byte < host_memory.size()) {
-                    host_readdata.bits(byte * 8 + 7, byte * 8) =
-                        host_memory[snap_address + byte];
-                }
-            }
-            host_readdatavalid = true;
-        }
-        host_waitrequest = (random() & 3u) == 0;
-#endif
     }
 
     void sample_host()
     {
-#if HOST_AXI4
         snap_awvalid = HOST_VALUE(awvalid);
         snap_awaddr = HOST_VALUE(awaddr);
         snap_wvalid = HOST_VALUE(wvalid);
@@ -457,14 +361,6 @@ class MasterDmaTest
         snap_arvalid = HOST_VALUE(arvalid);
         snap_araddr = HOST_VALUE(araddr);
         snap_rready = HOST_VALUE(rready);
-#else
-        snap_write = host_write_value();
-        snap_read = host_read_value();
-        snap_address = host_address_value();
-        snap_writedata = host_writedata_value();
-        snap_byteenable = host_byteenable_value();
-        snap_waitrequest = host_waitrequest;
-#endif
     }
 
     void capture_queue_output()
@@ -501,7 +397,7 @@ class MasterDmaTest
         ++_system_clock;
     }
 
-    void issue(bool direction, uint32_t queue, uint64_t address,
+    void issue(bool direction, uint32_t queue, uint32_t address,
         uint32_t length, bool sop, bool eop)
     {
         while (!DMA_VALUE(command_ready)) cycle();
@@ -550,11 +446,9 @@ public:
     bool run()
     {
         bind_native();
-#if HOST_AXI4
         host.aw.ready = true;
         host.w.ready = true;
         host.ar.ready = true;
-#endif
         for (int i = 0; i < 4; ++i) cycle(true);
 
         // Test 1: queue-to-host packet write with a partial final beat.
@@ -591,11 +485,7 @@ public:
 #else
             "CppHDL C++",
 #endif
-#if HOST_AXI4
             "AXI4",
-#else
-            "Avalon",
-#endif
             error ? "FAILED" : "PASSED");
         return !error;
     }
@@ -608,17 +498,8 @@ static bool build_verilator()
 #else
     namespace fs = std::filesystem;
     fs::path source = fs::absolute(__FILE__);
-#if HOST_AXI4
-    const char* generated_name = "generated_master_dma_axi";
-    const char* output_name = "MasterDMA_axi_verilator";
-    const char* previous_flags = std::getenv("CPPHDL_VERILATOR_CFLAGS");
-    std::string verilator_flags = previous_flags ? previous_flags : "";
-    verilator_flags += " -DHOST_AXI4=1";
-    setenv("CPPHDL_VERILATOR_CFLAGS", verilator_flags.c_str(), 1);
-#else
-    const char* generated_name = "generated_master_dma_avalon";
-    const char* output_name = "MasterDMA_avalon_verilator";
-#endif
+    const char* generated_name = "generated_master_dma";
+    const char* output_name = "MasterDMA_verilator";
     return VerilatorCompileInExactFolderFromGenerated(source.string(), output_name,
         "MasterDMA", fs::current_path() / generated_name, {},
         {source.parent_path().string(), source.parent_path().parent_path().string(),
@@ -641,11 +522,7 @@ int main(int argc, char** argv)
 #ifndef VERILATOR
     if (!noveril) {
         ok = build_verilator();
-#if HOST_AXI4
-        if (ok) ok = std::system("MasterDMA_axi_verilator/obj_dir/VMasterDMA --noveril") == 0;
-#else
-        if (ok) ok = std::system("MasterDMA_avalon_verilator/obj_dir/VMasterDMA --noveril") == 0;
-#endif
+        if (ok) ok = std::system("MasterDMA_verilator/obj_dir/VMasterDMA --noveril") == 0;
     }
 #endif
     return MasterDmaTest().run() && ok ? 0 : 1;

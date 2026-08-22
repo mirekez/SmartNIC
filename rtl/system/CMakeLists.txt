@@ -1,14 +1,9 @@
 add_executable(rx_queue_test tests/rx_queue.cpp)
 add_executable(tx_queue_test tests/tx_queue.cpp)
-add_executable(master_dma_avalon_test tests/master_dma.cpp)
-add_executable(master_dma_axi_test tests/master_dma.cpp)
-add_executable(controller_avalon_test tests/controller.cpp)
-add_executable(controller_axi_test tests/controller.cpp)
-target_compile_definitions(master_dma_axi_test PRIVATE HOST_AXI4=1)
-target_compile_definitions(controller_axi_test PRIVATE HOST_AXI4=1)
+add_executable(master_dma_test tests/master_dma.cpp)
+add_executable(controller_test tests/controller.cpp)
 
-foreach(target rx_queue_test tx_queue_test master_dma_avalon_test master_dma_axi_test
-    controller_avalon_test controller_axi_test)
+foreach(target rx_queue_test tx_queue_test master_dma_test controller_test)
     target_include_directories(${target} PRIVATE
         "${PROJECT_SOURCE_DIR}/cpphdl/include"
         "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
@@ -25,8 +20,7 @@ file(GLOB SMARTNIC_SYSTEM_STDCXXEXP
     "${PROJECT_SOURCE_DIR}/cpphdl/.conda/lib/gcc/*/*/libstdc++exp.a")
 if(SMARTNIC_SYSTEM_STDCXXEXP)
     list(GET SMARTNIC_SYSTEM_STDCXXEXP 0 SMARTNIC_SYSTEM_STDCXXEXP_LIBRARY)
-    foreach(target rx_queue_test tx_queue_test master_dma_avalon_test master_dma_axi_test
-        controller_avalon_test controller_axi_test)
+    foreach(target rx_queue_test tx_queue_test master_dma_test controller_test)
         target_link_libraries(${target} PRIVATE "${SMARTNIC_SYSTEM_STDCXXEXP_LIBRARY}")
     endforeach()
 endif()
@@ -52,7 +46,7 @@ smartnic_generate_system_target(rx_queue_test RxQueue.h
 smartnic_generate_system_target(tx_queue_test TxQueue.h
     "${CMAKE_CURRENT_BINARY_DIR}/generated_tx_queue")
 
-# Generate the complete System hierarchy in both supported host-bus forms.
+# Generate the complete AXI4 System hierarchy.
 # System's primary domain is the PCIe/host clock; l2_clock is the Processing
 # boundary consumed by the per-queue asynchronous FIFOs.
 set(SMARTNIC_SYSTEM_L2_CLOCK_HZ 156250000)
@@ -82,8 +76,8 @@ function(smartnic_add_complete_system_target target generated_dir)
             "${generated_dir}/MasterDmaState_pkg.sv"
             "${generated_dir}/MasterDmaDirection_pkg.sv"
             "${generated_dir}/SystemControllerFlags_pkg.sv"
-            "${generated_dir}/SmartNicMemory.sv"
-            "${generated_dir}/Fifo.sv"
+            "${generated_dir}/SystemMemory.sv"
+            "${generated_dir}/SystemFifo.sv"
             "${generated_dir}/PacketQueue.sv"
             "${generated_dir}/RxQueue.sv"
             "${generated_dir}/TxQueue.sv"
@@ -106,17 +100,14 @@ function(smartnic_add_complete_system_target target generated_dir)
         VERBATIM)
 endfunction()
 
-smartnic_add_complete_system_target(system_rtl_avalon
-    "${CMAKE_CURRENT_BINARY_DIR}/generated_system_avalon")
-smartnic_add_complete_system_target(system_rtl_axi
-    "${CMAKE_CURRENT_BINARY_DIR}/generated_system_axi" -DHOST_AXI4=1)
-add_custom_target(system_rtl DEPENDS system_rtl_avalon system_rtl_axi)
+smartnic_add_complete_system_target(system_rtl
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_system")
 
-add_custom_command(TARGET master_dma_avalon_test POST_BUILD
+add_custom_command(TARGET master_dma_test POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/generated_master_dma_avalon"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated_master_dma"
     COMMAND $<TARGET_FILE:cpphdl>
-        --generated-dir "${CMAKE_CURRENT_BINARY_DIR}/generated_master_dma_avalon"
+        --generated-dir "${CMAKE_CURRENT_BINARY_DIR}/generated_master_dma"
         "${CMAKE_CURRENT_SOURCE_DIR}/MasterDMA.h"
         -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
         -I "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
@@ -126,42 +117,12 @@ add_custom_command(TARGET master_dma_avalon_test POST_BUILD
         ${CPPHDL_TOOLCHAIN_ARGS}
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" VERBATIM)
 
-add_custom_command(TARGET master_dma_axi_test POST_BUILD
+add_custom_command(TARGET controller_test POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/generated_master_dma_axi"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated_controller"
     COMMAND $<TARGET_FILE:cpphdl>
-        --generated-dir "${CMAKE_CURRENT_BINARY_DIR}/generated_master_dma_axi"
-        "${CMAKE_CURRENT_SOURCE_DIR}/MasterDMA.h"
-        -DHOST_AXI4=1
-        -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
-        -I "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
-        -I "${PROJECT_SOURCE_DIR}/rtl/common"
-        -I "${CMAKE_CURRENT_SOURCE_DIR}"
-        -I "${PROJECT_SOURCE_DIR}"
-        ${CPPHDL_TOOLCHAIN_ARGS}
-    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" VERBATIM)
-
-add_custom_command(TARGET controller_avalon_test POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/generated_controller_avalon"
-    COMMAND $<TARGET_FILE:cpphdl>
-        --generated-dir "${CMAKE_CURRENT_BINARY_DIR}/generated_controller_avalon"
+        --generated-dir "${CMAKE_CURRENT_BINARY_DIR}/generated_controller"
         "${CMAKE_CURRENT_SOURCE_DIR}/Controller.h"
-        -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
-        -I "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
-        -I "${PROJECT_SOURCE_DIR}/rtl/common"
-        -I "${CMAKE_CURRENT_SOURCE_DIR}"
-        -I "${PROJECT_SOURCE_DIR}"
-        ${CPPHDL_TOOLCHAIN_ARGS}
-    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}" VERBATIM)
-
-add_custom_command(TARGET controller_axi_test POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-        "${CMAKE_CURRENT_BINARY_DIR}/generated_controller_axi"
-    COMMAND $<TARGET_FILE:cpphdl>
-        --generated-dir "${CMAKE_CURRENT_BINARY_DIR}/generated_controller_axi"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Controller.h"
-        -DHOST_AXI4=1
         -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
         -I "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
         -I "${PROJECT_SOURCE_DIR}/rtl/common"
@@ -173,12 +134,10 @@ add_custom_command(TARGET controller_axi_test POST_BUILD
 if(BUILD_TESTING)
     add_test(NAME system_rx_queue COMMAND rx_queue_test)
     add_test(NAME system_tx_queue COMMAND tx_queue_test)
-    add_test(NAME system_master_dma_avalon COMMAND master_dma_avalon_test)
-    add_test(NAME system_master_dma_axi COMMAND master_dma_axi_test)
-    add_test(NAME system_controller_avalon COMMAND controller_avalon_test)
-    add_test(NAME system_controller_axi COMMAND controller_axi_test)
-    foreach(test system_rx_queue system_tx_queue system_master_dma_avalon
-        system_master_dma_axi system_controller_avalon system_controller_axi)
+    add_test(NAME system_master_dma COMMAND master_dma_test)
+    add_test(NAME system_controller COMMAND controller_test)
+    foreach(test system_rx_queue system_tx_queue system_master_dma
+        system_controller)
         set_tests_properties(${test} PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
             LABELS "system;cpphdl;verilator;queue"

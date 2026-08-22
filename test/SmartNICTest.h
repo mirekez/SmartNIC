@@ -2,7 +2,7 @@
 
 // Shared full-SoC simulation harness. It composes the Network SmartNIC root,
 // one Tribe processing cluster, the System queue/controller/MasterDMA,
-// external CPU DDR models, a wire-rate Ethernet source, and an Avalon host.
+// external CPU DDR models, a wire-rate Ethernet source, and an AXI4 host.
 
 #include "../Config.h"
 #include "../rtl/SmartNIC.h"
@@ -10,7 +10,7 @@
 #include "../rtl/system/System.h"
 #include "../cpphdl/tribe_cpu/common/Axi4Ram.h"
 #include "TrafficGenerator.h"
-#include "AvalonHost.h"
+#include "Axi4Host.h"
 
 using namespace cpphdl;
 
@@ -35,7 +35,7 @@ public:
     Processing<CPU_COUNT, HANDLE_BITS, FRAME_LENGTH_BITS> processing;
     System<SYSTEM_QUEUES, 256> system;
     TrafficGenerator<LANE_WIDTH, TRAFFIC_DEPTH> traffic;
-    AvalonHost<HOST_MEMORY_BYTES> host;
+    Axi4Host<HOST_MEMORY_BYTES> host;
     Axi4Ram<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
         CPU::DATA_WIDTH, CPU_RAM_WORDS> cpu_memory[CPU_COUNT];
 
@@ -53,15 +53,15 @@ public:
     _PORT(u32) traffic_emitted_beats_out;
     _PORT(u32) traffic_backpressure_cycles_out;
 
-    // Host-driver Avalon master controls System registers and descriptor rings.
-    _PORT(bool) host_read_in;
-    _PORT(bool) host_write_in;
+    // Transaction-level driver controls the AXI4 register/ring initiator.
+    _PORT(bool) host_request_valid_in;
+    _PORT(bool) host_request_write_in;
     _PORT(u32) host_address_in;
     _PORT(logic<HOST_DATA_WIDTH>) host_writedata_in;
-    _PORT(logic<HOST_DATA_WIDTH / 8>) host_byteenable_in;
-    _PORT(bool) host_waitrequest_out;
+    _PORT(logic<HOST_DATA_WIDTH / 8>) host_wstrb_in;
+    _PORT(bool) host_request_ready_out;
+    _PORT(bool) host_response_valid_out;
     _PORT(logic<HOST_DATA_WIDTH>) host_readdata_out;
-    _PORT(bool) host_readdatavalid_out;
 
     _PORT(bool) protocol_error_out;
     _PORT(bool) storage_full_out;
@@ -317,29 +317,19 @@ private:
             (logic<CPU_COUNT>)system.l2_tx_eop_out().bits(CPU_COUNT - 1, 0));
         system.l2_tx_ready_in = _ASSIGN_COMB(system_tx_ready_comb_func());
 
-        host.driver_read_in = host_read_in;
-        host.driver_write_in = host_write_in;
+        host.driver_request_valid_in = host_request_valid_in;
+        host.driver_request_write_in = host_request_write_in;
         host.driver_address_in = host_address_in;
         host.driver_writedata_in = host_writedata_in;
-        host.driver_byteenable_in = host_byteenable_in;
+        host.driver_wstrb_in = host_wstrb_in;
 
-        system.host_control.address_in = host.control_out.address_in;
-        system.host_control.read_in = host.control_out.read_in;
-        system.host_control.write_in = host.control_out.write_in;
-        system.host_control.writedata_in = host.control_out.writedata_in;
-        system.host_control.byteenable_in = host.control_out.byteenable_in;
-        host.control_out.waitrequest_out = system.host_control.waitrequest_out;
-        host.control_out.readdata_out = system.host_control.readdata_out;
-        host.control_out.readdatavalid_out = system.host_control.readdatavalid_out;
+        AXI4_TARGET_IF_DRIVER_FROM_MASTER(system.host_control, host.control);
+        AXI4_MASTER_RESPONDER_FROM_TARGET(host.control, system.host_control);
 
-        host.dma.address_in = system.host_dma_out.address_in;
-        host.dma.read_in = system.host_dma_out.read_in;
-        host.dma.write_in = system.host_dma_out.write_in;
-        host.dma.writedata_in = system.host_dma_out.writedata_in;
-        host.dma.byteenable_in = system.host_dma_out.byteenable_in;
-        system.host_dma_out.waitrequest_out = host.dma.waitrequest_out;
-        system.host_dma_out.readdata_out = host.dma.readdata_out;
-        system.host_dma_out.readdatavalid_out = host.dma.readdatavalid_out;
+        AXI4_TARGET_IF_DRIVER_FROM_MASTER(host.dma_memory.axi_in,
+            system.host_dma);
+        AXI4_MASTER_RESPONDER_FROM_TARGET(system.host_dma,
+            host.dma_memory.axi_in);
 
         for (index = 0; index < CPU_COUNT; ++index) {
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(cpu_memory[index].axi_in,
@@ -397,9 +387,9 @@ public:
         traffic_done_out = traffic.done_out;
         traffic_emitted_beats_out = traffic.emitted_beats_out;
         traffic_backpressure_cycles_out = traffic.backpressure_cycles_out;
-        host_waitrequest_out = host.driver_waitrequest_out;
+        host_request_ready_out = host.driver_request_ready_out;
+        host_response_valid_out = host.driver_response_valid_out;
         host_readdata_out = host.driver_readdata_out;
-        host_readdatavalid_out = host.driver_readdatavalid_out;
         protocol_error_out = _ASSIGN_COMB(protocol_error_comb_func());
         storage_full_out = smartnic.storage_full_out;
     }

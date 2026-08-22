@@ -1,6 +1,6 @@
 package MasterDmaState_pkg;
 
-typedef enum {
+typedef enum logic[8-1:0] {
     MASTER_DMA_IDLE,
     MASTER_DMA_WAIT_QUEUE,
     MASTER_DMA_WRITE_ADDRESS,

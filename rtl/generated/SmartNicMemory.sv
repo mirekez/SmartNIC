@@ -1,8 +1,7 @@
 `default_nettype none
 
-// Physical storage leaf for CppHDL SmartNicMemory. All FIFO control, pointers,
-// validity and protocol handling remain in CppHDL; this module only expresses
-// the canonical synchronous RAM pattern expected by FPGA synthesis tools.
+// Network-only physical storage leaf for CppHDL SmartNicMemory.  All FIFO
+// control remains generated from C++; this is only the canonical BRAM shape.
 (* keep_hierarchy = "yes" *)
 module SmartNicMemory #(
     parameter integer MEM_WIDTH_BYTES = 160,
@@ -54,3 +53,5 @@ module SmartNicMemory #(
     wire unused_l2_clk = l2_clk;
     wire unused_reset = reset;
 endmodule
+
+`default_nettype wire
