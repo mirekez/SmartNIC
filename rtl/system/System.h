@@ -6,11 +6,25 @@
 // host-memory DMA engine across the queue pairs.
 
 #include "../../Config.h"
+
+// Network and System use different global clock names.  Specialize the shared
+// storage leaf names across the complete System include graph so their RTL
+// definitions cannot collide in the combined FPGA source set.
+#ifdef SYNTHESIS
+#define SMARTNIC_SYSTEM_MEMORY 1
+#define SmartNicMemory SystemMemory
+#define Fifo SystemFifo
+#endif
 #include "Controller.h"
 #include "MasterDMA.h"
 #include "RxQueue.h"
 #include "TxQueue.h"
 #include "../common/AsyncFifo.h"
+#ifdef SYNTHESIS
+#undef Fifo
+#undef SmartNicMemory
+#undef SMARTNIC_SYSTEM_MEMORY
+#endif
 
 using namespace cpphdl;
 
@@ -40,13 +54,8 @@ public:
     _PORT(logic<QUEUES>) l2_tx_eop_out;
     _PORT(logic<QUEUES>) l2_tx_ready_in;
 
-#if HOST_AXI4
     Axi4If<32, 4, HOST_DATA_WIDTH> host_control;
     Axi4MasterIf<HOST_ADDR_WIDTH, 4, HOST_DATA_WIDTH> host_dma;
-#else
-    AvalonIf<32, HOST_DATA_WIDTH> host_control;
-    AvalonIf<HOST_ADDR_WIDTH, HOST_DATA_WIDTH> host_dma_out;
-#endif
 
     _PORT(logic<QUEUES>) rx_queue_empty_out;
     _PORT(logic<QUEUES>) tx_queue_empty_out;
@@ -378,29 +387,10 @@ public:
         master_dma.queue_output_ready_in = _ASSIGN(
             tx_queue[(uint32_t)master_dma.active_queue_out()].write_ready_out());
 
-#if HOST_AXI4
         AXI4_DRIVER_FROM(controller.host_control, host_control);
         AXI4_RESPONDER_FROM(host_control, controller.host_control);
         AXI4_MASTER_FROM_MASTER(host_dma, master_dma.host);
         AXI4_MASTER_RESPONDER_FROM_MASTER(master_dma.host, host_dma);
-#else
-        controller.host_control.address_in = host_control.address_in;
-        controller.host_control.read_in = host_control.read_in;
-        controller.host_control.write_in = host_control.write_in;
-        controller.host_control.writedata_in = host_control.writedata_in;
-        controller.host_control.byteenable_in = host_control.byteenable_in;
-        host_control.waitrequest_out = controller.host_control.waitrequest_out;
-        host_control.readdata_out = controller.host_control.readdata_out;
-        host_control.readdatavalid_out = controller.host_control.readdatavalid_out;
-        host_dma_out.address_in = master_dma.host_out.address_in;
-        host_dma_out.read_in = master_dma.host_out.read_in;
-        host_dma_out.write_in = master_dma.host_out.write_in;
-        host_dma_out.writedata_in = master_dma.host_out.writedata_in;
-        host_dma_out.byteenable_in = master_dma.host_out.byteenable_in;
-        master_dma.host_out.waitrequest_out = host_dma_out.waitrequest_out;
-        master_dma.host_out.readdata_out = host_dma_out.readdata_out;
-        master_dma.host_out.readdatavalid_out = host_dma_out.readdatavalid_out;
-#endif
 
         l2_rx_ready_out = _ASSIGN_COMB(l2_rx_ready_comb_func());
         l2_tx_valid_out = _ASSIGN_COMB(l2_tx_valid_comb_func());

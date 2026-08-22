@@ -18,20 +18,24 @@ module AsyncFifoL2ToSystem #(
 ,   output wire read_valid_out
 ,   output wire[WIDTH-1:0] read_data_out
 );
-    parameter  ADDR_BITS = $clog2(DEPTH);
-    parameter  PTR_BITS = ADDR_BITS + 'h1;
+    localparam  ADDR_BITS = $clog2(DEPTH);
+    localparam  PTR_BITS = ADDR_BITS + 'h1;
 
 
     // regs and combs
     reg[WIDTH-1:0] data_mem[DEPTH];
     reg[PTR_BITS-1:0] write_bin_reg;
     reg[PTR_BITS-1:0] write_gray_reg;
-    reg[PTR_BITS-1:0] read_gray_write1_reg;
-    reg[PTR_BITS-1:0] read_gray_write2_reg;
+    (* ASYNC_REG = "TRUE" *)
+    logic[PTR_BITS-1:0] read_gray_write1_reg;
+    (* ASYNC_REG = "TRUE" *)
+    logic[PTR_BITS-1:0] read_gray_write2_reg;
     reg[PTR_BITS-1:0] read_bin_reg;
     reg[PTR_BITS-1:0] read_gray_reg;
-    reg[PTR_BITS-1:0] write_gray_read1_reg;
-    reg[PTR_BITS-1:0] write_gray_read2_reg;
+    (* ASYNC_REG = "TRUE" *)
+    logic[PTR_BITS-1:0] write_gray_read1_reg;
+    (* ASYNC_REG = "TRUE" *)
+    logic[PTR_BITS-1:0] write_gray_read2_reg;
     logic write_ready_comb;
     logic read_valid_comb;
     logic[WIDTH-1:0] read_data_comb;

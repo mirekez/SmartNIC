@@ -46,7 +46,7 @@ module System #(
 ,   output wire[4-1:0] host_control__rid_out
 ,   output wire host_dma__awvalid_out
 ,   input wire host_dma__awready_in
-,   output wire[64-1:0] host_dma__awaddr_out
+,   output wire[32-1:0] host_dma__awaddr_out
 ,   output wire[4-1:0] host_dma__awid_out
 ,   output wire host_dma__wvalid_out
 ,   input wire host_dma__wready_in
@@ -58,7 +58,7 @@ module System #(
 ,   input wire[4-1:0] host_dma__bid_in
 ,   output wire host_dma__arvalid_out
 ,   input wire host_dma__arready_in
-,   output wire[64-1:0] host_dma__araddr_out
+,   output wire[32-1:0] host_dma__araddr_out
 ,   output wire[4-1:0] host_dma__arid_out
 ,   input wire host_dma__rvalid_in
 ,   output wire host_dma__rready_out
@@ -69,9 +69,9 @@ module System #(
 ,   output wire[QUEUES-1:0] tx_queue_empty_out
 ,   output wire protocol_error_out
 );
-    parameter  DATA_WIDTH = 64'h100;
-    parameter  DATA_BYTES = 64'h20;
-    parameter  STREAM_BITS = 64'h122;
+    localparam  DATA_WIDTH = 64'h100;
+    localparam  DATA_BYTES = 64'h20;
+    localparam  STREAM_BITS = 64'h122;
 
 
     // regs and combs
@@ -127,7 +127,7 @@ module System #(
     wire controller__dma_command_ready_in;
     wire controller__dma_command_direction_out;
     wire[3-1:0] controller__dma_command_queue_out;
-    wire[64-1:0] controller__dma_command_address_out;
+    wire[32-1:0] controller__dma_command_address_out;
     wire[16-1:0] controller__dma_command_length_out;
     wire controller__dma_command_sop_out;
     wire controller__dma_command_eop_out;
@@ -192,7 +192,7 @@ module System #(
     wire master_dma__command_ready_out;
     wire master_dma__command_direction_in;
     wire[3-1:0] master_dma__command_queue_in;
-    wire[64-1:0] master_dma__command_address_in;
+    wire[32-1:0] master_dma__command_address_in;
     wire[16-1:0] master_dma__command_length_in;
     wire master_dma__command_sop_in;
     wire master_dma__command_eop_in;
@@ -210,7 +210,7 @@ module System #(
     wire master_dma__queue_output_ready_in;
     wire master_dma__host__awvalid_out;
     wire master_dma__host__awready_in;
-    wire[64-1:0] master_dma__host__awaddr_out;
+    wire[32-1:0] master_dma__host__awaddr_out;
     wire[4-1:0] master_dma__host__awid_out;
     wire master_dma__host__wvalid_out;
     wire master_dma__host__wready_in;
@@ -222,7 +222,7 @@ module System #(
     wire[4-1:0] master_dma__host__bid_in;
     wire master_dma__host__arvalid_out;
     wire master_dma__host__arready_in;
-    wire[64-1:0] master_dma__host__araddr_out;
+    wire[32-1:0] master_dma__host__araddr_out;
     wire[4-1:0] master_dma__host__arid_out;
     wire master_dma__host__rvalid_in;
     wire master_dma__host__rready_out;
@@ -237,7 +237,7 @@ module System #(
     wire[32-1:0] master_dma__completed_count_out;
     wire master_dma__protocol_error_out;
     MasterDMA #(
-        64
+        32
 ,       64
 ,       4
 ,       16

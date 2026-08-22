@@ -1,16 +1,17 @@
 `default_nettype none
 
-// Network-only physical storage leaf for CppHDL SmartNicMemory.  All FIFO
-// control remains generated from C++; this is only the canonical BRAM shape.
+// System-only physical storage leaf.  Control and queue behavior remain in
+// CppHDL; this module expresses a synchronous, byte-write-enabled block RAM
+// with the l2_clock/system_clock port names used by generated System RTL.
 (* keep_hierarchy = "yes" *)
-module SmartNicMemory #(
-    parameter integer MEM_WIDTH_BYTES = 160,
-    parameter integer MEM_DEPTH = 64,
+module SystemMemory #(
+    parameter integer MEM_WIDTH_BYTES = 37,
+    parameter integer MEM_DEPTH = 256,
     parameter integer SHOWAHEAD = 1,
     parameter integer FULL_WORD_WRITE = 0
 ) (
-    input  wire                              net_clk,
-    input  wire                              l2_clk,
+    input  wire                              l2_clock,
+    input  wire                              system_clock,
     input  wire                              reset,
     input  wire [$clog2(MEM_DEPTH)-1:0]      write_addr_in,
     input  wire                              write_in,
@@ -25,7 +26,10 @@ module SmartNicMemory #(
     reg [MEM_WIDTH_BYTES*8-1:0] read_data_reg;
     integer byte_index;
 
-    always_ff @(posedge net_clk) begin
+    // PacketQueue storage is wholly inside System's 125 MHz domain.  The
+    // l2_clock port exists only because CppHDL carries every design clock to
+    // every generated child.
+    always_ff @(posedge system_clock) begin
         if (write_in) begin
             if (FULL_WORD_WRITE) begin
                 memory[write_addr_in] <= write_data_in;
@@ -50,7 +54,7 @@ module SmartNicMemory #(
         end
     endgenerate
 
-    wire unused_l2_clk = l2_clk;
+    wire unused_l2_clock = l2_clock;
     wire unused_reset = reset;
 endmodule
 

@@ -6,7 +6,7 @@ import MasterDmaDirection_pkg::*;
 
 
 module MasterDMA #(
-    parameter ADDR_WIDTH = 'h40
+    parameter ADDR_WIDTH = 'h20
 ,   parameter DATA_WIDTH = 'h40
 ,   parameter ID_WIDTH = 'h4
 ,   parameter LENGTH_BITS = 'h10
@@ -37,7 +37,7 @@ module MasterDMA #(
 ,   input wire queue_output_ready_in
 ,   output wire host__awvalid_out
 ,   input wire host__awready_in
-,   output wire[64-1:0] host__awaddr_out
+,   output wire[32-1:0] host__awaddr_out
 ,   output wire[4-1:0] host__awid_out
 ,   output wire host__wvalid_out
 ,   input wire host__wready_in
@@ -49,7 +49,7 @@ module MasterDMA #(
 ,   input wire[4-1:0] host__bid_in
 ,   output wire host__arvalid_out
 ,   input wire host__arready_in
-,   output wire[64-1:0] host__araddr_out
+,   output wire[32-1:0] host__araddr_out
 ,   output wire[4-1:0] host__arid_out
 ,   input wire host__rvalid_in
 ,   output wire host__rready_out
@@ -64,11 +64,11 @@ module MasterDMA #(
 ,   output wire[32-1:0] completed_count_out
 ,   output wire protocol_error_out
 );
-    parameter  DATA_BYTES = DATA_WIDTH/'h8;
-    parameter  QUEUE_DATA_WIDTH = 64'h100;
-    parameter  QUEUE_BYTES = 64'h20;
-    parameter  CHUNKS = QUEUE_DATA_WIDTH/DATA_WIDTH;
-    parameter  CHUNK_BITS = $clog2(CHUNKS);
+    localparam  DATA_BYTES = DATA_WIDTH/'h8;
+    localparam  QUEUE_DATA_WIDTH = 64'h100;
+    localparam  QUEUE_BYTES = 64'h20;
+    localparam  CHUNKS = QUEUE_DATA_WIDTH/DATA_WIDTH;
+    localparam  CHUNK_BITS = $clog2(CHUNKS);
 
 
     // regs and combs

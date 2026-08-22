@@ -46,7 +46,7 @@ module Controller #(
 ,   input wire dma_command_ready_in
 ,   output wire dma_command_direction_out
 ,   output wire[3-1:0] dma_command_queue_out
-,   output wire[64-1:0] dma_command_address_out
+,   output wire[32-1:0] dma_command_address_out
 ,   output wire[16-1:0] dma_command_length_out
 ,   output wire dma_command_sop_out
 ,   output wire dma_command_eop_out
@@ -58,21 +58,21 @@ module Controller #(
 ,   output wire[RING_BITS-1:0] tx_consumer_out
 ,   output wire protocol_error_out
 );
-    parameter  DATA_BYTES = DATA_WIDTH/'h8;
-    parameter  RING_BITS = $clog2(RING_DEPTH);
-    parameter  REG_CONTROL = 'h0;
-    parameter  REG_STATUS = 'h4;
-    parameter  REG_RX_PRODUCER = 'h10;
-    parameter  REG_RX_CONSUMER = 'h14;
-    parameter  REG_TX_PRODUCER = 'h18;
-    parameter  REG_TX_CONSUMER = 'h1C;
-    parameter  REG_COMPLETED = 'h20;
-    parameter  REG_QUEUE_BASE = 'h100;
-    parameter  REG_QUEUE_STRIDE = 'h20;
-    parameter  REG_RX_RING_BASE = 'h10000;
-    parameter  REG_TX_RING_BASE = 'h20000;
-    parameter  RING_ENTRY_BYTES = 'h10;
-    parameter  CONTROL_ENABLE = 'h1;
+    localparam  DATA_BYTES = DATA_WIDTH/'h8;
+    localparam  RING_BITS = $clog2(RING_DEPTH);
+    localparam  REG_CONTROL = 'h0;
+    localparam  REG_STATUS = 'h4;
+    localparam  REG_RX_PRODUCER = 'h10;
+    localparam  REG_RX_CONSUMER = 'h14;
+    localparam  REG_TX_PRODUCER = 'h18;
+    localparam  REG_TX_CONSUMER = 'h1C;
+    localparam  REG_COMPLETED = 'h20;
+    localparam  REG_QUEUE_BASE = 'h100;
+    localparam  REG_QUEUE_STRIDE = 'h20;
+    localparam  REG_RX_RING_BASE = 'h10000;
+    localparam  REG_TX_RING_BASE = 'h20000;
+    localparam  RING_ENTRY_BYTES = 'h10;
+    localparam  CONTROL_ENABLE = 'h1;
 
 
     // regs and combs
@@ -86,7 +86,7 @@ module Controller #(
     reg command_valid_reg;
     reg command_direction_reg;
     reg[3-1:0] command_queue_reg;
-    reg[64-1:0] command_address_reg;
+    reg[32-1:0] command_address_reg;
     reg[16-1:0] command_length_reg;
     reg command_sop_reg;
     reg command_eop_reg;
@@ -121,10 +121,11 @@ module Controller #(
     wire[$clog2(RING_DEPTH)-1:0] rx_ring__read_addr_in;
     wire rx_ring__read_in;
     wire['h10*'h8-1:0] rx_ring__read_data_out;
-    SmartNicMemory #(
+    SystemMemory #(
         'h10
 ,       RING_DEPTH
 ,       1
+,       0
     ) rx_ring (
         .l2_clock(l2_clock)
 ,       .system_clock(system_clock)
@@ -144,10 +145,11 @@ module Controller #(
     wire[$clog2(RING_DEPTH)-1:0] tx_ring__read_addr_in;
     wire tx_ring__read_in;
     wire['h10*'h8-1:0] tx_ring__read_data_out;
-    SmartNicMemory #(
+    SystemMemory #(
         'h10
 ,       RING_DEPTH
 ,       1
+,       0
     ) tx_ring (
         .l2_clock(l2_clock)
 ,       .system_clock(system_clock)
@@ -172,7 +174,7 @@ module Controller #(
     logic command_valid_reg_tmp;
     logic command_direction_reg_tmp;
     logic[3-1:0] command_queue_reg_tmp;
-    logic[64-1:0] command_address_reg_tmp;
+    logic[32-1:0] command_address_reg_tmp;
     logic[16-1:0] command_length_reg_tmp;
     logic command_sop_reg_tmp;
     logic command_eop_reg_tmp;
@@ -318,6 +320,10 @@ module Controller #(
             end
         end
         return value;
+    endfunction
+
+    function logic descriptor_address_valid (input logic[64-1:0] address);
+        return ((unsigned'(64'(address)) >>> 'h20)) == 'h0;
     endfunction
 
     function logic[31:0] register_value (input logic[31:0] address);
@@ -527,17 +533,17 @@ module Controller #(
                 if (queue < QUEUES) begin
                     packet_length=queue_value(rx_packet_length_in, queue);
                 end
-                if ((((queue < QUEUES) && !rx_empty_in[queue]) && (packet_length != 'h0)) && descriptor.descriptor.length>=packet_length) begin
+                if (((((queue < QUEUES) && !rx_empty_in[queue]) && (packet_length != 'h0)) && descriptor_address_valid(unsigned'(64'(descriptor.descriptor.address)))) && descriptor.descriptor.length>=packet_length) begin
                     command_direction_reg_tmp = unsigned'(1'(MasterDmaDirection_pkg::MASTER_DMA_QUEUE_TO_HOST));
                     command_queue_reg_tmp = queue;
-                    command_address_reg_tmp = descriptor.descriptor.address;
+                    command_address_reg_tmp = unsigned'(32'(descriptor.descriptor.address));
                     command_length_reg_tmp = packet_length;
                     command_sop_reg_tmp = unsigned'(1'(1));
                     command_eop_reg_tmp = unsigned'(1'(1));
                     command_valid_reg_tmp = unsigned'(1'(1));
                 end
                 else begin
-                    if (queue>=QUEUES || (((unsigned'(32'(descriptor.descriptor.length)) < packet_length) && (packet_length != 'h0)))) begin
+                    if ((queue>=QUEUES || !descriptor_address_valid(unsigned'(64'(descriptor.descriptor.address)))) || (((unsigned'(32'(descriptor.descriptor.length)) < packet_length) && (packet_length != 'h0)))) begin
                         protocol_error_reg_tmp = unsigned'(1'(1));
                     end
                 end
@@ -546,10 +552,10 @@ module Controller #(
                 if (unsigned'(32'(tx_consumer_reg)) != unsigned'(32'(tx_producer_reg))) begin
                     descriptor.raw = tx_ring__read_data_out;
                     queue=unsigned'(32'(descriptor.descriptor.queue));
-                    if ((((queue < QUEUES) && !tx_full_in[queue]) && (unsigned'(32'(descriptor.descriptor.length)) != 'h0)) && ((tx_packet_start_reg || (queue == unsigned'(32'(tx_packet_queue_reg)))))) begin
+                    if (((((queue < QUEUES) && !tx_full_in[queue]) && (unsigned'(32'(descriptor.descriptor.length)) != 'h0)) && descriptor_address_valid(unsigned'(64'(descriptor.descriptor.address)))) && ((tx_packet_start_reg || (queue == unsigned'(32'(tx_packet_queue_reg)))))) begin
                         command_direction_reg_tmp = unsigned'(1'(MasterDmaDirection_pkg::MASTER_DMA_HOST_TO_QUEUE));
                         command_queue_reg_tmp = queue;
-                        command_address_reg_tmp = descriptor.descriptor.address;
+                        command_address_reg_tmp = unsigned'(32'(descriptor.descriptor.address));
                         command_length_reg_tmp = descriptor.descriptor.length;
                         command_sop_reg_tmp = tx_packet_start_reg;
                         command_eop_reg_tmp = unsigned'(1'(((unsigned'(32'(descriptor.descriptor.flags)) & SystemControllerFlags_pkg::SYSTEM_TX_DESCRIPTOR_EOP)) != 'h0));
@@ -559,7 +565,7 @@ module Controller #(
                         end
                     end
                     else begin
-                        if (queue>=QUEUES || ((!tx_packet_start_reg && (queue != unsigned'(32'(tx_packet_queue_reg)))))) begin
+                        if ((queue>=QUEUES || !descriptor_address_valid(unsigned'(64'(descriptor.descriptor.address)))) || ((!tx_packet_start_reg && (queue != unsigned'(32'(tx_packet_queue_reg)))))) begin
                             protocol_error_reg_tmp = unsigned'(1'(1));
                         end
                     end

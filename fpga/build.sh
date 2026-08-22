@@ -36,6 +36,29 @@ vivado_compat_lib="$vivado_root/lib/lnx64.o/SuSE"
     -I "$repo_dir/rtl/network" \
     -I "$repo_dir/rtl" \
     -I "$repo_dir"
+"$repo_dir/cpphdl/build/cpphdl" \
+    --generated-dir "$repo_dir/rtl/generated" \
+    --primary_clock l2_clock 156250000 \
+    --secondary_clock system_clock 125000000 \
+    "$repo_dir/rtl/system/System.h" \
+    -I "$repo_dir/cpphdl/include" \
+    -I "$repo_dir/cpphdl/tribe_cpu/common" \
+    -I "$repo_dir/rtl/common" \
+    -I "$repo_dir/rtl/system" \
+    -I "$repo_dir"
+
+# Preserve the two deliberately small storage primitives after conversion.
+# The converter owns every surrounding control module; only these inferred
+# BRAM leaves are specialized for Vivado.
+cmake -E copy_if_different \
+    "$repo_dir/rtl/common/SmartNicMemoryPrimitive.sv" \
+    "$repo_dir/rtl/generated/SmartNicMemory.sv"
+cmake -E copy_if_different \
+    "$repo_dir/rtl/common/SmartNicRAMPrimitive.sv" \
+    "$repo_dir/rtl/generated/SmartNicRAM.sv"
+cmake -E copy_if_different \
+    "$repo_dir/rtl/common/SystemMemoryPrimitive.sv" \
+    "$repo_dir/rtl/generated/SystemMemory.sv"
 
 # Until a host-side program loader exists, the CPU must see executable code at
 # address zero on its very first cache fill.  Rebuild the RV32 capture worker

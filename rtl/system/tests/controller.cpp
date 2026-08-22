@@ -1,4 +1,4 @@
-// Controller test for AXI4 and Avalon host-slave modes.  It programs and reads
+// AXI4 Controller test. It programs and reads
 // both 1024-entry rings, dispatches an RX buffer, then verifies that two TX
 // scatter-gather descriptors produce one SOP-to-EOP packet sequence.
 
@@ -51,15 +51,7 @@ class ControllerTest
 #else
     Dut dut;
 #endif
-#if HOST_AXI4
     Axi4Driver<32, 4, 64> host = {};
-#else
-    u<32> host_address = 0;
-    bool host_read = false;
-    bool host_write = false;
-    logic<64> host_writedata = 0;
-    logic<8> host_byteenable = 0;
-#endif
     logic<1> rx_empty = 1;
     logic<16> rx_length = 0;
     logic<1> tx_full = 0;
@@ -79,11 +71,7 @@ class ControllerTest
 #else
             "CppHDL C++",
 #endif
-#if HOST_AXI4
             "AXI4",
-#else
-            "Avalon",
-#endif
             message);
         error = true;
     }
@@ -91,15 +79,7 @@ class ControllerTest
     void bind_native()
     {
 #ifndef VERILATOR
-#if HOST_AXI4
         dut.host_control = host;
-#else
-        dut.host_control.address_in = _ASSIGN(host_address);
-        dut.host_control.read_in = _ASSIGN(host_read);
-        dut.host_control.write_in = _ASSIGN(host_write);
-        dut.host_control.writedata_in = _ASSIGN(host_writedata);
-        dut.host_control.byteenable_in = _ASSIGN(host_byteenable);
-#endif
         dut.rx_empty_in = _ASSIGN(rx_empty);
         dut.rx_packet_length_in = _ASSIGN(rx_length);
         dut.tx_full_in = _ASSIGN(tx_full);
@@ -119,7 +99,6 @@ class ControllerTest
 #ifdef VERILATOR
         dut.clk = clock;
         dut.reset = reset;
-#if HOST_AXI4
         dut.host_control___05Fawvalid_in = host.aw.valid;
         dut.host_control___05Fawaddr_in = (uint32_t)host.aw.addr;
         dut.host_control___05Fawid_in = (uint8_t)(uint32_t)host.aw.id;
@@ -132,13 +111,6 @@ class ControllerTest
         dut.host_control___05Faraddr_in = (uint32_t)host.ar.addr;
         dut.host_control___05Farid_in = (uint8_t)(uint32_t)host.ar.id;
         dut.host_control___05Frready_in = host.r.ready;
-#else
-        dut.host_control___05Faddress_in = (uint32_t)host_address;
-        dut.host_control___05Fread_in = host_read;
-        dut.host_control___05Fwrite_in = host_write;
-        copy_to_verilator(dut.host_control___05Fwritedata_in, host_writedata);
-        dut.host_control___05Fbyteenable_in = (uint32_t)(uint64_t)host_byteenable;
-#endif
         dut.rx_empty_in = (uint8_t)(uint64_t)rx_empty;
         copy_to_verilator(dut.rx_packet_length_in, rx_length);
         dut.tx_full_in = (uint8_t)(uint64_t)tx_full;
@@ -168,7 +140,6 @@ class ControllerTest
         ++_system_clock;
     }
 
-#if HOST_AXI4
     bool awready()
     {
 #ifdef VERILATOR
@@ -217,31 +188,10 @@ class ControllerTest
         return dut.host_control.rdata_out();
 #endif
     }
-#else
-    bool readdatavalid()
-    {
-#ifdef VERILATOR
-        drive_verilator(false, false);
-        return dut.host_control___05Freaddatavalid_out;
-#else
-        return dut.host_control.readdatavalid_out();
-#endif
-    }
-    logic<64> readdata()
-    {
-#ifdef VERILATOR
-        return copy_from_verilator<logic<64>>(
-            dut.host_control___05Freaddata_out);
-#else
-        return dut.host_control.readdata_out();
-#endif
-    }
-#endif
 
     void write32(uint32_t address, uint32_t value)
     {
         uint32_t lane = address & 7u;
-#if HOST_AXI4
         host.aw.valid = true;
         host.aw.addr = address;
         host.aw.id = 1;
@@ -261,22 +211,11 @@ class ControllerTest
         if (!bvalid()) fail("missing AXI write response");
         cycle();
         host.b.ready = false;
-#else
-        host_address = address;
-        host_writedata = 0;
-        host_writedata.bits(lane * 8 + 31, lane * 8) = value;
-        host_byteenable = 0;
-        host_byteenable.bits(lane + 3, lane) = 0xf;
-        host_write = true;
-        cycle();
-        host_write = false;
-#endif
     }
 
     uint32_t read32(uint32_t address)
     {
         uint32_t lane = address & 7u;
-#if HOST_AXI4
         host.ar.valid = true;
         host.ar.addr = address;
         host.ar.id = 2;
@@ -289,14 +228,6 @@ class ControllerTest
         cycle();
         host.r.ready = false;
         return value;
-#else
-        host_address = address;
-        host_read = true;
-        cycle();
-        host_read = false;
-        if (!readdatavalid()) fail("missing Avalon read response");
-        return (uint32_t)readdata().bits(lane * 8 + 31, lane * 8);
-#endif
     }
 
     bool command_valid()
@@ -452,11 +383,7 @@ public:
 #else
             "CppHDL C++",
 #endif
-#if HOST_AXI4
             "AXI4",
-#else
-            "Avalon",
-#endif
             error ? "FAILED" : "PASSED");
         return !error;
     }
@@ -469,17 +396,8 @@ static bool build_verilator()
 #else
     namespace fs = std::filesystem;
     fs::path source = fs::absolute(__FILE__);
-#if HOST_AXI4
-    const char* generated_name = "generated_controller_axi";
-    const char* output_name = "Controller_axi_verilator";
-    const char* previous_flags = std::getenv("CPPHDL_VERILATOR_CFLAGS");
-    std::string verilator_flags = previous_flags ? previous_flags : "";
-    verilator_flags += " -DHOST_AXI4=1";
-    setenv("CPPHDL_VERILATOR_CFLAGS", verilator_flags.c_str(), 1);
-#else
-    const char* generated_name = "generated_controller_avalon";
-    const char* output_name = "Controller_avalon_verilator";
-#endif
+    const char* generated_name = "generated_controller";
+    const char* output_name = "Controller_verilator";
     return VerilatorCompileInExactFolderFromGenerated(source.string(), output_name,
         "Controller", fs::current_path() / generated_name, {"SmartNicMemory"},
         {source.parent_path().string(), source.parent_path().parent_path().string(),
@@ -502,11 +420,7 @@ int main(int argc, char** argv)
 #ifndef VERILATOR
     if (!noveril) {
         ok = build_verilator();
-#if HOST_AXI4
-        if (ok) ok = std::system("Controller_axi_verilator/obj_dir/VController --noveril") == 0;
-#else
-        if (ok) ok = std::system("Controller_avalon_verilator/obj_dir/VController --noveril") == 0;
-#endif
+        if (ok) ok = std::system("Controller_verilator/obj_dir/VController --noveril") == 0;
     }
 #endif
     return ControllerTest().run() && ok ? 0 : 1;

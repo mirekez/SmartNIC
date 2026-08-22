@@ -31,10 +31,10 @@ module PacketQueue #(
 ,   output wire protocol_error_out
 ,   input wire clear_in
 );
-    parameter  DATA_BYTES = DATA_WIDTH/'h8;
-    parameter  ENTRY_BITS = (DATA_WIDTH + DATA_BYTES) + 'h2;
-    parameter  ENTRY_BYTES = ((ENTRY_BITS + 'h7))/'h8;
-    parameter  COUNT_BITS = $clog2(DEPTH + 'h1);
+    localparam  DATA_BYTES = DATA_WIDTH/'h8;
+    localparam  ENTRY_BITS = (DATA_WIDTH + DATA_BYTES) + 'h2;
+    localparam  ENTRY_BYTES = ((ENTRY_BITS + 'h7))/'h8;
+    localparam  COUNT_BITS = $clog2(DEPTH + 'h1);
 
 
     // regs and combs
@@ -54,7 +54,7 @@ module PacketQueue #(
     wire data_fifo__full_out;
     wire data_fifo__clear_in;
     wire data_fifo__afull_out;
-    Fifo #(
+    SystemFifo #(
         ENTRY_BYTES
 ,       DEPTH
 ,       1
@@ -80,7 +80,7 @@ module PacketQueue #(
     wire length_fifo__full_out;
     wire length_fifo__clear_in;
     wire length_fifo__afull_out;
-    Fifo #(
+    SystemFifo #(
         LENGTH_BITS/'h8
 ,       DEPTH
 ,       1

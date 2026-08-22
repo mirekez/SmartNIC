@@ -9,7 +9,9 @@ using namespace cpphdl;
 
 template<size_t MEM_WIDTH_BYTES, size_t MEM_DEPTH, bool SHOWAHEAD = true,
     bool FULL_WORD_WRITE = false>
-#ifdef SMARTNIC_TWO_CLOCKS
+#ifdef SMARTNIC_SYSTEM_MEMORY
+class SmartNicMemory : public Module
+#elif defined(SMARTNIC_TWO_CLOCKS)
 class [[clang::annotate("CPPHDL_REPLACEMENT_FILE=SmartNicMemoryPrimitive.sv;")]]
 SmartNicMemory : public Module
 #else
@@ -81,7 +83,7 @@ public:
         }
     }
 
-#ifdef SMARTNIC_TWO_CLOCKS
+#if defined(SMARTNIC_TWO_CLOCKS) && !defined(SMARTNIC_SYSTEM_MEMORY)
     void _strobe_net_clk()
     {
         buffer.apply();

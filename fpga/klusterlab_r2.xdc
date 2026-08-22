@@ -11,6 +11,20 @@ set_property PACKAGE_PIN H5 [get_ports eth_refclk_n]
 # The AXI 10G Ethernet master IP owns the 6.400 ns refclk_p constraint.
 # Duplicating it here overrides the IP clock and disables incremental reuse.
 
+# PCIe Gen2 x1 = GTX bank 116 channel 3.  The PCIe bridge IP owns the 100 MHz
+# reference-clock timing constraint.
+set_property PACKAGE_PIN A4 [get_ports pcie_tx_p]
+set_property PACKAGE_PIN A3 [get_ports pcie_tx_n]
+set_property PACKAGE_PIN B6 [get_ports pcie_rx_p]
+set_property PACKAGE_PIN B5 [get_ports pcie_rx_n]
+set_property PACKAGE_PIN D6 [get_ports pcie_refclk_p]
+set_property PACKAGE_PIN D5 [get_ports pcie_refclk_n]
+
+# Active-low PCIe reset from the CM4/host, in 3.3 V bank 13.
+set_property PACKAGE_PIN P18 [get_ports pcie_perst_n]
+set_property IOSTANDARD LVCMOS33 [get_ports pcie_perst_n]
+set_property PULLUP true [get_ports pcie_perst_n]
+
 # SFP+ 0 = GTX bank 115 channel 0.
 set_property PACKAGE_PIN P2 [get_ports {sfp_tx_p[0]}]
 set_property PACKAGE_PIN P1 [get_ports {sfp_tx_n[0]}]
@@ -41,7 +55,7 @@ set_property PULLUP true [get_ports {sfp_los[*]}]
 set debug_cdc_first_stage_cells [get_cells -quiet -hier -filter \
     {NAME =~ *dclk_toggle_meta_reg || \
      NAME =~ *txusr_toggle_meta_reg || \
-     NAME =~ *ila_system_state_meta_reg*}]
+     NAME =~ *ila_*_meta_reg*}]
 set debug_cdc_first_stage_pins [get_pins -quiet -of_objects \
     $debug_cdc_first_stage_cells -filter {REF_PIN_NAME == D}]
 set_false_path -to $debug_cdc_first_stage_pins

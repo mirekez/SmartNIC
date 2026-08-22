@@ -90,11 +90,11 @@ class CaptureTest
     bool traffic_start = false;
     bool traffic_clear = false;
     u<16> traffic_repeat_count = TRAFFIC_REPEATS;
-    bool host_read = false;
-    bool host_write = false;
+    bool host_request_valid = false;
+    bool host_request_write = false;
     u32 host_address = 0;
     logic<HOST_DATA_WIDTH> host_writedata = 0;
-    logic<HOST_DATA_WIDTH / 8> host_byteenable = 0;
+    logic<HOST_DATA_WIDTH / 8> host_wstrb = 0;
     uint64_t net_phase = 0;
     uint64_t l2_phase = 0;
     uint64_t system_phase = 0;
@@ -131,11 +131,11 @@ class CaptureTest
         dut.traffic_start_in = _ASSIGN(traffic_start);
         dut.traffic_clear_in = _ASSIGN(traffic_clear);
         dut.traffic_repeat_count_in = _ASSIGN(traffic_repeat_count);
-        dut.host_read_in = _ASSIGN(host_read);
-        dut.host_write_in = _ASSIGN(host_write);
+        dut.host_request_valid_in = _ASSIGN(host_request_valid);
+        dut.host_request_write_in = _ASSIGN(host_request_write);
         dut.host_address_in = _ASSIGN(host_address);
         dut.host_writedata_in = _ASSIGN(host_writedata);
-        dut.host_byteenable_in = _ASSIGN(host_byteenable);
+        dut.host_wstrb_in = _ASSIGN(host_wstrb);
         dut.__inst_name = "capture";
         dut._assign();
     }
@@ -273,39 +273,41 @@ class CaptureTest
         const uint32_t lane = address & (HOST_DATA_WIDTH / 8 - 1);
         host_address = address;
         host_writedata = 0;
-        host_byteenable = 0;
+        host_wstrb = 0;
         host_writedata.bits(lane * 8 + 31, lane * 8) = value;
-        host_byteenable.bits(lane + 3, lane) = 0xf;
-        host_write = true;
-        do {
+        host_wstrb.bits(lane + 3, lane) = 0xf;
+        host_request_write = true;
+        while (!dut.host_request_ready_out()) wait_system_edge();
+        host_request_valid = true;
+        wait_system_edge();
+        host_request_valid = false;
+        for (uint32_t timeout = 0; timeout < 1000; ++timeout) {
             wait_system_edge();
-        } while (dut.host_waitrequest_out());
-        host_write = false;
+            if (dut.host_response_valid_out()) break;
+            if (timeout == 999) fail("AXI4 host register write timed out");
+        }
+        host_request_write = false;
         host_writedata = 0;
-        host_byteenable = 0;
+        host_wstrb = 0;
     }
 
     uint32_t read32(uint32_t address)
     {
         const uint32_t lane = address & (HOST_DATA_WIDTH / 8 - 1);
         host_address = address;
-        host_read = true;
-        do {
-            wait_system_edge();
-        } while (dut.host_waitrequest_out());
-        host_read = false;
-        if (dut.host_readdatavalid_out()) {
-            return (uint32_t)dut.host_readdata_out().bits(
-                lane * 8 + 31, lane * 8);
-        }
+        host_request_write = false;
+        while (!dut.host_request_ready_out()) wait_system_edge();
+        host_request_valid = true;
+        wait_system_edge();
+        host_request_valid = false;
         for (uint32_t timeout = 0; timeout < 1000; ++timeout) {
-            cycle();
-            if (dut.host_readdatavalid_out()) {
+            wait_system_edge();
+            if (dut.host_response_valid_out()) {
                 return (uint32_t)dut.host_readdata_out().bits(
                     lane * 8 + 31, lane * 8);
             }
         }
-        fail("Avalon host register read timed out");
+        fail("AXI4 host register read timed out");
         return 0;
     }
 
