@@ -1,7 +1,7 @@
-# OpenSwitch 2x10G SmartNIC
+# OpenSwitch2 2x10G SmartNIC
 
-This branch targets the PCB Arts KlusterLab 1.0 board with an
-`XC7K160T-3FFG676E` Kintex-7 FPGA.
+This branch targets the PCB Arts KlusterLab 2.0 board with an
+`xc7k325tffg676-3` Kintex-7 FPGA.
 
 The C++HDL design implements two 10GbE MAC-side interfaces, each
 `64-bit @ 156.25 MHz`. Network and the single Tribe processing cluster share
@@ -17,7 +17,7 @@ The 10G PCS dependency follows the approach documented by
 Build and test:
 
 ```sh
-cmake -S . -B build -DBUILD_TESTING=ON
+cmake -S . -B build
 cmake --build build -j2
 ctest --test-dir build --output-on-failure
 ```
