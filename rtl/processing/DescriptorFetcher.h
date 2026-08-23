@@ -85,6 +85,9 @@ public:
 
 private:
     reg<logic<DESCRIPTOR_BITS>> queue_reg[DEPTH];
+    // Duplicate the queue head so MMIO reads do not put a 4:1 mux across all
+    // 1,280 descriptor bits in front of address decode.
+    reg<logic<DESCRIPTOR_BITS>> current_descriptor_reg;
     reg<u<PTR_BITS>> head_reg;
     reg<u<PTR_BITS>> tail_reg;
     reg<u<COUNT_BITS>> count_reg;
@@ -103,6 +106,11 @@ private:
     reg<u1> write_addr_valid_reg;
     reg<u1> write_response_valid_reg;
     reg<u<AXI_ID_WIDTH>> read_id_reg;
+    reg<u<AXI_ADDR_WIDTH>> read_addr_reg;
+    reg<u<32>> read_value_reg;
+    reg<u<clog2(AXI_DATA_WIDTH / 8)>> read_lane_reg;
+    reg<u1> read_pending_reg;
+    reg<u1> read_format_pending_reg;
     reg<logic<AXI_DATA_WIDTH>> read_data_reg;
     reg<u1> read_valid_reg;
 
@@ -113,7 +121,7 @@ private:
     {
         current_descriptor_comb = 0;
         if ((uint32_t)count_reg != 0) {
-            current_descriptor_comb = queue_reg[(uint32_t)head_reg];
+            current_descriptor_comb = current_descriptor_reg;
         }
         return current_descriptor_comb;
     }
@@ -223,7 +231,8 @@ public:
             && !write_response_valid_reg);
         mmio.bvalid_out = _ASSIGN_REG(write_response_valid_reg);
         mmio.bid_out = _ASSIGN_REG(write_id_reg);
-        mmio.arready_out = _ASSIGN(!read_valid_reg);
+        mmio.arready_out = _ASSIGN(!read_pending_reg
+            && !read_format_pending_reg && !read_valid_reg);
         mmio.rvalid_out = _ASSIGN_REG(read_valid_reg);
         mmio.rdata_out = _ASSIGN_REG(read_data_reg);
         mmio.rlast_out = _ASSIGN_REG(read_valid_reg);
@@ -238,6 +247,7 @@ public:
         uint32_t value;
         uint32_t bit;
         uint32_t word_index;
+        uint32_t next_head;
         bool input_fire;
         bool pop;
         logic<DESCRIPTOR_BITS> assembly;
@@ -283,16 +293,38 @@ public:
 
         if (mmio.arvalid_in() && mmio.arready_out()) {
             read_id_reg._next = mmio.arid_in();
-            read_data_reg._next = register_read_comb_func();
+            read_addr_reg._next = mmio.araddr_in();
+            read_pending_reg._next = true;
+        }
+        if (read_pending_reg && !read_format_pending_reg
+            && !read_valid_reg) {
+            address = (uint32_t)read_addr_reg;
+            read_value_reg._next = register_value(address & ~3u);
+            read_lane_reg._next = address & (AXI_DATA_WIDTH / 8 - 1);
+            read_format_pending_reg._next = true;
+            read_pending_reg._next = false;
+        }
+        if (read_format_pending_reg && !read_valid_reg) {
+            read_data_reg._next = 0;
+            for (bit = 0; bit < 32; ++bit) {
+                if ((uint32_t)read_lane_reg * 8 + bit < AXI_DATA_WIDTH) {
+                    read_data_reg._next[(uint32_t)read_lane_reg * 8 + bit] =
+                        read_value_reg[bit];
+                }
+            }
             read_valid_reg._next = true;
+            read_format_pending_reg._next = false;
         }
         if (read_valid_reg && mmio.rready_in()) {
             read_valid_reg._next = false;
         }
 
         if (pop) {
-            head_reg._next = ((uint32_t)head_reg + 1) & (DEPTH - 1);
+            next_head = ((uint32_t)head_reg + 1) & (DEPTH - 1);
+            head_reg._next = next_head;
             --count;
+            if (count != 0)
+                current_descriptor_reg._next = queue_reg[next_head];
         }
 
         if (input_fire) {
@@ -328,6 +360,8 @@ public:
                     protocol_error_reg._next = true;
                 }
                 queue_reg[(uint32_t)tail_reg]._next = assembly;
+                if (count == 0)
+                    current_descriptor_reg._next = assembly;
                 tail_reg._next = ((uint32_t)tail_reg + 1) & (DEPTH - 1);
                 ++count;
                 assembly_active_reg._next = false;
@@ -343,6 +377,7 @@ public:
             head_reg.clr();
             tail_reg.clr();
             count_reg.clr();
+            current_descriptor_reg.clr();
             assembly_reg.clr();
             assembly_word_reg.clr();
             assembly_active_reg.clr();
@@ -357,6 +392,11 @@ public:
             write_addr_valid_reg.clr();
             write_response_valid_reg.clr();
             read_id_reg.clr();
+            read_addr_reg.clr();
+            read_value_reg.clr();
+            read_lane_reg.clr();
+            read_pending_reg.clr();
+            read_format_pending_reg.clr();
             read_data_reg.clr();
             read_valid_reg.clr();
             for (slot = 0; slot < DEPTH; ++slot) queue_reg[slot].clr();
@@ -370,6 +410,7 @@ public:
         head_reg.strobe();
         tail_reg.strobe();
         count_reg.strobe();
+        current_descriptor_reg.strobe();
         assembly_reg.strobe();
         assembly_word_reg.strobe();
         assembly_active_reg.strobe();
@@ -384,6 +425,11 @@ public:
         write_addr_valid_reg.strobe();
         write_response_valid_reg.strobe();
         read_id_reg.strobe();
+        read_addr_reg.strobe();
+        read_value_reg.strobe();
+        read_lane_reg.strobe();
+        read_pending_reg.strobe();
+        read_format_pending_reg.strobe();
         read_data_reg.strobe();
         read_valid_reg.strobe();
     }

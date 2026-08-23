@@ -51,6 +51,7 @@ module TxFifo #(
     reg protocol_error_reg;
     logic[80-1:0] input_entry_comb;
     logic[$clog2(BANK_DEPTH)-1:0] bank_write_addr_comb;
+    logic[POINTER_BITS-1:0] eop_read_addr1_comb;
     logic bank_write_0_comb;
     logic[$clog2(BANK_DEPTH)-1:0] bank_read_addr_0_comb;
     logic bank_write_1_comb;
@@ -100,6 +101,27 @@ module TxFifo #(
         );
     end
     endgenerate
+    wire[$clog2(FIFO_WORDS)-1:0] eop_metadata__write_addr_in;
+    wire eop_metadata__write_in;
+    wire eop_metadata__write_data_in;
+    wire[$clog2(FIFO_WORDS)-1:0] eop_metadata__read_addr0_in;
+    wire[$clog2(FIFO_WORDS)-1:0] eop_metadata__read_addr1_in;
+    wire eop_metadata__read_data0_out;
+    wire eop_metadata__read_data1_out;
+    TxEopMemory #(
+        FIFO_WORDS
+    ) eop_metadata (
+        .net_clk(net_clk)
+,       .l2_clk(l2_clk)
+,       .reset(reset)
+,       .write_addr_in(eop_metadata__write_addr_in)
+,       .write_in(eop_metadata__write_in)
+,       .write_data_in(eop_metadata__write_data_in)
+,       .read_addr0_in(eop_metadata__read_addr0_in)
+,       .read_addr1_in(eop_metadata__read_addr1_in)
+,       .read_data0_out(eop_metadata__read_data0_out)
+,       .read_data1_out(eop_metadata__read_data1_out)
+    );
 
     // tmp variables
     logic[POINTER_BITS-1:0] head_reg_tmp;
@@ -134,6 +156,10 @@ module TxFifo #(
 
     always_comb begin : bank_write_addr_comb_func  // bank_write_addr_comb_func
         bank_write_addr_comb = unsigned'(32'(tail_reg)) >>> 'h1;
+    end
+
+    always_comb begin : eop_read_addr1_comb_func  // eop_read_addr1_comb_func
+        eop_read_addr1_comb = ((unsigned'(32'(head_reg)) + 'h1)) & ((FIFO_WORDS - 'h1));
     end
 
     always_comb begin : ready_comb_func  // ready_comb_func
@@ -220,17 +246,9 @@ module TxFifo #(
     end
 
     always_comb begin : window_eop_comb_func  // window_eop_comb_func
-        logic[63:0] slot;
-        logic[31:0] logical;
-        logic[31:0] bank;
-        logic[80-1:0] entry;
         window_eop_comb = 'h0;
-        for (slot='h0;slot < WINDOW_WORDS;slot=slot+1) begin
-            logical=((unsigned'(32'(head_reg)) + slot)) & ((FIFO_WORDS - 'h1));
-            bank=logical & ((WINDOW_WORDS - 'h1));
-            entry = banks__read_data_out[bank];
-            window_eop_comb[slot] = entry[EOP_OFFSET];
-        end
+        window_eop_comb['h0] = eop_metadata__read_data0_out;
+        window_eop_comb['h1] = eop_metadata__read_data1_out;
     end
 
     always_comb begin : almost_full_comb_func  // almost_full_comb_func
@@ -250,6 +268,11 @@ module TxFifo #(
         assign banks__write_mask_in['h1] = ~('h0);
         assign banks__read_addr_in['h1] = bank_read_addr_1_comb;
         assign banks__read_in['h1] = 1;
+        assign eop_metadata__write_addr_in = tail_reg;
+        assign eop_metadata__write_in = valid_in && ready_comb;
+        assign eop_metadata__write_data_in = eop_in;
+        assign eop_metadata__read_addr0_in = head_reg;
+        assign eop_metadata__read_addr1_in = eop_read_addr1_comb;
         assign ready_out = ready_comb;
         assign data_out = window_data_comb;
         assign keep_out = window_keep_comb;

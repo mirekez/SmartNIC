@@ -129,8 +129,8 @@ module SystemFifo #(
         assign afull_out = afull_reg;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
         logic mem_read;
         logic mem_write;
         logic output_read;
@@ -141,7 +141,7 @@ module SystemFifo #(
             full_reg_tmp = '0;
             afull_reg_tmp = '0;
             read_valid_reg_tmp = '0;
-            disable _work;
+            disable _work_system_clock;
         end
         if (OUTPUT_REG) begin
             mem_read=mem_read_comb;
@@ -195,31 +195,31 @@ module SystemFifo #(
     end
     endtask
 
-    task _work_system_clock (input logic reset);
-    begin: _work_system_clock
+    task _work_l2_clock (input logic unused);
+    begin: _work_l2_clock
     end
     endtask
 
     always_ff @(posedge l2_clock) begin
+
+        _work_l2_clock(reset);
+
+    end
+
+    always_ff @(posedge system_clock) begin
         wp_reg_tmp = wp_reg;
         rp_reg_tmp = rp_reg;
         full_reg_tmp = full_reg;
         afull_reg_tmp = afull_reg;
         read_valid_reg_tmp = read_valid_reg;
 
-        _work(reset);
+        _work_system_clock(reset);
 
         wp_reg <= wp_reg_tmp;
         rp_reg <= rp_reg_tmp;
         full_reg <= full_reg_tmp;
         afull_reg <= afull_reg_tmp;
         read_valid_reg <= read_valid_reg_tmp;
-    end
-
-    always_ff @(posedge system_clock) begin
-
-        _work_system_clock(reset);
-
     end
 
 

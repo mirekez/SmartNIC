@@ -177,6 +177,8 @@ private:
     reg<u1> write_addr_valid_reg;
     reg<u1> write_response_valid_reg;
     reg<u<AXI_ID_WIDTH>> read_id_reg;
+    reg<u<AXI_ADDR_WIDTH>> read_addr_reg;
+    reg<u1> read_pending_reg;
     reg<logic<AXI_DATA_WIDTH>> read_data_reg;
     reg<u1> read_valid_reg;
 
@@ -239,11 +241,10 @@ private:
         return 0;
     }
 
-    logic<AXI_DATA_WIDTH> register_read_value()
+    logic<AXI_DATA_WIDTH> register_read_value(uint32_t address)
     {
         logic<AXI_DATA_WIDTH> data = 0;
         uint32_t index;
-        uint32_t address = (uint32_t)mmio.araddr_in();
         uint32_t lane = address & (AXI_BYTES - 1);
         uint32_t value = register_value(address & ~3u);
         for (index = 0; index < 32; ++index) {
@@ -316,7 +317,7 @@ public:
             && !write_response_valid_reg);
         mmio.bvalid_out = _ASSIGN_REG(write_response_valid_reg);
         mmio.bid_out = _ASSIGN_REG(write_id_reg);
-        mmio.arready_out = _ASSIGN(!read_valid_reg);
+        mmio.arready_out = _ASSIGN(!read_pending_reg && !read_valid_reg);
         mmio.rvalid_out = _ASSIGN_REG(read_valid_reg);
         mmio.rdata_out = _ASSIGN_REG(read_data_reg);
         mmio.rlast_out = _ASSIGN_REG(read_valid_reg);
@@ -488,8 +489,14 @@ public:
         }
         if (mmio.arvalid_in() && mmio.arready_out()) {
             read_id_reg._next = mmio.arid_in();
-            read_data_reg._next = register_read_value();
+            read_addr_reg._next = mmio.araddr_in();
+            read_pending_reg._next = true;
+        }
+        if (read_pending_reg && !read_valid_reg) {
+            read_data_reg._next = register_read_value(
+                (uint32_t)read_addr_reg);
             read_valid_reg._next = true;
+            read_pending_reg._next = false;
         }
         if (read_valid_reg && mmio.rready_in()) read_valid_reg._next = false;
 
@@ -706,6 +713,8 @@ public:
             write_addr_valid_reg.clr();
             write_response_valid_reg.clr();
             read_id_reg.clr();
+            read_addr_reg.clr();
+            read_pending_reg.clr();
             read_data_reg.clr();
             read_valid_reg.clr();
             for (slot = 0; slot < CMD_DEPTH; ++slot) command_reg[slot].clr();
@@ -744,6 +753,8 @@ public:
         write_addr_valid_reg.strobe();
         write_response_valid_reg.strobe();
         read_id_reg.strobe();
+        read_addr_reg.strobe();
+        read_pending_reg.strobe();
         read_data_reg.strobe();
         read_valid_reg.strobe();
     }

@@ -501,6 +501,11 @@ class CaptureTest
                   << ",join="
                   << dut.smartnic.debug_network_join_error() << '}'
                   << " system=" << dut.system.protocol_error_out()
+                  << ":" << dut.system.controller_protocol_error()
+                  << ":" << dut.system.dma_protocol_error()
+                  << "(" << dut.system.dma_protocol_error_code() << ")"
+                  << ":" << dut.system.rx_protocol_error(0)
+                  << ":" << dut.system.tx_protocol_error(0)
                   << " traffic=" << dut.traffic.protocol_error_out()
                   << " host=" << dut.host.protocol_error_out();
         for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {

@@ -45,7 +45,12 @@ public:
     _PORT(bool) clear_in;
 
 private:
-    Fifo<ENTRY_BYTES, DEPTH, true, false> data_fifo;
+    // Registered FWFT outputs retain one-beat-per-cycle streaming while
+    // giving Vivado the synchronous read shape required for block RAM.
+    Fifo<ENTRY_BYTES, DEPTH, true, true> data_fifo;
+    // Packet length is only 16 bits wide.  Keeping this metadata FIFO
+    // show-ahead avoids coupling its head advance to the data-BRAM prefetch;
+    // the small LUTRAM cost is negligible.
     Fifo<LENGTH_BITS / 8, DEPTH, true, false> length_fifo;
     reg<u<LENGTH_BITS>> assembling_length_reg;
     reg<u<COUNT_BITS>> packet_count_reg;
@@ -135,7 +140,7 @@ public:
             && read_eop_out());
     }
 
-    void _work(bool reset)
+    void SMARTNIC_SYSTEM_WORK_METHOD(bool reset)
     {
         uint32_t bytes;
         uint32_t count;
@@ -171,8 +176,8 @@ public:
         }
         packet_count_reg._next = count;
 
-        data_fifo._work(reset);
-        length_fifo._work(reset);
+        data_fifo.SMARTNIC_SYSTEM_WORK_METHOD(reset);
+        length_fifo.SMARTNIC_SYSTEM_WORK_METHOD(reset);
         if (clear_in()) {
             assembling_length_reg._next = 0;
             packet_count_reg._next = 0;
@@ -187,13 +192,15 @@ public:
         }
     }
 
-    void _strobe()
+    void SMARTNIC_SYSTEM_STROBE_METHOD()
     {
-        data_fifo._strobe();
-        length_fifo._strobe();
+        data_fifo.SMARTNIC_SYSTEM_STROBE_METHOD();
+        length_fifo.SMARTNIC_SYSTEM_STROBE_METHOD();
         assembling_length_reg.strobe();
         packet_count_reg.strobe();
         assembling_reg.strobe();
         protocol_error_reg.strobe();
     }
+
+    SMARTNIC_SYSTEM_CLOCK_METHODS()
 };

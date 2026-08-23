@@ -9,6 +9,7 @@ create_project -in_memory -part $part
 read_verilog -sv [list \
     [file join $generated_dir Predef_pkg.sv] \
     [file join $generated_dir SmartNicMemory.sv] \
+    [file join $generated_dir TxEopMemory.sv] \
     [file join $generated_dir TxFifo.sv] \
     [file join $generated_dir OutputMerger.sv]]
 synth_design -top OutputMerger -part $part -mode out_of_context \

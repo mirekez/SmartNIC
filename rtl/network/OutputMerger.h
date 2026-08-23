@@ -49,6 +49,7 @@ public:
 
 private:
     static constexpr size_t BATCH_BYTES = OUTPUT_BYTES;
+    static constexpr size_t BATCH_QUEUE_WORDS = 2;
     static constexpr size_t TIME_QUEUE_BYTES = 64;
     static constexpr size_t TIME_QUEUE_BITS = TIME_QUEUE_BYTES * 8;
     static constexpr size_t TIME_COUNT_BITS =
@@ -78,12 +79,18 @@ private:
     reg<u1> scheduler_active_reg;
     reg<u1> scheduler_stream_reg;
 
-    reg<u1> batch_valid_reg;
-    reg<logic<OUTPUT_BITS>> batch_data_reg;
-    reg<logic<OUTPUT_BYTES>> batch_keep_reg;
-    reg<logic<OUTPUT_BYTES>> batch_sop_reg;
-    reg<logic<OUTPUT_BYTES>> batch_eop_reg;
-    reg<u<BATCH_COUNT_BITS>> batch_bytes_reg;
+    // A two-entry elastic boundary separates wire-time/IPG accounting from
+    // TxFifo dequeue and BRAM prefetch addressing.  At count==1 it can pop
+    // and push every cycle; only recovery from actual backpressure needs a
+    // one-cycle refill when the queue was completely full.
+    reg<logic<OUTPUT_BITS>> batch_data_reg[BATCH_QUEUE_WORDS];
+    reg<logic<OUTPUT_BYTES>> batch_keep_reg[BATCH_QUEUE_WORDS];
+    reg<logic<OUTPUT_BYTES>> batch_sop_reg[BATCH_QUEUE_WORDS];
+    reg<logic<OUTPUT_BYTES>> batch_eop_reg[BATCH_QUEUE_WORDS];
+    reg<u<BATCH_COUNT_BITS>> batch_bytes_reg[BATCH_QUEUE_WORDS];
+    reg<u1> batch_head_reg;
+    reg<u1> batch_tail_reg;
+    reg<u<2>> batch_count_reg;
 
     // Each position is a wire byte-time.  Invalid positions are Ethernet IPG.
     reg<logic<TIME_QUEUE_BITS>> time_data_reg;
@@ -322,7 +329,7 @@ private:
         // exact IPG to be appended, or flushed when no work remains.
         output_valid_comb = count != 0
             && (count >= OUTPUT_BYTES
-                || (!(bool)batch_valid_reg
+                || ((uint32_t)batch_count_reg == 0
                     && !(bool)scheduler_active_reg));
         return output_valid_comb;
     }
@@ -347,10 +354,12 @@ private:
     bool queue_append_comb;
     bool& queue_append_comb_func()
     {
+        uint32_t head;
         uint32_t span;
-        span = (uint32_t)batch_bytes_reg;
-        if ((uint64_t)batch_eop_reg != 0) span += MIN_IPG_BYTES;
-        queue_append_comb = (bool)batch_valid_reg
+        head = (uint32_t)batch_head_reg;
+        span = (uint32_t)batch_bytes_reg[head];
+        if ((uint64_t)batch_eop_reg[head] != 0) span += MIN_IPG_BYTES;
+        queue_append_comb = (uint32_t)batch_count_reg != 0
             && queue_count_after_drain() + span <= TIME_QUEUE_BYTES;
         return queue_append_comb;
     }
@@ -358,8 +367,10 @@ private:
     bool batch_slot_ready_comb;
     bool& batch_slot_ready_comb_func()
     {
-        batch_slot_ready_comb = !(bool)batch_valid_reg
-            || queue_append_comb_func();
+        // Deliberately do not look through queue_append here.  This is the
+        // registered credit which breaks time_count -> TxFifo BRAM address.
+        batch_slot_ready_comb =
+            (uint32_t)batch_count_reg < BATCH_QUEUE_WORDS;
         return batch_slot_ready_comb;
     }
 
@@ -449,7 +460,11 @@ public:
     void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
     {
         size_t stream;
+        size_t batch_slot;
         uint32_t count;
+        uint32_t batch_head;
+        uint32_t batch_tail;
+        uint32_t batch_count;
         uint32_t append_position;
         uint32_t append_span;
         logic<TIME_QUEUE_BITS> queue_data;
@@ -466,12 +481,17 @@ public:
             scheduler_rr_reg.clr();
             scheduler_active_reg.clr();
             scheduler_stream_reg.clr();
-            batch_valid_reg.clr();
-            batch_data_reg.clr();
-            batch_keep_reg.clr();
-            batch_sop_reg.clr();
-            batch_eop_reg.clr();
-            batch_bytes_reg.clr();
+            for (batch_slot = 0; batch_slot < BATCH_QUEUE_WORDS;
+                ++batch_slot) {
+                batch_data_reg[batch_slot].clr();
+                batch_keep_reg[batch_slot].clr();
+                batch_sop_reg[batch_slot].clr();
+                batch_eop_reg[batch_slot].clr();
+                batch_bytes_reg[batch_slot].clr();
+            }
+            batch_head_reg.clr();
+            batch_tail_reg.clr();
+            batch_count_reg.clr();
             time_data_reg.clr();
             time_keep_reg.clr();
             time_sop_reg.clr();
@@ -486,6 +506,9 @@ public:
         queue_sop = time_sop_reg;
         queue_eop = time_eop_reg;
         count = (uint32_t)time_count_reg;
+        batch_head = (uint32_t)batch_head_reg;
+        batch_tail = (uint32_t)batch_tail_reg;
+        batch_count = (uint32_t)batch_count_reg;
 
         if (output_drain_comb_func()) {
             queue_data = queue_data >> OUTPUT_BITS;
@@ -497,22 +520,24 @@ public:
 
         if (queue_append_comb_func()) {
             append_position = count;
-            append_span = (uint32_t)batch_bytes_reg;
+            append_span = (uint32_t)batch_bytes_reg[batch_head];
             queue_data = queue_data
-                | (logic<TIME_QUEUE_BITS>(batch_data_reg)
+                | (logic<TIME_QUEUE_BITS>(batch_data_reg[batch_head])
                     << (append_position * 8));
             queue_keep = queue_keep
-                | (logic<TIME_QUEUE_BYTES>(batch_keep_reg)
+                | (logic<TIME_QUEUE_BYTES>(batch_keep_reg[batch_head])
                     << append_position);
             queue_sop = queue_sop
-                | (logic<TIME_QUEUE_BYTES>(batch_sop_reg)
+                | (logic<TIME_QUEUE_BYTES>(batch_sop_reg[batch_head])
                     << append_position);
             queue_eop = queue_eop
-                | (logic<TIME_QUEUE_BYTES>(batch_eop_reg)
+                | (logic<TIME_QUEUE_BYTES>(batch_eop_reg[batch_head])
                     << append_position);
-            if ((uint64_t)batch_eop_reg != 0)
+            if ((uint64_t)batch_eop_reg[batch_head] != 0)
                 append_span += MIN_IPG_BYTES;
             count += append_span;
+            batch_head = (batch_head + 1) & (BATCH_QUEUE_WORDS - 1);
+            --batch_count;
         }
 
         time_data_reg._next = queue_data;
@@ -524,17 +549,19 @@ public:
         if (batch_slot_ready_comb_func()) {
             candidate = scheduler_result_comb_func();
             if ((bool)candidate[SCHED_VALID]) {
-                batch_valid_reg._next = 1;
-                batch_data_reg._next = candidate.bits(
+                batch_data_reg[batch_tail]._next = candidate.bits(
                     SCHED_DATA + OUTPUT_BITS - 1, SCHED_DATA);
-                batch_keep_reg._next = candidate.bits(
+                batch_keep_reg[batch_tail]._next = candidate.bits(
                     SCHED_KEEP + OUTPUT_BYTES - 1, SCHED_KEEP);
-                batch_sop_reg._next = candidate.bits(
+                batch_sop_reg[batch_tail]._next = candidate.bits(
                     SCHED_SOP + OUTPUT_BYTES - 1, SCHED_SOP);
-                batch_eop_reg._next = candidate.bits(
+                batch_eop_reg[batch_tail]._next = candidate.bits(
                     SCHED_EOP + OUTPUT_BYTES - 1, SCHED_EOP);
-                batch_bytes_reg._next = candidate.bits(
+                batch_bytes_reg[batch_tail]._next = candidate.bits(
                     SCHED_BYTES + BATCH_COUNT_BITS - 1, SCHED_BYTES);
+                batch_tail = (batch_tail + 1)
+                    & (BATCH_QUEUE_WORDS - 1);
+                ++batch_count;
                 scheduler_rr_reg._next =
                     (bool)candidate[SCHED_NEXT_RR];
                 scheduler_active_reg._next =
@@ -544,10 +571,10 @@ public:
                 if ((bool)candidate[SCHED_ERROR])
                     protocol_error_reg._next = 1;
             }
-            else {
-                batch_valid_reg._next = 0;
-            }
         }
+        batch_head_reg._next = batch_head;
+        batch_tail_reg._next = batch_tail;
+        batch_count_reg._next = batch_count;
     }
 
 #ifdef SMARTNIC_TWO_CLOCKS
@@ -559,12 +586,17 @@ public:
         scheduler_rr_reg.strobe();
         scheduler_active_reg.strobe();
         scheduler_stream_reg.strobe();
-        batch_valid_reg.strobe();
-        batch_data_reg.strobe();
-        batch_keep_reg.strobe();
-        batch_sop_reg.strobe();
-        batch_eop_reg.strobe();
-        batch_bytes_reg.strobe();
+        for (size_t batch_slot = 0; batch_slot < BATCH_QUEUE_WORDS;
+            ++batch_slot) {
+            batch_data_reg[batch_slot].strobe();
+            batch_keep_reg[batch_slot].strobe();
+            batch_sop_reg[batch_slot].strobe();
+            batch_eop_reg[batch_slot].strobe();
+            batch_bytes_reg[batch_slot].strobe();
+        }
+        batch_head_reg.strobe();
+        batch_tail_reg.strobe();
+        batch_count_reg.strobe();
         time_data_reg.strobe();
         time_keep_reg.strobe();
         time_sop_reg.strobe();
@@ -580,10 +612,17 @@ public:
         for (stream = 0; stream < STREAMS; ++stream)
             fifos[stream]._strobe();
         scheduler_rr_reg.strobe(); scheduler_active_reg.strobe();
-        scheduler_stream_reg.strobe(); batch_valid_reg.strobe();
-        batch_data_reg.strobe(); batch_keep_reg.strobe();
-        batch_sop_reg.strobe(); batch_eop_reg.strobe();
-        batch_bytes_reg.strobe(); time_data_reg.strobe();
+        scheduler_stream_reg.strobe();
+        for (size_t batch_slot = 0; batch_slot < BATCH_QUEUE_WORDS;
+            ++batch_slot) {
+            batch_data_reg[batch_slot].strobe();
+            batch_keep_reg[batch_slot].strobe();
+            batch_sop_reg[batch_slot].strobe();
+            batch_eop_reg[batch_slot].strobe();
+            batch_bytes_reg[batch_slot].strobe();
+        }
+        batch_head_reg.strobe(); batch_tail_reg.strobe();
+        batch_count_reg.strobe(); time_data_reg.strobe();
         time_keep_reg.strobe(); time_sop_reg.strobe();
         time_eop_reg.strobe(); time_count_reg.strobe();
         protocol_error_reg.strobe();

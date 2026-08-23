@@ -227,7 +227,11 @@ private:
     reg<PacketParserProgress> ipv4_progress_reg;
     reg<PacketParserProgress> ipv6_progress_reg;
     reg<PacketParserProgress> ipv6_ext_progress_reg[4];
-    reg<u<3>> ipv6_ext_stage_index_reg[4];
+    // Keep extension-stage ownership separate from the carried extension
+    // index. Encoding WAIT/ACTIVE/COMPLETE in one arithmetic index made the
+    // index feed the complete parser and then feed itself.
+    reg<u<1>> ipv6_ext_active_reg[4];
+    reg<u<1>> ipv6_ext_complete_reg[4];
 
     // Ethernet-owned registers.
     reg<logic<48>> destination_mac_reg;
@@ -556,7 +560,8 @@ private:
         ipv6_progress_reg._next = progress;
         for (index = 0; index < 4; ++index) {
             ipv6_ext_progress_reg[index]._next = progress;
-            ipv6_ext_stage_index_reg[index]._next = 0;
+            ipv6_ext_active_reg[index]._next = 0;
+            ipv6_ext_complete_reg[index]._next = 0;
         }
         destination_mac_reg._next = 0;
         source_mac_reg._next = 0;
@@ -954,128 +959,87 @@ private:
         return call;
     }
 
-    PacketParserCall ipv6_options_work(uint8_t occurrence,
-        uint8_t markup_pos, const logic<MARKUP_BITS>& markup_state,
-        PacketParserProgress progress, const logic<64>& word,
-        uint8_t word_bytes, uint8_t word_cntr)
-    {
-        uint8_t selector;
-        uint8_t size;
-        uint16_t fragment;
-        PacketParserCall call;
-        call.markup_state = 0;
-        call.progress = progress;
-        if (!header_active(markup_pos, markup_state,
-                PACKET_HEADER_IPV6_OPTIONS, progress))
-            return call;
-        selector = (uint8_t)ipv6_next_proto_reg[occurrence]._next;
-        if (byte_present(markup_pos, word_cntr, word_bytes))
-            ipv6_next_proto_reg[occurrence]._next =
-                u8(word_byte(word, markup_pos));
-        if (byte_present((uint8_t)(markup_pos + 1), word_cntr, word_bytes)) {
-            if (selector == 44) size = 8;
-            else if (selector == 51)
-                size = (word_byte(word, (uint8_t)(markup_pos + 1)) + 2) * 4;
-            else
-                size = (word_byte(word, (uint8_t)(markup_pos + 1)) + 1) * 8;
-            ipv6_ext_size_reg[occurrence]._next = u8(size);
-            if ((uint16_t)(markup_pos + size) > PACKET_PARSER_HEADER_BYTES)
-                call.progress.limit = 1;
-        }
-        if (selector == 44) {
-            ipv6_fragment_reg[occurrence]._next = capture_be16(word,
-                ipv6_fragment_reg[occurrence]._next,
-                (uint8_t)(markup_pos + 2),
-                word_cntr, word_bytes);
-            if (field_complete((uint8_t)(markup_pos + 2), 2,
-                word_cntr, word_bytes)) {
-                fragment = (uint16_t)ipv6_fragment_reg[occurrence]._next;
-                if ((fragment & 0xfff8) != 0)
-                    noninitial_fragment_reg[occurrence]._next = 1;
-            }
-        }
-        size = (uint8_t)ipv6_ext_size_reg[occurrence]._next;
-        if (size != 0 && field_complete(markup_pos, size,
-            word_cntr, word_bytes)) {
-            selector = (uint8_t)ipv6_next_proto_reg[occurrence]._next;
-            if ((bool)noninitial_fragment_reg[occurrence]._next) {
-                call.progress.state = PACKET_HEADER_NONE;
-                call.progress.done = 1;
-            }
-            else if (is_ipv6_extension(selector)) {
-                if (occurrence + 1 == PACKET_PARSER_MAX_IPV6_EXTENSION_HEADERS) {
-                    call.progress.state = PACKET_HEADER_NONE;
-                    call.progress.limit = 1;
-                    call.progress.done = 1;
-                }
-                else {
-                    call.progress.state = PACKET_HEADER_IPV6_OPTIONS;
-                    call.progress.pos = u8(markup_pos + size);
-                }
-            }
-            else {
-                call.progress.pos = u8(markup_pos + size);
-                call.progress.state = select_transport(selector);
-                if ((uint8_t)call.progress.state == PACKET_HEADER_NONE)
-                    call.progress.done = 1;
-            }
-        }
-        return call;
-    }
+    // A protocol-family pipeline occurrence is fixed by construction.  Emit
+    // distinct C++ functions so CppHDL also emits fixed array indices rather
+    // than a run-time four-way register mux in every extension stage.
+#define PACKET_PARSER_IPV6_OPTIONS_WORK_NAME ipv6_options1_work
+#define PACKET_PARSER_IPV6_OPTIONS_OCCURRENCE 0
+#include "PacketParserIpv6OptionsWork.inc"
+#undef PACKET_PARSER_IPV6_OPTIONS_OCCURRENCE
+#undef PACKET_PARSER_IPV6_OPTIONS_WORK_NAME
+#define PACKET_PARSER_IPV6_OPTIONS_WORK_NAME ipv6_options2_work
+#define PACKET_PARSER_IPV6_OPTIONS_OCCURRENCE 1
+#include "PacketParserIpv6OptionsWork.inc"
+#undef PACKET_PARSER_IPV6_OPTIONS_OCCURRENCE
+#undef PACKET_PARSER_IPV6_OPTIONS_WORK_NAME
+#define PACKET_PARSER_IPV6_OPTIONS_WORK_NAME ipv6_options3_work
+#define PACKET_PARSER_IPV6_OPTIONS_OCCURRENCE 2
+#include "PacketParserIpv6OptionsWork.inc"
+#undef PACKET_PARSER_IPV6_OPTIONS_OCCURRENCE
+#undef PACKET_PARSER_IPV6_OPTIONS_WORK_NAME
+#define PACKET_PARSER_IPV6_OPTIONS_WORK_NAME ipv6_options4_work
+#define PACKET_PARSER_IPV6_OPTIONS_OCCURRENCE 3
+#include "PacketParserIpv6OptionsWork.inc"
+#undef PACKET_PARSER_IPV6_OPTIONS_OCCURRENCE
+#undef PACKET_PARSER_IPV6_OPTIONS_WORK_NAME
 
     PacketParserCall parse_ipv6_options4(uint8_t markup_pos,
         logic<MARKUP_BITS> markup_state, PacketParserProgress progress,
         const logic<64>& word,
-        uint8_t word_bytes, uint8_t word_cntr)
+        uint8_t word_bytes, uint8_t word_cntr,
+        uint8_t extension_type, bool starting)
     {
         logic<MARKUP_BITS> marked_state;
         PacketParserCall call;
         marked_state = mark_header(markup_state, markup_pos,
             PACKET_HEADER_IPV6_OPTIONS);
-        call = ipv6_options_work(3, markup_pos, marked_state, progress,
-            word, word_bytes, word_cntr);
+        call = ipv6_options4_work(markup_pos, marked_state, progress,
+            word, word_bytes, word_cntr, extension_type, starting);
         return call;
     }
 
     PacketParserCall parse_ipv6_options3(uint8_t markup_pos,
         logic<MARKUP_BITS> markup_state, PacketParserProgress progress,
         const logic<64>& word,
-        uint8_t word_bytes, uint8_t word_cntr)
+        uint8_t word_bytes, uint8_t word_cntr,
+        uint8_t extension_type, bool starting)
     {
         logic<MARKUP_BITS> marked_state;
         PacketParserCall call;
         marked_state = mark_header(markup_state, markup_pos,
             PACKET_HEADER_IPV6_OPTIONS);
-        call = ipv6_options_work(2, markup_pos, marked_state, progress,
-            word, word_bytes, word_cntr);
+        call = ipv6_options3_work(markup_pos, marked_state, progress,
+            word, word_bytes, word_cntr, extension_type, starting);
         return call;
     }
 
     PacketParserCall parse_ipv6_options2(uint8_t markup_pos,
         logic<MARKUP_BITS> markup_state, PacketParserProgress progress,
         const logic<64>& word,
-        uint8_t word_bytes, uint8_t word_cntr)
+        uint8_t word_bytes, uint8_t word_cntr,
+        uint8_t extension_type, bool starting)
     {
         logic<MARKUP_BITS> marked_state;
         PacketParserCall call;
         marked_state = mark_header(markup_state, markup_pos,
             PACKET_HEADER_IPV6_OPTIONS);
-        call = ipv6_options_work(1, markup_pos, marked_state, progress,
-            word, word_bytes, word_cntr);
+        call = ipv6_options2_work(markup_pos, marked_state, progress,
+            word, word_bytes, word_cntr, extension_type, starting);
         return call;
     }
 
     PacketParserCall parse_ipv6_options1(uint8_t markup_pos,
         logic<MARKUP_BITS> markup_state, PacketParserProgress progress,
         const logic<64>& word,
-        uint8_t word_bytes, uint8_t word_cntr)
+        uint8_t word_bytes, uint8_t word_cntr,
+        uint8_t extension_type, bool starting)
     {
         logic<MARKUP_BITS> marked_state;
         PacketParserCall call;
         marked_state = mark_header(markup_state, markup_pos,
             PACKET_HEADER_IPV6_OPTIONS);
-        call = ipv6_options_work(0, markup_pos, marked_state, progress,
-            word, word_bytes, word_cntr);
+        call = ipv6_options1_work(markup_pos, marked_state, progress,
+            word, word_bytes, word_cntr, extension_type, starting);
         return call;
     }
 
@@ -1656,7 +1620,10 @@ private:
         return result;
     }
 
-    PacketParserPipeWord ipv6_ext_stage(uint8_t occurrence,
+// Retained only as source history while the fixed-occurrence implementation
+// below is validated.  It must not be parsed into RTL.
+#if 0
+    PacketParserPipeWord ipv6_ext_stage_legacy(uint8_t occurrence,
         PacketParserPipeWord item)
     {
         PacketParserPipeWord result;
@@ -1742,19 +1709,23 @@ private:
             if (occurrence == 0)
                 call = parse_ipv6_options1(markup_pos, markup_state, progress,
                     item.data, (uint8_t)item.bytes,
-                    (uint8_t)item.word_cntr);
+                    (uint8_t)item.word_cntr,
+                    (uint8_t)item.fields.protocol, false);
             if (occurrence == 1)
                 call = parse_ipv6_options2(markup_pos, markup_state, progress,
                     item.data, (uint8_t)item.bytes,
-                    (uint8_t)item.word_cntr);
+                    (uint8_t)item.word_cntr,
+                    (uint8_t)item.fields.protocol, false);
             if (occurrence == 2)
                 call = parse_ipv6_options3(markup_pos, markup_state, progress,
                     item.data, (uint8_t)item.bytes,
-                    (uint8_t)item.word_cntr);
+                    (uint8_t)item.word_cntr,
+                    (uint8_t)item.fields.protocol, false);
             if (occurrence == 3)
                 call = parse_ipv6_options4(markup_pos, markup_state, progress,
                     item.data, (uint8_t)item.bytes,
-                    (uint8_t)item.word_cntr);
+                    (uint8_t)item.word_cntr,
+                    (uint8_t)item.fields.protocol, false);
             progress = call.progress;
             if ((uint8_t)progress.pos != prior_pos
                 || (uint8_t)progress.state != PACKET_HEADER_IPV6_OPTIONS
@@ -1777,25 +1748,55 @@ private:
         return result;
     }
 
-    PacketParserPipeWord ipv6_ext1_stage(PacketParserPipeWord item)
+    PacketParserPipeWord ipv6_ext1_stage_legacy(PacketParserPipeWord item)
     {
-        return ipv6_ext_stage(0, item);
+        return ipv6_ext_stage_legacy(0, item);
     }
 
-    PacketParserPipeWord ipv6_ext2_stage(PacketParserPipeWord item)
+    PacketParserPipeWord ipv6_ext2_stage_legacy(PacketParserPipeWord item)
     {
-        return ipv6_ext_stage(1, item);
+        return ipv6_ext_stage_legacy(1, item);
     }
 
-    PacketParserPipeWord ipv6_ext3_stage(PacketParserPipeWord item)
+    PacketParserPipeWord ipv6_ext3_stage_legacy(PacketParserPipeWord item)
     {
-        return ipv6_ext_stage(2, item);
+        return ipv6_ext_stage_legacy(2, item);
     }
 
-    PacketParserPipeWord ipv6_ext4_stage(PacketParserPipeWord item)
+    PacketParserPipeWord ipv6_ext4_stage_legacy(PacketParserPipeWord item)
     {
-        return ipv6_ext_stage(3, item);
+        return ipv6_ext_stage_legacy(3, item);
     }
+#endif
+
+#define PACKET_PARSER_IPV6_EXT_STAGE_NAME ipv6_ext1_stage
+#define PACKET_PARSER_IPV6_EXT_PARSE parse_ipv6_options1
+#define PACKET_PARSER_IPV6_EXT_OCCURRENCE 0
+#include "PacketParserIpv6ExtStage.inc"
+#undef PACKET_PARSER_IPV6_EXT_OCCURRENCE
+#undef PACKET_PARSER_IPV6_EXT_PARSE
+#undef PACKET_PARSER_IPV6_EXT_STAGE_NAME
+#define PACKET_PARSER_IPV6_EXT_STAGE_NAME ipv6_ext2_stage
+#define PACKET_PARSER_IPV6_EXT_PARSE parse_ipv6_options2
+#define PACKET_PARSER_IPV6_EXT_OCCURRENCE 1
+#include "PacketParserIpv6ExtStage.inc"
+#undef PACKET_PARSER_IPV6_EXT_OCCURRENCE
+#undef PACKET_PARSER_IPV6_EXT_PARSE
+#undef PACKET_PARSER_IPV6_EXT_STAGE_NAME
+#define PACKET_PARSER_IPV6_EXT_STAGE_NAME ipv6_ext3_stage
+#define PACKET_PARSER_IPV6_EXT_PARSE parse_ipv6_options3
+#define PACKET_PARSER_IPV6_EXT_OCCURRENCE 2
+#include "PacketParserIpv6ExtStage.inc"
+#undef PACKET_PARSER_IPV6_EXT_OCCURRENCE
+#undef PACKET_PARSER_IPV6_EXT_PARSE
+#undef PACKET_PARSER_IPV6_EXT_STAGE_NAME
+#define PACKET_PARSER_IPV6_EXT_STAGE_NAME ipv6_ext4_stage
+#define PACKET_PARSER_IPV6_EXT_PARSE parse_ipv6_options4
+#define PACKET_PARSER_IPV6_EXT_OCCURRENCE 3
+#include "PacketParserIpv6ExtStage.inc"
+#undef PACKET_PARSER_IPV6_EXT_OCCURRENCE
+#undef PACKET_PARSER_IPV6_EXT_PARSE
+#undef PACKET_PARSER_IPV6_EXT_STAGE_NAME
 
     PacketParserPipeWord transport_stage(PacketParserPipeWord item)
     {
@@ -2170,8 +2171,10 @@ public:
             for (stage = 0; stage < 4; ++stage) {
                 ipv6_ext_progress_reg[stage]._next =
                     ipv6_ext_progress_reg[stage];
-                ipv6_ext_stage_index_reg[stage]._next =
-                    ipv6_ext_stage_index_reg[stage];
+                ipv6_ext_active_reg[stage]._next =
+                    ipv6_ext_active_reg[stage];
+                ipv6_ext_complete_reg[stage]._next =
+                    ipv6_ext_complete_reg[stage];
             }
             for (slot = 0; slot < OUTPUT_FIFO_WORDS; ++slot) {
                 fifo_data_reg[slot]._next = fifo_data_reg[slot];
@@ -2202,7 +2205,6 @@ public:
             // Advance every occupied pipeline stage exactly once.  Each
             // family sees one registered word and writes only its own state.
             for (stage = 0; stage < PIPE_STAGES; ++stage) {
-                pipe_reg[stage]._next = {};
                 pipe_valid_reg[stage]._next = 0;
             }
             if ((bool)pipe_valid_reg[PIPE_STAGES - 1]) {
@@ -2776,7 +2778,8 @@ public:
             ipv4_progress_reg.strobe(); ipv6_progress_reg.strobe();
             for (index = 0; index < 4; ++index) {
                 ipv6_ext_progress_reg[index].strobe();
-                ipv6_ext_stage_index_reg[index].strobe();
+                ipv6_ext_active_reg[index].strobe();
+                ipv6_ext_complete_reg[index].strobe();
             }
             destination_mac_reg.strobe();
             source_mac_reg.strobe(); ethernet_type_reg.strobe();
@@ -2871,7 +2874,8 @@ public:
             ipv4_progress_reg.strobe(); ipv6_progress_reg.strobe();
             for (index = 0; index < 4; ++index) {
                 ipv6_ext_progress_reg[index].strobe();
-                ipv6_ext_stage_index_reg[index].strobe();
+                ipv6_ext_active_reg[index].strobe();
+                ipv6_ext_complete_reg[index].strobe();
             }
             destination_mac_reg.strobe();
             source_mac_reg.strobe(); ethernet_type_reg.strobe();

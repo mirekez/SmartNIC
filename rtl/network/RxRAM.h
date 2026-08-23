@@ -612,6 +612,8 @@ public:
         uint32_t total_count;
         uint32_t pack_count;
         uint16_t next_row;
+        uint16_t next_row_base;
+        uint8_t row_advance;
         uint16_t packet_start;
         uint16_t packet_length;
         uint32_t head;
@@ -825,6 +827,8 @@ public:
             pack_data = pack_data_reg[stream];
             pack_count = (uint32_t)pack_count_reg[stream];
             next_row = (uint32_t)next_row_reg[stream];
+            next_row_base = next_row;
+            row_advance = 0;
             packet_start = (uint32_t)packet_start_reg[stream];
             packet_length = (uint32_t)packet_length_reg[stream];
             in_frame = (bool)in_frame_reg[stream];
@@ -860,12 +864,12 @@ public:
 
                     if (segment_sop) {
                         if (in_frame) ingress_error_reg[stream]._next = 1;
-                        if ((next_row & 1) != 0)
-                            next_row = (next_row + 1)
-                                & (LOGICAL_ROWS - 1);
+                        if ((next_row_base & 1) != (row_advance & 1))
+                            ++row_advance;
                         pack_data = 0;
                         pack_count = 0;
-                        packet_start = next_row;
+                        packet_start = (next_row_base + row_advance)
+                            & (LOGICAL_ROWS - 1);
                         packet_length = 0;
                         in_frame = true;
                     }
@@ -878,17 +882,18 @@ public:
                         if (total_count >= LANE_BYTES) {
                             if (!(bool)write_pair.valid0) {
                                 write_pair.data0 = combined_data.bits(63, 0);
-                                write_pair.row0 = u16(next_row);
+                                write_pair.row0 = u16((next_row_base
+                                    + row_advance) & (LOGICAL_ROWS - 1));
                                 write_pair.valid0 = 1;
                             }
                             else if (!(bool)write_pair.valid1) {
                                 write_pair.data1 = combined_data.bits(63, 0);
-                                write_pair.row1 = u16(next_row);
+                                write_pair.row1 = u16((next_row_base
+                                    + row_advance) & (LOGICAL_ROWS - 1));
                                 write_pair.valid1 = 1;
                             }
                             else ingress_error_reg[stream]._next = 1;
-                            next_row = (next_row + 1)
-                                & (LOGICAL_ROWS - 1);
+                            ++row_advance;
                             pack_data = combined_data.bits(127, 64);
                             pack_count = total_count - LANE_BYTES;
                         }
@@ -901,21 +906,23 @@ public:
                             if (pack_count != 0) {
                                 if (!(bool)write_pair.valid0) {
                                     write_pair.data0 = pack_data;
-                                    write_pair.row0 = u16(next_row);
+                                    write_pair.row0 = u16((next_row_base
+                                        + row_advance)
+                                        & (LOGICAL_ROWS - 1));
                                     write_pair.valid0 = 1;
                                 }
                                 else if (!(bool)write_pair.valid1) {
                                     write_pair.data1 = pack_data;
-                                    write_pair.row1 = u16(next_row);
+                                    write_pair.row1 = u16((next_row_base
+                                        + row_advance)
+                                        & (LOGICAL_ROWS - 1));
                                     write_pair.valid1 = 1;
                                 }
                                 else ingress_error_reg[stream]._next = 1;
-                                next_row = (next_row + 1)
-                                    & (LOGICAL_ROWS - 1);
+                                ++row_advance;
                             }
-                            if ((next_row & 1) != 0)
-                                next_row = (next_row + 1)
-                                    & (LOGICAL_ROWS - 1);
+                            if ((next_row_base & 1) != (row_advance & 1))
+                                ++row_advance;
                             completion_handle_reg[stream][tail]._next =
                                 (packet_start << 3) | stream;
                             completion_length_reg[stream][tail]._next =
@@ -933,6 +940,12 @@ public:
                         ingress_error_reg[stream]._next = 1;
                 }
             }
+
+            // All row allocations above advance by at most four rows.  A
+            // narrow delta followed by one wide add avoids serial 13-bit
+            // carry chains through both compact packet segments.
+            next_row = (next_row_base + row_advance)
+                & (LOGICAL_ROWS - 1);
 
             allocated_rows_reg[stream]._next = allocated_rows;
             released_rows_reg[stream]._next = released_row_count;

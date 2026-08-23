@@ -26,8 +26,17 @@ vivado_compat_lib="$vivado_root/lib/lnx64.o/SuSE"
     -I "$repo_dir/cpphdl/tribe_cpu/devices" \
     -I "$repo_dir/rtl/processing" \
     -I "$repo_dir"
+
+# Processing includes descriptor types through RxFifo/PacketParser, so its
+# conversion also emits clock-specialized copies of several Network modules.
+# Generate Network in isolation and copy it over the shared tree afterward;
+# otherwise those incidental clk/l2_clock definitions can survive and conflict
+# with the net_clk/l2_clk bindings in SmartNIC.
+network_generated_dir="$repo_dir/fpga/build/generated_network"
+cmake -E rm -rf "$network_generated_dir"
+cmake -E make_directory "$network_generated_dir"
 "$repo_dir/cpphdl/build/cpphdl" \
-    --generated-dir "$repo_dir/rtl/generated" \
+    --generated-dir "$network_generated_dir" \
     --primary_clock net_clk 156250000 \
     --secondary_clock l2_clk 156250000 \
     "$repo_dir/rtl/SmartNIC.h" \
@@ -36,6 +45,7 @@ vivado_compat_lib="$vivado_root/lib/lnx64.o/SuSE"
     -I "$repo_dir/rtl/network" \
     -I "$repo_dir/rtl" \
     -I "$repo_dir"
+cmake -E copy_directory "$network_generated_dir" "$repo_dir/rtl/generated"
 "$repo_dir/cpphdl/build/cpphdl" \
     --generated-dir "$repo_dir/rtl/generated" \
     --primary_clock l2_clock 156250000 \
@@ -56,6 +66,9 @@ cmake -E copy_if_different \
 cmake -E copy_if_different \
     "$repo_dir/rtl/common/SmartNicRAMPrimitive.sv" \
     "$repo_dir/rtl/generated/SmartNicRAM.sv"
+cmake -E copy_if_different \
+    "$repo_dir/rtl/common/TxEopMemoryPrimitive.sv" \
+    "$repo_dir/rtl/generated/TxEopMemory.sv"
 cmake -E copy_if_different \
     "$repo_dir/rtl/common/SystemMemoryPrimitive.sv" \
     "$repo_dir/rtl/generated/SystemMemory.sv"

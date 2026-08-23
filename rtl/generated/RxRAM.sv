@@ -566,6 +566,8 @@ module RxRAM #(
         logic[31:0] total_count;
         logic[31:0] pack_count;
         logic[15:0] next_row;
+        logic[15:0] next_row_base;
+        logic[7:0] row_advance;
         logic[15:0] packet_start;
         logic[15:0] packet_length;
         logic[31:0] head;
@@ -741,6 +743,8 @@ module RxRAM #(
             pack_data = pack_data_reg[stream];
             pack_count=unsigned'(32'(pack_count_reg[stream]));
             next_row=unsigned'(32'(next_row_reg[stream]));
+            next_row_base=next_row;
+            row_advance='h0;
             packet_start=unsigned'(32'(packet_start_reg[stream]));
             packet_length=unsigned'(32'(packet_length_reg[stream]));
             in_frame=in_frame_reg[stream];
@@ -763,12 +767,12 @@ module RxRAM #(
                         if (in_frame) begin
                             ingress_error_reg_tmp[stream] = unsigned'(1'h1);
                         end
-                        if (((next_row & 'h1)) != 'h0) begin
-                            next_row=((next_row + 'h1)) & ((LOGICAL_ROWS - 'h1));
+                        if (((next_row_base & 'h1)) != ((row_advance & 'h1))) begin
+                            row_advance=row_advance+1;
                         end
                         pack_data = 'h0;
                         pack_count='h0;
-                        packet_start=next_row;
+                        packet_start=((next_row_base + row_advance)) & ((LOGICAL_ROWS - 'h1));
                         packet_length='h0;
                         in_frame=1;
                     end
@@ -782,20 +786,20 @@ module RxRAM #(
                         if (total_count>=LANE_BYTES) begin
                             if (!write_pair.valid0) begin
                                 write_pair.data0 = combined_data['h0 +:64];
-                                write_pair.row0 = unsigned'(16'(unsigned'(16'(next_row))));
+                                write_pair.row0 = unsigned'(16'(unsigned'(16'(((next_row_base + row_advance)) & ((LOGICAL_ROWS - 'h1))))));
                                 write_pair.valid0 = unsigned'(1'h1);
                             end
                             else begin
                                 if (!write_pair.valid1) begin
                                     write_pair.data1 = combined_data['h0 +:64];
-                                    write_pair.row1 = unsigned'(16'(unsigned'(16'(next_row))));
+                                    write_pair.row1 = unsigned'(16'(unsigned'(16'(((next_row_base + row_advance)) & ((LOGICAL_ROWS - 'h1))))));
                                     write_pair.valid1 = unsigned'(1'h1);
                                 end
                                 else begin
                                     ingress_error_reg_tmp[stream] = unsigned'(1'h1);
                                 end
                             end
-                            next_row=((next_row + 'h1)) & ((LOGICAL_ROWS - 'h1));
+                            row_advance=row_advance+1;
                             pack_data = combined_data['h40 +:64];
                             pack_count=total_count - LANE_BYTES;
                         end
@@ -807,23 +811,23 @@ module RxRAM #(
                             if (pack_count != 'h0) begin
                                 if (!write_pair.valid0) begin
                                     write_pair.data0 = pack_data;
-                                    write_pair.row0 = unsigned'(16'(unsigned'(16'(next_row))));
+                                    write_pair.row0 = unsigned'(16'(unsigned'(16'(((next_row_base + row_advance)) & ((LOGICAL_ROWS - 'h1))))));
                                     write_pair.valid0 = unsigned'(1'h1);
                                 end
                                 else begin
                                     if (!write_pair.valid1) begin
                                         write_pair.data1 = pack_data;
-                                        write_pair.row1 = unsigned'(16'(unsigned'(16'(next_row))));
+                                        write_pair.row1 = unsigned'(16'(unsigned'(16'(((next_row_base + row_advance)) & ((LOGICAL_ROWS - 'h1))))));
                                         write_pair.valid1 = unsigned'(1'h1);
                                     end
                                     else begin
                                         ingress_error_reg_tmp[stream] = unsigned'(1'h1);
                                     end
                                 end
-                                next_row=((next_row + 'h1)) & ((LOGICAL_ROWS - 'h1));
+                                row_advance=row_advance+1;
                             end
-                            if (((next_row & 'h1)) != 'h0) begin
-                                next_row=((next_row + 'h1)) & ((LOGICAL_ROWS - 'h1));
+                            if (((next_row_base & 'h1)) != ((row_advance & 'h1))) begin
+                                row_advance=row_advance+1;
                             end
                             completion_handle_reg_tmp[stream][tail] = ((packet_start <<< 'h3)) | stream;
                             completion_length_reg_tmp[stream][tail] = packet_length;
@@ -842,6 +846,7 @@ module RxRAM #(
                     end
                 end
             end
+            next_row=((next_row_base + row_advance)) & ((LOGICAL_ROWS - 'h1));
             allocated_rows_reg_tmp[stream] = allocated_rows;
             released_rows_reg_tmp[stream] = released_row_count;
             pack_data_reg_tmp[stream] = pack_data;

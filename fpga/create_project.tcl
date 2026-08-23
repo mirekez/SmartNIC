@@ -94,14 +94,6 @@ generate_target all [get_ips ila_system]
 
 set generated_dir [file join $repo_dir rtl generated]
 set generated_sources [glob -directory $generated_dir *.sv]
-# Current CppHDL embeds L2CacheRamBank in L2Cache.sv.  Ignore a stale leaf
-# left by older generated trees so Vivado cannot bind the obsolete port list.
-set legacy_l2_bank [file join $generated_dir L2CacheRamBank.sv]
-set legacy_l2_index [lsearch -exact $generated_sources $legacy_l2_bank]
-if {$legacy_l2_index >= 0} {
-    set generated_sources [lreplace $generated_sources \
-        $legacy_l2_index $legacy_l2_index]
-}
 add_files -norecurse $generated_sources
 add_files -norecurse [list \
     [file join $script_dir rtl axi_boot_bram.sv] \
@@ -126,6 +118,7 @@ set_property STEPS.SYNTH_DESIGN.ARGS.RESOURCE_SHARING on [get_runs synth_1]
 # a legal routed checkpoint had already been produced.
 set_property strategy Performance_Explore [get_runs impl_1]
 set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
-set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED false [get_runs impl_1]
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
+set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]
 set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]
 puts "Created [file join $build_dir open_switch.xpr]"

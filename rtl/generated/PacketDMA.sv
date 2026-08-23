@@ -144,6 +144,8 @@ module PacketDMA #(
     reg write_addr_valid_reg;
     reg write_response_valid_reg;
     reg[AXI_ID_WIDTH-1:0] read_id_reg;
+    reg[AXI_ADDR_WIDTH-1:0] read_addr_reg;
+    reg read_pending_reg;
     reg[AXI_DATA_WIDTH-1:0] read_data_reg;
     reg read_valid_reg;
     logic[HANDLE_BITS-1:0] current_handle_comb;
@@ -182,6 +184,8 @@ module PacketDMA #(
     logic write_addr_valid_reg_tmp;
     logic write_response_valid_reg_tmp;
     logic[AXI_ID_WIDTH-1:0] read_id_reg_tmp;
+    logic[AXI_ADDR_WIDTH-1:0] read_addr_reg_tmp;
+    logic read_pending_reg_tmp;
     logic[AXI_DATA_WIDTH-1:0] read_data_reg_tmp;
     logic read_valid_reg_tmp;
 
@@ -245,14 +249,12 @@ module PacketDMA #(
         return 'h0;
     endfunction
 
-    function logic[256-1:0] register_read_value ();
+    function logic[256-1:0] register_read_value (input logic[31:0] address);
         logic[256-1:0] data;
         logic[31:0] index;
-        logic[31:0] address;
         logic[31:0] lane;
         logic[31:0] value;
         data = 'h0;
-        address = unsigned'(32'(mmio__araddr_in));
         lane = address & ((AXI_BYTES - 'h1));
         value = register_value(address & ~'h3);
         for (index='h0;index < 'h20;index=index+1) begin
@@ -329,7 +331,7 @@ module PacketDMA #(
         assign mmio__wready_out = write_addr_valid_reg && !write_response_valid_reg;
         assign mmio__bvalid_out = write_response_valid_reg;
         assign mmio__bid_out = write_id_reg;
-        assign mmio__arready_out = !read_valid_reg;
+        assign mmio__arready_out = !read_pending_reg && !read_valid_reg;
         assign mmio__rvalid_out = read_valid_reg;
         assign mmio__rdata_out = read_data_reg;
         assign mmio__rlast_out = read_valid_reg;
@@ -463,8 +465,13 @@ module PacketDMA #(
         end
         if (mmio__arvalid_in && mmio__arready_out) begin
             read_id_reg_tmp = mmio__arid_in;
-            read_data_reg_tmp = register_read_value();
+            read_addr_reg_tmp = mmio__araddr_in;
+            read_pending_reg_tmp = unsigned'(1'(1));
+        end
+        if (read_pending_reg && !read_valid_reg) begin
+            read_data_reg_tmp = register_read_value(unsigned'(32'(read_addr_reg)));
             read_valid_reg_tmp = unsigned'(1'(1));
+            read_pending_reg_tmp = unsigned'(1'(0));
         end
         if (read_valid_reg && mmio__rready_in) begin
             read_valid_reg_tmp = unsigned'(1'(0));
@@ -674,6 +681,8 @@ module PacketDMA #(
             write_addr_valid_reg_tmp = '0;
             write_response_valid_reg_tmp = '0;
             read_id_reg_tmp = '0;
+            read_addr_reg_tmp = '0;
+            read_pending_reg_tmp = '0;
             read_data_reg_tmp = '0;
             read_valid_reg_tmp = '0;
             for (slot='h0;slot < CMD_DEPTH;slot=slot+1) begin
@@ -718,6 +727,8 @@ module PacketDMA #(
         write_addr_valid_reg_tmp = write_addr_valid_reg;
         write_response_valid_reg_tmp = write_response_valid_reg;
         read_id_reg_tmp = read_id_reg;
+        read_addr_reg_tmp = read_addr_reg;
+        read_pending_reg_tmp = read_pending_reg;
         read_data_reg_tmp = read_data_reg;
         read_valid_reg_tmp = read_valid_reg;
 
@@ -752,6 +763,8 @@ module PacketDMA #(
         write_addr_valid_reg <= write_addr_valid_reg_tmp;
         write_response_valid_reg <= write_response_valid_reg_tmp;
         read_id_reg <= read_id_reg_tmp;
+        read_addr_reg <= read_addr_reg_tmp;
+        read_pending_reg <= read_pending_reg_tmp;
         read_data_reg <= read_data_reg_tmp;
         read_valid_reg <= read_valid_reg_tmp;
     end

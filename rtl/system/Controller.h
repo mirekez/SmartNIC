@@ -85,8 +85,10 @@ public:
     _PORT(bool) protocol_error_out;
 
 private:
-    SmartNicMemory<16, RING_DEPTH, true> rx_ring;
-    SmartNicMemory<16, RING_DEPTH, true> tx_ring;
+    // Descriptor rings are synchronous-read BRAMs.  Host readback and DMA
+    // scheduling below explicitly absorb the one-cycle read latency.
+    SmartNicMemory<16, RING_DEPTH, false> rx_ring;
+    SmartNicMemory<16, RING_DEPTH, false> tx_ring;
     reg<u1> enabled_reg;
     reg<u<RING_BITS>> rx_producer_reg;
     reg<u<RING_BITS>> rx_consumer_reg;
@@ -111,14 +113,18 @@ private:
     reg<u1> write_address_valid_reg;
     reg<u1> write_response_valid_reg;
     reg<u<4>> read_id_reg;
+    reg<u32> read_address_reg;
     reg<logic<DATA_WIDTH>> read_data_reg;
+    reg<u1> read_pending_reg;
     reg<u1> read_valid_reg;
+    reg<u1> ring_refill_reg;
 
     logic<128> rx_ring_write_data_comb;
     logic<16> rx_ring_write_mask_comb;
     logic<128> tx_ring_write_data_comb;
     logic<16> tx_ring_write_mask_comb;
     logic<DATA_WIDTH> register_read_comb;
+    logic<DATA_WIDTH> pending_read_comb;
     u<RING_BITS> rx_ring_write_addr_comb;
     u<RING_BITS> rx_ring_read_addr_comb;
     u<RING_BITS> tx_ring_write_addr_comb;
@@ -320,6 +326,30 @@ private:
         return register_read_comb;
     }
 
+    logic<DATA_WIDTH>& pending_read_comb_func()
+    {
+        uint32_t address;
+        uint32_t lane;
+        uint32_t bit;
+        uint32_t value;
+        pending_read_comb = 0;
+        address = (uint32_t)read_address_reg;
+        lane = address & (DATA_BYTES - 1);
+        value = register_value(address & ~3u);
+        for (bit = 0; bit < 32; ++bit) {
+            pending_read_comb[lane * 8 + bit] = (value >> bit) & 1u;
+        }
+        return pending_read_comb;
+    }
+
+    bool read_address_in_ring()
+    {
+        uint32_t address;
+        address = bus_read_address();
+        return address_in_ring(address, REG_RX_RING_BASE)
+            || address_in_ring(address, REG_TX_RING_BASE);
+    }
+
     uint32_t selected_ring_read_address(uint32_t base, uint32_t consumer)
     {
         uint32_t address;
@@ -401,7 +431,8 @@ public:
             && !write_response_valid_reg);
         host_control.bvalid_out = _ASSIGN_REG(write_response_valid_reg);
         host_control.bid_out = _ASSIGN_REG(write_id_reg);
-        host_control.arready_out = _ASSIGN(!read_valid_reg);
+        host_control.arready_out = _ASSIGN(!read_valid_reg
+            && !read_pending_reg);
         host_control.rvalid_out = _ASSIGN_REG(read_valid_reg);
         host_control.rdata_out = _ASSIGN_REG(read_data_reg);
         host_control.rlast_out = _ASSIGN_REG(read_valid_reg);
@@ -420,13 +451,18 @@ public:
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
     }
 
-    void _work(bool reset)
+    void SMARTNIC_SYSTEM_WORK_METHOD(bool reset)
     {
         uint32_t address;
         uint32_t value;
         uint32_t queue;
         uint32_t packet_length;
         SystemRingDescriptorWord descriptor;
+
+        // A descriptor-port diversion lasts one BRAM read cycle.  Blocking
+        // the scheduler during that refill prevents it from consuming the
+        // host-read word or the descriptor preceding a completed command.
+        if (ring_refill_reg) ring_refill_reg._next = false;
 
         if (host_control.awvalid_in() && host_control.awready_out()) {
             write_address_reg._next = host_control.awaddr_in();
@@ -442,7 +478,19 @@ public:
         }
         if (host_control.arvalid_in() && host_control.arready_out()) {
             read_id_reg._next = host_control.arid_in();
-            read_data_reg._next = register_read_comb_func();
+            read_address_reg._next = host_control.araddr_in();
+            if (read_address_in_ring()) {
+                read_pending_reg._next = true;
+                ring_refill_reg._next = true;
+            }
+            else {
+                read_data_reg._next = register_read_comb_func();
+                read_valid_reg._next = true;
+            }
+        }
+        if (read_pending_reg) {
+            read_data_reg._next = pending_read_comb_func();
+            read_pending_reg._next = false;
             read_valid_reg._next = true;
         }
         if (read_valid_reg && host_control.rready_in()) read_valid_reg._next = false;
@@ -475,12 +523,13 @@ public:
             }
             dma_active_reg._next = false;
             completed_reg._next = completed_reg + 1;
+            ring_refill_reg._next = true;
         }
 
         // Do not inspect show-ahead ring data during a host readback cycle,
         // because that cycle temporarily owns the ring's read address.
         if (enabled_reg && !command_valid_reg && !dma_active_reg
-            && !bus_read_fire()) {
+            && !bus_read_fire() && !ring_refill_reg) {
             if ((uint32_t)rx_consumer_reg != (uint32_t)rx_producer_reg) {
                 descriptor.raw = rx_ring.read_data_out();
                 queue = (uint32_t)descriptor.descriptor.queue;
@@ -537,8 +586,8 @@ public:
             }
         }
 
-        rx_ring._work(reset);
-        tx_ring._work(reset);
+        rx_ring.SMARTNIC_SYSTEM_WORK_METHOD(reset);
+        tx_ring.SMARTNIC_SYSTEM_WORK_METHOD(reset);
         if (reset) {
             enabled_reg.clr();
             rx_producer_reg.clr();
@@ -563,15 +612,18 @@ public:
             write_address_valid_reg.clr();
             write_response_valid_reg.clr();
             read_id_reg.clr();
+            read_address_reg.clr();
             read_data_reg.clr();
+            read_pending_reg.clr();
             read_valid_reg.clr();
+            ring_refill_reg.clr();
         }
     }
 
-    void _strobe()
+    void SMARTNIC_SYSTEM_STROBE_METHOD()
     {
-        rx_ring._strobe();
-        tx_ring._strobe();
+        rx_ring.SMARTNIC_NETWORK_STROBE_METHOD();
+        tx_ring.SMARTNIC_NETWORK_STROBE_METHOD();
         enabled_reg.strobe();
         rx_producer_reg.strobe();
         rx_consumer_reg.strobe();
@@ -595,9 +647,14 @@ public:
         write_address_valid_reg.strobe();
         write_response_valid_reg.strobe();
         read_id_reg.strobe();
+        read_address_reg.strobe();
         read_data_reg.strobe();
+        read_pending_reg.strobe();
         read_valid_reg.strobe();
+        ring_refill_reg.strobe();
     }
+
+    SMARTNIC_SYSTEM_CLOCK_METHODS()
 };
 
 template class Controller<SYSTEM_QUEUES, 1024, HOST_DATA_WIDTH>;

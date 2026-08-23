@@ -471,7 +471,7 @@ int main(int argc, char** argv)
             project_root.string()};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__,
             "OutputMerger_64", "OutputMerger", generated,
-            {"Predef_pkg", "SmartNicMemory", "TxFifo"}, includes,
+            {"Predef_pkg", "SmartNicMemory", "TxEopMemory", "TxFifo"}, includes,
             64, 2048, 12);
         if (ok) {
             ok &= std::system("OutputMerger_64/obj_dir/VOutputMerger 64") == 0;

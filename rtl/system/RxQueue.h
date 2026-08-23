@@ -57,8 +57,15 @@ public:
         packet_count_out = queue.packet_count_out;
         protocol_error_out = queue.protocol_error_out;
     }
-    void _work(bool reset) { queue._work(reset); }
-    void _strobe() { queue._strobe(); }
+    void SMARTNIC_SYSTEM_WORK_METHOD(bool reset)
+    {
+        queue.SMARTNIC_SYSTEM_WORK_METHOD(reset);
+    }
+    void SMARTNIC_SYSTEM_STROBE_METHOD()
+    {
+        queue.SMARTNIC_SYSTEM_STROBE_METHOD();
+    }
+    SMARTNIC_SYSTEM_CLOCK_METHODS()
 };
 
 template class RxQueue<256>;

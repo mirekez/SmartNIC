@@ -141,7 +141,7 @@ public:
         bool output_read;
         uint32_t count;
 
-        mem._work(reset);
+        mem.SMARTNIC_NETWORK_WORK_METHOD(reset);
         if (reset) {
             wp_reg.clr();
             rp_reg.clr();
@@ -220,9 +220,9 @@ public:
     }
 #endif
 
-    void _strobe()
+    void SMARTNIC_NETWORK_STROBE_METHOD()
     {
-        mem._strobe();
+        mem.SMARTNIC_NETWORK_STROBE_METHOD();
         wp_reg.strobe();
         rp_reg.strobe();
         full_reg.strobe();

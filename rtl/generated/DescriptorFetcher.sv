@@ -69,6 +69,7 @@ module DescriptorFetcher #(
 
     // regs and combs
     reg[1280-1:0] queue_reg[DEPTH];
+    reg[1280-1:0] current_descriptor_reg;
     reg[PTR_BITS-1:0] head_reg;
     reg[PTR_BITS-1:0] tail_reg;
     reg[COUNT_BITS-1:0] count_reg;
@@ -86,6 +87,11 @@ module DescriptorFetcher #(
     reg write_addr_valid_reg;
     reg write_response_valid_reg;
     reg[AXI_ID_WIDTH-1:0] read_id_reg;
+    reg[AXI_ADDR_WIDTH-1:0] read_addr_reg;
+    reg[32-1:0] read_value_reg;
+    reg[$clog2(AXI_DATA_WIDTH/'h8)-1:0] read_lane_reg;
+    reg read_pending_reg;
+    reg read_format_pending_reg;
     reg[AXI_DATA_WIDTH-1:0] read_data_reg;
     reg read_valid_reg;
     logic[1280-1:0] current_descriptor_comb;
@@ -95,6 +101,7 @@ module DescriptorFetcher #(
 
     // tmp variables
     logic[1280-1:0] queue_reg_tmp[DEPTH];
+    logic[1280-1:0] current_descriptor_reg_tmp;
     logic[PTR_BITS-1:0] head_reg_tmp;
     logic[PTR_BITS-1:0] tail_reg_tmp;
     logic[COUNT_BITS-1:0] count_reg_tmp;
@@ -112,6 +119,11 @@ module DescriptorFetcher #(
     logic write_addr_valid_reg_tmp;
     logic write_response_valid_reg_tmp;
     logic[AXI_ID_WIDTH-1:0] read_id_reg_tmp;
+    logic[AXI_ADDR_WIDTH-1:0] read_addr_reg_tmp;
+    logic[32-1:0] read_value_reg_tmp;
+    logic[$clog2(AXI_DATA_WIDTH/'h8)-1:0] read_lane_reg_tmp;
+    logic read_pending_reg_tmp;
+    logic read_format_pending_reg_tmp;
     logic[AXI_DATA_WIDTH-1:0] read_data_reg_tmp;
     logic read_valid_reg_tmp;
 
@@ -119,7 +131,7 @@ module DescriptorFetcher #(
     always_comb begin : current_descriptor_comb_func  // current_descriptor_comb_func
         current_descriptor_comb = 'h0;
         if (unsigned'(32'(count_reg)) != 'h0) begin
-            current_descriptor_comb = queue_reg[unsigned'(32'(head_reg))];
+            current_descriptor_comb = current_descriptor_reg;
         end
     end
 
@@ -226,7 +238,7 @@ module DescriptorFetcher #(
         assign mmio__wready_out = write_addr_valid_reg && !write_response_valid_reg;
         assign mmio__bvalid_out = write_response_valid_reg;
         assign mmio__bid_out = write_id_reg;
-        assign mmio__arready_out = !read_valid_reg;
+        assign mmio__arready_out = (!read_pending_reg && !read_format_pending_reg) && !read_valid_reg;
         assign mmio__rvalid_out = read_valid_reg;
         assign mmio__rdata_out = read_data_reg;
         assign mmio__rlast_out = read_valid_reg;
@@ -241,6 +253,7 @@ module DescriptorFetcher #(
         logic[31:0] value;
         logic[31:0] _bit;
         logic[31:0] word_index;
+        logic[31:0] next_head;
         logic input_fire;
         logic pop;
         logic[1280-1:0] assembly;
@@ -286,15 +299,36 @@ module DescriptorFetcher #(
         end
         if (mmio__arvalid_in && mmio__arready_out) begin
             read_id_reg_tmp = mmio__arid_in;
-            read_data_reg_tmp = register_read_comb;
+            read_addr_reg_tmp = mmio__araddr_in;
+            read_pending_reg_tmp = unsigned'(1'(1));
+        end
+        if ((read_pending_reg && !read_format_pending_reg) && !read_valid_reg) begin
+            address=unsigned'(32'(read_addr_reg));
+            read_value_reg_tmp = register_value(address & ~'h3);
+            read_lane_reg_tmp = address & (((AXI_DATA_WIDTH/'h8) - 'h1));
+            read_format_pending_reg_tmp = unsigned'(1'(1));
+            read_pending_reg_tmp = unsigned'(1'(0));
+        end
+        if (read_format_pending_reg && !read_valid_reg) begin
+            read_data_reg_tmp = 'h0;
+            for (_bit='h0;_bit < 'h20;_bit=_bit+1) begin
+                if (((unsigned'(32'(read_lane_reg))*'h8) + _bit) < AXI_DATA_WIDTH) begin
+                    read_data_reg_tmp[(unsigned'(32'(read_lane_reg))*'h8) + _bit] = read_value_reg[_bit];
+                end
+            end
             read_valid_reg_tmp = unsigned'(1'(1));
+            read_format_pending_reg_tmp = unsigned'(1'(0));
         end
         if (read_valid_reg && mmio__rready_in) begin
             read_valid_reg_tmp = unsigned'(1'(0));
         end
         if (pop) begin
-            head_reg_tmp = ((unsigned'(32'(head_reg)) + 'h1)) & ((DEPTH - 'h1));
+            next_head=((unsigned'(32'(head_reg)) + 'h1)) & ((DEPTH - 'h1));
+            head_reg_tmp = next_head;
             --count;
+            if (count != 'h0) begin
+                current_descriptor_reg_tmp = queue_reg[next_head];
+            end
         end
         if (input_fire) begin
             assembly = assembly_reg;
@@ -326,6 +360,9 @@ module DescriptorFetcher #(
                     protocol_error_reg_tmp = unsigned'(1'(1));
                 end
                 queue_reg_tmp[unsigned'(32'(tail_reg))] = assembly;
+                if (count == 'h0) begin
+                    current_descriptor_reg_tmp = assembly;
+                end
                 tail_reg_tmp = ((unsigned'(32'(tail_reg)) + 'h1)) & ((DEPTH - 'h1));
                 count=count+1;
                 assembly_active_reg_tmp = unsigned'(1'(0));
@@ -340,6 +377,7 @@ module DescriptorFetcher #(
             head_reg_tmp = '0;
             tail_reg_tmp = '0;
             count_reg_tmp = '0;
+            current_descriptor_reg_tmp = '0;
             assembly_reg_tmp = '0;
             assembly_word_reg_tmp = '0;
             assembly_active_reg_tmp = '0;
@@ -354,6 +392,11 @@ module DescriptorFetcher #(
             write_addr_valid_reg_tmp = '0;
             write_response_valid_reg_tmp = '0;
             read_id_reg_tmp = '0;
+            read_addr_reg_tmp = '0;
+            read_value_reg_tmp = '0;
+            read_lane_reg_tmp = '0;
+            read_pending_reg_tmp = '0;
+            read_format_pending_reg_tmp = '0;
             read_data_reg_tmp = '0;
             read_valid_reg_tmp = '0;
             for (slot='h0;slot < DEPTH;slot=slot+1) begin
@@ -370,6 +413,7 @@ module DescriptorFetcher #(
 
     always_ff @(posedge clk) begin
         queue_reg_tmp = queue_reg;
+        current_descriptor_reg_tmp = current_descriptor_reg;
         head_reg_tmp = head_reg;
         tail_reg_tmp = tail_reg;
         count_reg_tmp = count_reg;
@@ -387,12 +431,18 @@ module DescriptorFetcher #(
         write_addr_valid_reg_tmp = write_addr_valid_reg;
         write_response_valid_reg_tmp = write_response_valid_reg;
         read_id_reg_tmp = read_id_reg;
+        read_addr_reg_tmp = read_addr_reg;
+        read_value_reg_tmp = read_value_reg;
+        read_lane_reg_tmp = read_lane_reg;
+        read_pending_reg_tmp = read_pending_reg;
+        read_format_pending_reg_tmp = read_format_pending_reg;
         read_data_reg_tmp = read_data_reg;
         read_valid_reg_tmp = read_valid_reg;
 
         _work(reset);
 
         queue_reg <= queue_reg_tmp;
+        current_descriptor_reg <= current_descriptor_reg_tmp;
         head_reg <= head_reg_tmp;
         tail_reg <= tail_reg_tmp;
         count_reg <= count_reg_tmp;
@@ -410,6 +460,11 @@ module DescriptorFetcher #(
         write_addr_valid_reg <= write_addr_valid_reg_tmp;
         write_response_valid_reg <= write_response_valid_reg_tmp;
         read_id_reg <= read_id_reg_tmp;
+        read_addr_reg <= read_addr_reg_tmp;
+        read_value_reg <= read_value_reg_tmp;
+        read_lane_reg <= read_lane_reg_tmp;
+        read_pending_reg <= read_pending_reg_tmp;
+        read_format_pending_reg <= read_format_pending_reg_tmp;
         read_data_reg <= read_data_reg_tmp;
         read_valid_reg <= read_valid_reg_tmp;
     end

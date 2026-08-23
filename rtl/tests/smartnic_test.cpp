@@ -1149,7 +1149,8 @@ static bool build_verilator_model(const char* source_file, const char* program_f
         "PacketParserHeaderId_pkg", "PacketParserFlags_pkg", "RxRAMWritePair_pkg",
         "RxDescriptor_pkg", "RxDescriptorWord_pkg", "RxDescriptorFlags_pkg",
         "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser", "RxRAM",
-        "RxFifo", "TxFifo", "OutputMerger", "Network", "PacketStream"};
+        "RxFifo", "TxEopMemory", "TxFifo", "OutputMerger", "Network",
+        "PacketStream"};
     return VerilatorCompileInExactFolderFromGenerated(source.string(),
         model_dir.string(), "SmartNIC", generated, modules, includes);
 #endif

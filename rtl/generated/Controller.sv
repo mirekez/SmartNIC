@@ -99,13 +99,17 @@ module Controller #(
     reg write_address_valid_reg;
     reg write_response_valid_reg;
     reg[4-1:0] read_id_reg;
+    reg[32-1:0] read_address_reg;
     reg[DATA_WIDTH-1:0] read_data_reg;
+    reg read_pending_reg;
     reg read_valid_reg;
+    reg ring_refill_reg;
     logic[128-1:0] rx_ring_write_data_comb;
     logic[16-1:0] rx_ring_write_mask_comb;
     logic[128-1:0] tx_ring_write_data_comb;
     logic[16-1:0] tx_ring_write_mask_comb;
     logic[DATA_WIDTH-1:0] register_read_comb;
+    logic[DATA_WIDTH-1:0] pending_read_comb;
     logic[RING_BITS-1:0] rx_ring_write_addr_comb;
     logic[RING_BITS-1:0] rx_ring_read_addr_comb;
     logic[RING_BITS-1:0] tx_ring_write_addr_comb;
@@ -124,7 +128,7 @@ module Controller #(
     SystemMemory #(
         'h10
 ,       RING_DEPTH
-,       1
+,       0
 ,       0
     ) rx_ring (
         .l2_clock(l2_clock)
@@ -148,7 +152,7 @@ module Controller #(
     SystemMemory #(
         'h10
 ,       RING_DEPTH
-,       1
+,       0
 ,       0
     ) tx_ring (
         .l2_clock(l2_clock)
@@ -187,8 +191,11 @@ module Controller #(
     logic write_address_valid_reg_tmp;
     logic write_response_valid_reg_tmp;
     logic[4-1:0] read_id_reg_tmp;
+    logic[32-1:0] read_address_reg_tmp;
     logic[DATA_WIDTH-1:0] read_data_reg_tmp;
+    logic read_pending_reg_tmp;
     logic read_valid_reg_tmp;
+    logic ring_refill_reg_tmp;
 
 
     function logic[31:0] bus_write_address ();
@@ -389,6 +396,26 @@ module Controller #(
         end
     end
 
+    always_comb begin : pending_read_comb_func  // pending_read_comb_func
+        logic[31:0] address;
+        logic[31:0] lane;
+        logic[31:0] _bit;
+        logic[31:0] value;
+        pending_read_comb = 'h0;
+        address=unsigned'(32'(read_address_reg));
+        lane=address & ((DATA_BYTES - 'h1));
+        value=register_value(address & ~'h3);
+        for (_bit='h0;_bit < 'h20;_bit=_bit+1) begin
+            pending_read_comb[(lane*'h8) + _bit] = ((value >>> _bit)) & 'h1;
+        end
+    end
+
+    function logic read_address_in_ring ();
+        logic[31:0] address;
+        address=bus_read_address();
+        return address_in_ring(address, REG_RX_RING_BASE) || address_in_ring(address, REG_TX_RING_BASE);
+    endfunction
+
     function logic[31:0] selected_ring_read_address (
         input logic[31:0] base
 ,       input logic[31:0] consumer
@@ -442,7 +469,7 @@ module Controller #(
         assign host_control__wready_out = write_address_valid_reg && !write_response_valid_reg;
         assign host_control__bvalid_out = write_response_valid_reg;
         assign host_control__bid_out = write_id_reg;
-        assign host_control__arready_out = !read_valid_reg;
+        assign host_control__arready_out = !read_valid_reg && !read_pending_reg;
         assign host_control__rvalid_out = read_valid_reg;
         assign host_control__rdata_out = read_data_reg;
         assign host_control__rlast_out = read_valid_reg;
@@ -460,13 +487,16 @@ module Controller #(
         assign protocol_error_out = protocol_error_reg;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
         logic[31:0] address;
         logic[31:0] value;
         logic[31:0] queue;
         logic[31:0] packet_length;
         SystemRingDescriptorWord descriptor;
+        if (ring_refill_reg) begin
+            ring_refill_reg_tmp = unsigned'(1'(0));
+        end
         if (host_control__awvalid_in && host_control__awready_out) begin
             write_address_reg_tmp = unsigned'(32'(unsigned'(32'(host_control__awaddr_in))));
             write_id_reg_tmp = host_control__awid_in;
@@ -481,7 +511,19 @@ module Controller #(
         end
         if (host_control__arvalid_in && host_control__arready_out) begin
             read_id_reg_tmp = host_control__arid_in;
-            read_data_reg_tmp = register_read_comb;
+            read_address_reg_tmp = unsigned'(32'(unsigned'(32'(host_control__araddr_in))));
+            if (read_address_in_ring()) begin
+                read_pending_reg_tmp = unsigned'(1'(1));
+                ring_refill_reg_tmp = unsigned'(1'(1));
+            end
+            else begin
+                read_data_reg_tmp = register_read_comb;
+                read_valid_reg_tmp = unsigned'(1'(1));
+            end
+        end
+        if (read_pending_reg) begin
+            read_data_reg_tmp = pending_read_comb;
+            read_pending_reg_tmp = unsigned'(1'(0));
             read_valid_reg_tmp = unsigned'(1'(1));
         end
         if (read_valid_reg && host_control__rready_in) begin
@@ -524,8 +566,9 @@ module Controller #(
             end
             dma_active_reg_tmp = unsigned'(1'(0));
             completed_reg_tmp = completed_reg + 'h1;
+            ring_refill_reg_tmp = unsigned'(1'(1));
         end
-        if (((enabled_reg && !command_valid_reg) && !dma_active_reg) && !bus_read_fire()) begin
+        if ((((enabled_reg && !command_valid_reg) && !dma_active_reg) && !bus_read_fire()) && !ring_refill_reg) begin
             if (unsigned'(32'(rx_consumer_reg)) != unsigned'(32'(rx_producer_reg))) begin
                 descriptor.raw = rx_ring__read_data_out;
                 queue=unsigned'(32'(descriptor.descriptor.queue));
@@ -596,18 +639,27 @@ module Controller #(
             write_address_valid_reg_tmp = '0;
             write_response_valid_reg_tmp = '0;
             read_id_reg_tmp = '0;
+            read_address_reg_tmp = '0;
             read_data_reg_tmp = '0;
+            read_pending_reg_tmp = '0;
             read_valid_reg_tmp = '0;
+            ring_refill_reg_tmp = '0;
         end
     end
     endtask
 
-    task _work_system_clock (input logic reset);
-    begin: _work_system_clock
+    task _work_l2_clock (input logic unused);
+    begin: _work_l2_clock
     end
     endtask
 
     always_ff @(posedge l2_clock) begin
+
+        _work_l2_clock(reset);
+
+    end
+
+    always_ff @(posedge system_clock) begin
         enabled_reg_tmp = enabled_reg;
         rx_producer_reg_tmp = rx_producer_reg;
         rx_consumer_reg_tmp = rx_consumer_reg;
@@ -631,10 +683,13 @@ module Controller #(
         write_address_valid_reg_tmp = write_address_valid_reg;
         write_response_valid_reg_tmp = write_response_valid_reg;
         read_id_reg_tmp = read_id_reg;
+        read_address_reg_tmp = read_address_reg;
         read_data_reg_tmp = read_data_reg;
+        read_pending_reg_tmp = read_pending_reg;
         read_valid_reg_tmp = read_valid_reg;
+        ring_refill_reg_tmp = ring_refill_reg;
 
-        _work(reset);
+        _work_system_clock(reset);
 
         enabled_reg <= enabled_reg_tmp;
         rx_producer_reg <= rx_producer_reg_tmp;
@@ -659,14 +714,11 @@ module Controller #(
         write_address_valid_reg <= write_address_valid_reg_tmp;
         write_response_valid_reg <= write_response_valid_reg_tmp;
         read_id_reg <= read_id_reg_tmp;
+        read_address_reg <= read_address_reg_tmp;
         read_data_reg <= read_data_reg_tmp;
+        read_pending_reg <= read_pending_reg_tmp;
         read_valid_reg <= read_valid_reg_tmp;
-    end
-
-    always_ff @(posedge system_clock) begin
-
-        _work_system_clock(reset);
-
+        ring_refill_reg <= ring_refill_reg_tmp;
     end
 
 

@@ -60,6 +60,21 @@ set debug_cdc_first_stage_pins [get_pins -quiet -of_objects \
     $debug_cdc_first_stage_cells -filter {REF_PIN_NAME == D}]
 set_false_path -to $debug_cdc_first_stage_pins
 
+# startup_reset is generated in the 50 MHz startup domain.  Its functional
+# release into net_clk is synchronized by net_reset_sync; time only the second
+# and later stages.  The PCIe core consumes the same signal solely as an
+# asynchronous reset assertion, so its asynchronous control pins likewise do
+# not have a meaningful setup/hold relationship to userclk1.
+set startup_reset_source [get_cells -quiet -hier -filter \
+    {IS_SEQUENTIAL == 1 && NAME =~ *por_shift_reg[7]}]
+set net_reset_first_d [get_pins -quiet -hier -filter \
+    {NAME =~ *net_reset_sync_reg[0]/D}]
+set pcie_async_reset_pins [get_pins -quiet -hier -filter \
+    {NAME =~ host_system/* && (REF_PIN_NAME == R || REF_PIN_NAME == CLR || \
+        REF_PIN_NAME == PRE)}]
+set_false_path -from $startup_reset_source -to $net_reset_first_d
+set_false_path -from $startup_reset_source -to $pcie_async_reset_pins
+
 set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 set_property CONFIG_VOLTAGE 1.8 [current_design]
 set_property CFGBVS GND [current_design]

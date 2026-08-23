@@ -33,6 +33,7 @@ module OutputMerger #(
     localparam  OUTPUT_BITS = STREAMS*LANE_WIDTH;
     localparam  OUTPUT_BYTES = STREAMS*LANE_BYTES;
     localparam  BATCH_BYTES = OUTPUT_BYTES;
+    localparam  BATCH_QUEUE_WORDS = 64'h2;
     localparam  TIME_QUEUE_BYTES = 64'h40;
     localparam  BATCH_COUNT_BITS = $clog2(BATCH_BYTES + 'h1);
     localparam  SCHED_VALID = 64'h0;
@@ -57,12 +58,14 @@ module OutputMerger #(
     reg scheduler_rr_reg;
     reg scheduler_active_reg;
     reg scheduler_stream_reg;
-    reg batch_valid_reg;
-    reg[OUTPUT_BITS-1:0] batch_data_reg;
-    reg[OUTPUT_BYTES-1:0] batch_keep_reg;
-    reg[OUTPUT_BYTES-1:0] batch_sop_reg;
-    reg[OUTPUT_BYTES-1:0] batch_eop_reg;
-    reg[BATCH_COUNT_BITS-1:0] batch_bytes_reg;
+    reg[OUTPUT_BITS-1:0] batch_data_reg[2];
+    reg[OUTPUT_BYTES-1:0] batch_keep_reg[2];
+    reg[OUTPUT_BYTES-1:0] batch_sop_reg[2];
+    reg[OUTPUT_BYTES-1:0] batch_eop_reg[2];
+    reg[BATCH_COUNT_BITS-1:0] batch_bytes_reg[2];
+    reg batch_head_reg;
+    reg batch_tail_reg;
+    reg[2-1:0] batch_count_reg;
     reg[512-1:0] time_data_reg;
     reg[64-1:0] time_keep_reg;
     reg[64-1:0] time_sop_reg;
@@ -139,12 +142,14 @@ module OutputMerger #(
     logic scheduler_rr_reg_tmp;
     logic scheduler_active_reg_tmp;
     logic scheduler_stream_reg_tmp;
-    logic batch_valid_reg_tmp;
-    logic[OUTPUT_BITS-1:0] batch_data_reg_tmp;
-    logic[OUTPUT_BYTES-1:0] batch_keep_reg_tmp;
-    logic[OUTPUT_BYTES-1:0] batch_sop_reg_tmp;
-    logic[OUTPUT_BYTES-1:0] batch_eop_reg_tmp;
-    logic[BATCH_COUNT_BITS-1:0] batch_bytes_reg_tmp;
+    logic[OUTPUT_BITS-1:0] batch_data_reg_tmp[2];
+    logic[OUTPUT_BYTES-1:0] batch_keep_reg_tmp[2];
+    logic[OUTPUT_BYTES-1:0] batch_sop_reg_tmp[2];
+    logic[OUTPUT_BYTES-1:0] batch_eop_reg_tmp[2];
+    logic[BATCH_COUNT_BITS-1:0] batch_bytes_reg_tmp[2];
+    logic batch_head_reg_tmp;
+    logic batch_tail_reg_tmp;
+    logic[2-1:0] batch_count_reg_tmp;
     logic[512-1:0] time_data_reg_tmp;
     logic[64-1:0] time_keep_reg_tmp;
     logic[64-1:0] time_sop_reg_tmp;
@@ -365,7 +370,7 @@ module OutputMerger #(
     always_comb begin : output_valid_comb_func  // output_valid_comb_func
         logic[31:0] count;
         count=unsigned'(32'(time_count_reg));
-        output_valid_comb=(count != 'h0) && ((count>=OUTPUT_BYTES || ((!batch_valid_reg && !scheduler_active_reg))));
+        output_valid_comb=(count != 'h0) && ((count>=OUTPUT_BYTES || (((unsigned'(32'(batch_count_reg)) == 'h0) && !scheduler_active_reg))));
     end
 
     always_comb begin : output_drain_comb_func  // output_drain_comb_func
@@ -382,16 +387,18 @@ module OutputMerger #(
     endfunction
 
     always_comb begin : queue_append_comb_func  // queue_append_comb_func
+        logic[31:0] head;
         logic[31:0] span;
-        span=unsigned'(32'(batch_bytes_reg));
-        if (unsigned'(64'(batch_eop_reg)) != 'h0) begin
+        head=unsigned'(32'(batch_head_reg));
+        span=unsigned'(32'(batch_bytes_reg[head]));
+        if (unsigned'(64'(batch_eop_reg[head])) != 'h0) begin
             span+=MIN_IPG_BYTES;
         end
-        queue_append_comb=batch_valid_reg && (queue_count_after_drain() + span)<=TIME_QUEUE_BYTES;
+        queue_append_comb=(unsigned'(32'(batch_count_reg)) != 'h0) && (queue_count_after_drain() + span)<=TIME_QUEUE_BYTES;
     end
 
     always_comb begin : batch_slot_ready_comb_func  // batch_slot_ready_comb_func
-        batch_slot_ready_comb=!batch_valid_reg || queue_append_comb;
+        batch_slot_ready_comb=unsigned'(32'(batch_count_reg)) < BATCH_QUEUE_WORDS;
     end
 
     always_comb begin : read_count_0_comb_func  // read_count_0_comb_func
@@ -457,7 +464,11 @@ module OutputMerger #(
     task _work_net_clk (input logic reset);
     begin: _work_net_clk
         logic[63:0] stream;
+        logic[63:0] batch_slot;
         logic[31:0] count;
+        logic[31:0] batch_head;
+        logic[31:0] batch_tail;
+        logic[31:0] batch_count;
         logic[31:0] append_position;
         logic[31:0] append_span;
         logic[512-1:0] queue_data;
@@ -471,12 +482,16 @@ module OutputMerger #(
             scheduler_rr_reg_tmp = '0;
             scheduler_active_reg_tmp = '0;
             scheduler_stream_reg_tmp = '0;
-            batch_valid_reg_tmp = '0;
-            batch_data_reg_tmp = '0;
-            batch_keep_reg_tmp = '0;
-            batch_sop_reg_tmp = '0;
-            batch_eop_reg_tmp = '0;
-            batch_bytes_reg_tmp = '0;
+            for (batch_slot='h0;batch_slot < BATCH_QUEUE_WORDS;batch_slot=batch_slot+1) begin
+                batch_data_reg_tmp[batch_slot] = '0;
+                batch_keep_reg_tmp[batch_slot] = '0;
+                batch_sop_reg_tmp[batch_slot] = '0;
+                batch_eop_reg_tmp[batch_slot] = '0;
+                batch_bytes_reg_tmp[batch_slot] = '0;
+            end
+            batch_head_reg_tmp = '0;
+            batch_tail_reg_tmp = '0;
+            batch_count_reg_tmp = '0;
             time_data_reg_tmp = '0;
             time_keep_reg_tmp = '0;
             time_sop_reg_tmp = '0;
@@ -490,6 +505,9 @@ module OutputMerger #(
         queue_sop = time_sop_reg;
         queue_eop = time_eop_reg;
         count=unsigned'(32'(time_count_reg));
+        batch_head=unsigned'(32'(batch_head_reg));
+        batch_tail=unsigned'(32'(batch_tail_reg));
+        batch_count=unsigned'(32'(batch_count_reg));
         if (output_drain_comb) begin
             queue_data = queue_data >> OUTPUT_BITS;
             queue_keep = queue_keep >> OUTPUT_BYTES;
@@ -499,15 +517,17 @@ module OutputMerger #(
         end
         if (queue_append_comb) begin
             append_position=count;
-            append_span=unsigned'(32'(batch_bytes_reg));
-            queue_data = queue_data | (batch_data_reg << (append_position*'h8));
-            queue_keep = queue_keep | (batch_keep_reg << append_position);
-            queue_sop = queue_sop | (batch_sop_reg << append_position);
-            queue_eop = queue_eop | (batch_eop_reg << append_position);
-            if (unsigned'(64'(batch_eop_reg)) != 'h0) begin
+            append_span=unsigned'(32'(batch_bytes_reg[batch_head]));
+            queue_data = queue_data | (batch_data_reg[batch_head] << (append_position*'h8));
+            queue_keep = queue_keep | (batch_keep_reg[batch_head] << append_position);
+            queue_sop = queue_sop | (batch_sop_reg[batch_head] << append_position);
+            queue_eop = queue_eop | (batch_eop_reg[batch_head] << append_position);
+            if (unsigned'(64'(batch_eop_reg[batch_head])) != 'h0) begin
                 append_span+=MIN_IPG_BYTES;
             end
             count+=append_span;
+            batch_head=((batch_head + 'h1)) & ((BATCH_QUEUE_WORDS - 'h1));
+            --batch_count;
         end
         time_data_reg_tmp = queue_data;
         time_keep_reg_tmp = queue_keep;
@@ -517,12 +537,13 @@ module OutputMerger #(
         if (batch_slot_ready_comb) begin
             candidate = scheduler_result_comb;
             if (candidate[SCHED_VALID]) begin
-                batch_valid_reg_tmp = unsigned'(1'h1);
-                batch_data_reg_tmp = candidate[SCHED_DATA +:(SCHED_DATA + OUTPUT_BITS) - 'h1 - SCHED_DATA + 1];
-                batch_keep_reg_tmp = candidate[SCHED_KEEP +:(SCHED_KEEP + OUTPUT_BYTES) - 'h1 - SCHED_KEEP + 1];
-                batch_sop_reg_tmp = candidate[SCHED_SOP +:(SCHED_SOP + OUTPUT_BYTES) - 'h1 - SCHED_SOP + 1];
-                batch_eop_reg_tmp = candidate[SCHED_EOP +:(SCHED_EOP + OUTPUT_BYTES) - 'h1 - SCHED_EOP + 1];
-                batch_bytes_reg_tmp = candidate[SCHED_BYTES +:(SCHED_BYTES + BATCH_COUNT_BITS) - 'h1 - SCHED_BYTES + 1];
+                batch_data_reg_tmp[batch_tail] = candidate[SCHED_DATA +:(SCHED_DATA + OUTPUT_BITS) - 'h1 - SCHED_DATA + 1];
+                batch_keep_reg_tmp[batch_tail] = candidate[SCHED_KEEP +:(SCHED_KEEP + OUTPUT_BYTES) - 'h1 - SCHED_KEEP + 1];
+                batch_sop_reg_tmp[batch_tail] = candidate[SCHED_SOP +:(SCHED_SOP + OUTPUT_BYTES) - 'h1 - SCHED_SOP + 1];
+                batch_eop_reg_tmp[batch_tail] = candidate[SCHED_EOP +:(SCHED_EOP + OUTPUT_BYTES) - 'h1 - SCHED_EOP + 1];
+                batch_bytes_reg_tmp[batch_tail] = candidate[SCHED_BYTES +:(SCHED_BYTES + BATCH_COUNT_BITS) - 'h1 - SCHED_BYTES + 1];
+                batch_tail=((batch_tail + 'h1)) & ((BATCH_QUEUE_WORDS - 'h1));
+                batch_count=batch_count+1;
                 scheduler_rr_reg_tmp = unsigned'(1'(candidate[SCHED_NEXT_RR]));
                 scheduler_active_reg_tmp = unsigned'(1'(candidate[SCHED_NEXT_ACTIVE]));
                 scheduler_stream_reg_tmp = unsigned'(1'(candidate[SCHED_NEXT_STREAM]));
@@ -530,10 +551,10 @@ module OutputMerger #(
                     protocol_error_reg_tmp = unsigned'(1'h1);
                 end
             end
-            else begin
-                batch_valid_reg_tmp = unsigned'(1'h0);
-            end
         end
+        batch_head_reg_tmp = unsigned'(1'(batch_head));
+        batch_tail_reg_tmp = unsigned'(1'(batch_tail));
+        batch_count_reg_tmp = batch_count;
     end
     endtask
 
@@ -552,12 +573,14 @@ module OutputMerger #(
         scheduler_rr_reg_tmp = scheduler_rr_reg;
         scheduler_active_reg_tmp = scheduler_active_reg;
         scheduler_stream_reg_tmp = scheduler_stream_reg;
-        batch_valid_reg_tmp = batch_valid_reg;
         batch_data_reg_tmp = batch_data_reg;
         batch_keep_reg_tmp = batch_keep_reg;
         batch_sop_reg_tmp = batch_sop_reg;
         batch_eop_reg_tmp = batch_eop_reg;
         batch_bytes_reg_tmp = batch_bytes_reg;
+        batch_head_reg_tmp = batch_head_reg;
+        batch_tail_reg_tmp = batch_tail_reg;
+        batch_count_reg_tmp = batch_count_reg;
         time_data_reg_tmp = time_data_reg;
         time_keep_reg_tmp = time_keep_reg;
         time_sop_reg_tmp = time_sop_reg;
@@ -570,12 +593,14 @@ module OutputMerger #(
         scheduler_rr_reg <= scheduler_rr_reg_tmp;
         scheduler_active_reg <= scheduler_active_reg_tmp;
         scheduler_stream_reg <= scheduler_stream_reg_tmp;
-        batch_valid_reg <= batch_valid_reg_tmp;
         batch_data_reg <= batch_data_reg_tmp;
         batch_keep_reg <= batch_keep_reg_tmp;
         batch_sop_reg <= batch_sop_reg_tmp;
         batch_eop_reg <= batch_eop_reg_tmp;
         batch_bytes_reg <= batch_bytes_reg_tmp;
+        batch_head_reg <= batch_head_reg_tmp;
+        batch_tail_reg <= batch_tail_reg_tmp;
+        batch_count_reg <= batch_count_reg_tmp;
         time_data_reg <= time_data_reg_tmp;
         time_keep_reg <= time_keep_reg_tmp;
         time_sop_reg <= time_sop_reg_tmp;

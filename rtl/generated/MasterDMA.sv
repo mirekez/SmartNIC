@@ -91,6 +91,7 @@ module MasterDMA #(
     reg completion_direction_reg;
     reg[32-1:0] completed_reg;
     reg protocol_error_reg;
+    reg[8-1:0] protocol_error_code_reg;
     logic[DATA_WIDTH-1:0] host_write_data_comb;
     logic[DATA_BYTES-1:0] host_write_keep_comb;
 
@@ -116,6 +117,7 @@ module MasterDMA #(
     logic completion_direction_reg_tmp;
     logic[32-1:0] completed_reg_tmp;
     logic protocol_error_reg_tmp;
+    logic[8-1:0] protocol_error_code_reg_tmp;
 
 
     always_comb begin : host_write_data_comb_func  // host_write_data_comb_func
@@ -148,6 +150,7 @@ module MasterDMA #(
             if (keep[_byte]) begin
                 if (gap) begin
                     protocol_error_reg_tmp = unsigned'(1'(1));
+                    protocol_error_code_reg_tmp = unsigned'(8'h1);
                 end
                 count=count+1;
             end
@@ -168,6 +171,7 @@ module MasterDMA #(
             if (keep[_byte]) begin
                 if (gap) begin
                     protocol_error_reg_tmp = unsigned'(1'(1));
+                    protocol_error_code_reg_tmp = unsigned'(8'h2);
                 end
                 count=count+1;
             end
@@ -217,8 +221,8 @@ module MasterDMA #(
         assign protocol_error_out = protocol_error_reg;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
         logic[31:0] bytes;
         logic[31:0] _byte;
         logic[31:0] _bit;
@@ -238,6 +242,7 @@ module MasterDMA #(
             queue_keep_reg_tmp = 'h0;
             if (((unsigned'(32'(command_length_in)) == 'h0) || (((unsigned'(64'(command_address_in)) & 'h3)) != 'h0)) || (((unsigned'(32'(command_length_in)) & 'h3)) != 'h0)) begin
                 protocol_error_reg_tmp = unsigned'(1'(1));
+                protocol_error_code_reg_tmp = unsigned'(8'h3);
             end
             else begin
                 if (command_direction_in == MasterDmaDirection_pkg::MASTER_DMA_QUEUE_TO_HOST) begin
@@ -259,6 +264,7 @@ module MasterDMA #(
                 chunk_reg_tmp = 'h0;
                 if (((bytes == 'h0) || (bytes > unsigned'(32'(remaining_reg)))) || (first_beat_reg != queue_input_sop_in)) begin
                     protocol_error_reg_tmp = unsigned'(1'(1));
+                    protocol_error_code_reg_tmp = unsigned'(8'h4);
                 end
                 state_reg_tmp = unsigned'(8'(MasterDmaState_pkg::MASTER_DMA_WRITE_ADDRESS));
             end
@@ -275,10 +281,12 @@ module MasterDMA #(
                             bytes=kept_bytes(host_write_keep_comb);
                             if ((bytes == 'h0) || (bytes > unsigned'(32'(remaining_reg)))) begin
                                 protocol_error_reg_tmp = unsigned'(1'(1));
+                                protocol_error_code_reg_tmp = unsigned'(8'h5);
                             end
                             if (bytes>=unsigned'(32'(remaining_reg))) begin
                                 if (!queue_eop_reg || (bytes != unsigned'(32'(remaining_reg)))) begin
                                     protocol_error_reg_tmp = unsigned'(1'(1));
+                                    protocol_error_code_reg_tmp = unsigned'(8'h6);
                                 end
                                 complete_command();
                             end
@@ -292,6 +300,7 @@ module MasterDMA #(
                                 else begin
                                     if (queue_eop_reg) begin
                                         protocol_error_reg_tmp = unsigned'(1'(1));
+                                        protocol_error_code_reg_tmp = unsigned'(8'h7);
                                     end
                                     address_reg_tmp = address_reg + bytes;
                                     remaining_reg_tmp = remaining_reg - bytes;
@@ -370,16 +379,23 @@ module MasterDMA #(
             completion_direction_reg_tmp = '0;
             completed_reg_tmp = '0;
             protocol_error_reg_tmp = '0;
+            protocol_error_code_reg_tmp = '0;
         end
     end
     endtask
 
-    task _work_system_clock (input logic reset);
-    begin: _work_system_clock
+    task _work_l2_clock (input logic unused);
+    begin: _work_l2_clock
     end
     endtask
 
     always_ff @(posedge l2_clock) begin
+
+        _work_l2_clock(reset);
+
+    end
+
+    always_ff @(posedge system_clock) begin
         state_reg_tmp = state_reg;
         direction_reg_tmp = direction_reg;
         queue_reg_tmp = queue_reg;
@@ -399,8 +415,9 @@ module MasterDMA #(
         completion_direction_reg_tmp = completion_direction_reg;
         completed_reg_tmp = completed_reg;
         protocol_error_reg_tmp = protocol_error_reg;
+        protocol_error_code_reg_tmp = protocol_error_code_reg;
 
-        _work(reset);
+        _work_system_clock(reset);
 
         state_reg <= state_reg_tmp;
         direction_reg <= direction_reg_tmp;
@@ -421,12 +438,7 @@ module MasterDMA #(
         completion_direction_reg <= completion_direction_reg_tmp;
         completed_reg <= completed_reg_tmp;
         protocol_error_reg <= protocol_error_reg_tmp;
-    end
-
-    always_ff @(posedge system_clock) begin
-
-        _work_system_clock(reset);
-
+        protocol_error_code_reg <= protocol_error_code_reg_tmp;
     end
 
 

@@ -26,7 +26,7 @@ synth_design -top CPU -part $part -mode out_of_context \
     -directive $synth_directive
 set elapsed [expr {([clock milliseconds] - $started) / 1000.0}]
 
-create_clock -name cpu_clk -period 3.200 [get_ports clk]
+create_clock -name cpu_clk -period 6.400 [get_ports clk]
 create_clock -name l2_clk -period 6.400 [get_ports l2_clock]
 report_utilization -hierarchical -hierarchical_depth 8 \
     -file [file join $report_dir utilization.rpt]

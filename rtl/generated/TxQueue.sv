@@ -104,19 +104,19 @@ module TxQueue #(
         assign protocol_error_out = queue__protocol_error_out;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
-    end
-    endtask
-
     task _work_system_clock (input logic reset);
     begin: _work_system_clock
     end
     endtask
 
+    task _work_l2_clock (input logic unused);
+    begin: _work_l2_clock
+    end
+    endtask
+
     always_ff @(posedge l2_clock) begin
 
-        _work(reset);
+        _work_l2_clock(reset);
 
     end
 

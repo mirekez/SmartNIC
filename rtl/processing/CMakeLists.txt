@@ -2,8 +2,13 @@ add_executable(descriptor_fetcher_test tests/decoder_fetcher.cpp)
 add_executable(packet_dma_test tests/packet_dma.cpp)
 add_executable(cpu_test tests/cpu.cpp)
 
+# KlusterLab drives Processing and its shared L2 from the same 156.25 MHz
+# Ethernet-derived clock.  Keep the CppHDL clock model identical to the board
+# implementation: declaring the core side as 312.5 MHz here leaves obsolete
+# 2:1 scheduling/CDC assumptions in generated RTL even though both ports are
+# tied to net_clk at the top level.
 set(SMARTNIC_L2_CLOCK_HZ 156250000)
-set(SMARTNIC_CPU_CLOCK_HZ 312500000)
+set(SMARTNIC_CPU_CLOCK_HZ 156250000)
 
 target_include_directories(descriptor_fetcher_test PRIVATE
     "${PROJECT_SOURCE_DIR}/cpphdl/include"

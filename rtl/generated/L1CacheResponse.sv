@@ -319,7 +319,7 @@ module L1CacheResponse #(
                 L1CacheLookup___input_request_comb.start = unsigned'(1'(1));
             end
         end
-        L1CacheLookup___input_request_comb.issue = unsigned'(1'(((flush_in && read_in)) || L1CacheLookup___input_request_comb.start));
+        L1CacheLookup___input_request_comb.issue = L1CacheLookup___input_request_comb.start;
     end
 
     always_comb begin : L1CacheLookup___refill_tag_comb_func  // L1CacheLookup___refill_tag_comb_func

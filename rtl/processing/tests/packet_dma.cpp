@@ -510,12 +510,21 @@ class PacketDmaTest
     uint32_t read32(uint32_t address)
     {
         uint32_t lane = address & 31u;
+        uint32_t timeout;
         mmio.ar.valid = true;
         mmio.ar.addr = address;
         mmio.ar.id = 2;
-        if (!mmio_arready()) fail("MMIO AR not ready");
+        for (timeout = 0; timeout < 16 && !mmio_arready(); ++timeout)
+            cycle();
+        if (!mmio_arready()) {
+            fail("MMIO AR not ready");
+            mmio.ar.valid = false;
+            return 0;
+        }
         cycle();
         mmio.ar.valid = false;
+        for (timeout = 0; timeout < 16 && !mmio_rvalid(); ++timeout)
+            cycle();
         if (!mmio_rvalid()) {
             fail("MMIO R not valid");
             return 0;

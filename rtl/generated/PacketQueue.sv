@@ -58,7 +58,7 @@ module PacketQueue #(
         ENTRY_BYTES
 ,       DEPTH
 ,       1
-,       0
+,       1
     ) data_fifo (
         .l2_clock(l2_clock)
 ,       .system_clock(system_clock)
@@ -167,8 +167,8 @@ module PacketQueue #(
         assign length_fifo__read_in = (read_valid_out && read_ready_in) && read_eop_out;
     endgenerate
 
-    task _work (input logic reset);
-    begin: _work
+    task _work_system_clock (input logic reset);
+    begin: _work_system_clock
         logic[31:0] bytes;
         logic[31:0] count;
         logic write_fire;
@@ -218,29 +218,29 @@ module PacketQueue #(
     end
     endtask
 
-    task _work_system_clock (input logic reset);
-    begin: _work_system_clock
+    task _work_l2_clock (input logic reset);
+    begin: _work_l2_clock
     end
     endtask
 
     always_ff @(posedge l2_clock) begin
+
+        _work_l2_clock(reset);
+
+    end
+
+    always_ff @(posedge system_clock) begin
         assembling_length_reg_tmp = assembling_length_reg;
         packet_count_reg_tmp = packet_count_reg;
         assembling_reg_tmp = assembling_reg;
         protocol_error_reg_tmp = protocol_error_reg;
 
-        _work(reset);
+        _work_system_clock(reset);
 
         assembling_length_reg <= assembling_length_reg_tmp;
         packet_count_reg <= packet_count_reg_tmp;
         assembling_reg <= assembling_reg_tmp;
         protocol_error_reg <= protocol_error_reg_tmp;
-    end
-
-    always_ff @(posedge system_clock) begin
-
-        _work_system_clock(reset);
-
     end
 
 

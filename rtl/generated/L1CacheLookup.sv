@@ -265,7 +265,7 @@ module L1CacheLookup #(
                 input_request_comb.start = unsigned'(1'(1));
             end
         end
-        input_request_comb.issue = unsigned'(1'(((flush_in && read_in)) || input_request_comb.start));
+        input_request_comb.issue = input_request_comb.start;
     end
 
     always_comb begin : refill_tag_comb_func  // refill_tag_comb_func

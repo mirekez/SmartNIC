@@ -90,6 +90,7 @@ module Tribe (
     reg[32-1:0] fetch_instr_reg;
     reg[32-1:0] fetch_pc_reg;
     reg[32-1:0] alu_result_reg;
+    (* extract_reset = "no" *)
     State[2-1:0] state_reg;
     reg[2-1:0][32-1:0] predicted_next_reg;
     reg[2-1:0][32-1:0] fallthrough_reg;
@@ -159,6 +160,8 @@ module Tribe (
     logic interrupt_accept_comb;
 ;
     logic interrupt_retire_wait_comb;
+;
+    logic interrupt_entry_wait_comb;
 ;
     State exe_state_comb;
 ;
@@ -998,6 +1001,12 @@ module Tribe (
 
     always_comb begin : interrupt_accept_comb_func  // interrupt_accept_comb_func
         interrupt_accept_comb=0;
+    end
+
+    always_comb begin : interrupt_entry_wait_comb_func  // interrupt_entry_wait_comb_func
+        logic registered_store_pending;
+        registered_store_pending=state_reg['h1].valid && ((exe_mem__mem_write_out || (state_reg['h1].mem_op == Mem_pkg::STORE)));
+        interrupt_entry_wait_comb=interrupt_retire_wait_comb || registered_store_pending;
     end
 
     always_comb begin : sfence_vma_comb_func  // sfence_vma_comb_func

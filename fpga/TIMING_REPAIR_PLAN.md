@@ -1,83 +1,84 @@
 # Timing repair report
 
-## Current routed XC7K325T result — 2026-08-21
+## Accepted routed XC7K325T result — 2026-08-22
 
-Vivado 2026.1 completed synthesis, placement, physical optimization, routing,
-and bitstream generation for `xc7k325tffg676-3`.  The CPU boot ELF was
-converted to `capture.mem` and integrated into the bitstream.
+Vivado 2026.1 completed synthesis, placement, routing, post-route physical
+optimization, DRC, and bitstream generation for `xc7k325tffg676-3`.  The CPU
+boot ELF was converted to `capture.mem` before synthesis and is initialized in
+the boot BRAM in the generated bitstream.
 
 | Metric | Final value |
 |---|---:|
-| WNS / TNS | -1.810 ns / -21,441.156 ns |
-| Hold WHS / THS | +0.033 ns / 0 ns |
+| Setup WNS / TNS | -0.367 ns / -178.016 ns |
+| Hold WHS / THS | +0.028 ns / 0 ns |
+| Failing setup endpoints | 1,715 of 260,621 |
 | Failed / unrouted / partially routed nets | 0 / 0 / 0 |
-| `eth_refclk_p` | 6.400 ns, 156.25 MHz |
-| Worst effective setup delay | 8.210 ns |
-| Relaxed acceptance limit | 9.600 ns |
-| Relaxed margin | 1.390 ns |
-| Slice LUTs / registers | 87,757 (43.06%) / 78,078 (19.16%) |
-| Slices / BRAM tiles | 31,104 (61.05%) / 190 (42.70%) |
-| GTX channels / BUFGs | 2 of 8 / 7 of 32 |
+| `eth_refclk_p` period | 6.400 ns, 156.25 MHz |
+| Worst effective setup delay | 6.767 ns, 105.7% of period |
+| Requested acceptance threshold | WNS >= -0.500 ns, delay <= 6.900 ns |
+| Margin to requested threshold | 0.133 ns |
 
-True 156.25 MHz timing closure is not achieved, but every functional module
-meets the explicitly accepted 9.6 ns milestone.  The two GTX RX domains and
-the shared GTX TX domain meet their 3.103 ns constraints.
+This result meets the requested WNS threshold.  It does not claim zero-slack
+156.25 MHz closure: Vivado correctly continues to label the remaining negative
+setup slack as a timing violation.  All GTX RX/TX intra-clock groups and all
+inter-clock paths have positive setup slack.  The only negative group is the
+shared `eth_refclk_p` domain used by Network, Processing, and CPU.
 
-| Module | Slack | Datapath delay | Decision for true 6.4 ns |
-|---|---:|---:|---|
-| CPU/CSR overall | -1.810 ns | 7.783 ns | Redesign D-cache-tag-to-CSR enable path |
-| CPU I-cache | -1.761 ns | 7.696 ns | Register/refactor refill response control |
-| CPU L2 cache | -1.757 ns | 8.033 ns | Add a real registered BRAM/request boundary |
-| DescriptorFetcher | -1.755 ns | 8.160 ns | Pipeline wide read-data/address decode |
-| PacketDMA | -1.723 ns | 7.735 ns | Pipeline source/completion selection |
-| PacketParser | -1.739 ns | 8.089 ns | Split IPv6 extension progress/index work |
-| RxRAM | -1.362 ns | 7.507 ns | Pipeline row bookkeeping for true closure |
-| OutputMerger | -1.472 ns | 7.455 ns | Pipeline FIFO address/time arbitration |
-| InputBalancer | -0.761 ns | 6.877 ns | Small remaining optimization/pipeline |
-| RxFifo | +0.333 ns | 5.452 ns | Closed at 6.4 ns |
-| Boot BRAM | +1.252 ns | 4.725 ns | Closed at 6.4 ns |
+### Repair plan completed
 
-The exact Network-to-Network report is -1.739 ns slack, 8.089 ns datapath,
-26 logic levels, from channel-0 IPv6 extension progress state to its extension
-stage index.  This passes 9.6 ns by 1.511 ns.
+1. **Classify the routed failures.** The two largest architectural problems
+   were the L1-to-L2 live arbitration/control cone and a 4,096-flip-flop TX EOP
+   metadata array with asynchronous read muxes.  PacketParser, CPU writeback,
+   DescriptorFetcher, PacketDMA, RxRAM, and OutputMerger were retained as the
+   next timing-driven candidate set.
+2. **Repair Network-to-System storage without reducing bandwidth.**
+   `TxEopMemory` now uses two replicated distributed-RAM read copies, retaining
+   both asynchronous scheduler read ports and the existing dequeue rate.  The
+   4,096 metadata flip-flops disappeared; focused OutputMerger synthesis reached
+   WNS +0.512 ns.
+3. **Create an honest L1/L2 boundary.** L2 captures an accepted request in a
+   request-pipe register before arbitration/FSM work.  L2 data and tag storage
+   use small CppHDL leaf modules backed by inferred dual-port BRAM primitives.
+   The controller itself is generated from CppHDL, not replaced by a large SV
+   module.  Focused L2 timing reached WNS -0.205 ns.
+4. **Keep protocol throughput.** PacketParser keeps its protocol-family
+   pipeline; RxRAM row arithmetic, DescriptorFetcher address/read staging,
+   PacketDMA address capture, and OutputMerger's two-entry batch queue remain
+   pipelined.  The final sustained dual-10G AXI test passes.  L2 now issues its
+   synchronous RAM read while consuming the request-pipe entry, so the timing
+   boundary does not add a normal-request controller cycle; `ST_READ` is used
+   only to retry when coherent DMA owns the RAM port.
+5. **Use physical optimization only after RTL repair.** The first complete
+   route reached WNS -0.502 ns.  Reproducible post-route `Explore` optimization
+   then shortened equivalent CPU writeback/cache-request and parser field paths,
+   producing final WNS -0.367 ns.  This step is enabled in
+   `create_project.tcl` for future clean builds.
 
-### Clock and CDC decisions now implemented
+Top synthesis completed in 26m25s with a 9.5 GiB main-process peak, zero errors,
+and zero critical warnings.  This removes the prior multi-hour/runaway synthesis
+behavior.  The final regression passes 16/16 tests, including the 108.79-second
+`system_capture_2x10g_sustained` AXI test.
 
-- `Processing`, all four L1 caches, L2, `DescriptorFetcher`, `PacketDMA`, and
-  `Network` use the same 156.25 MHz `net_clk`.  The old isolated 312.5 MHz CPU
-  clock created direct, unsafe stream crossings and has been removed.
-- No L1/L2 multicycle exception is active in this board build.  With one clock,
-  the caches are timed honestly at 6.4 ns; a multicycle is only valid after an
-  RTL request/response protocol explicitly guarantees data stability.
-- The active KlusterLab top bypasses `System`; therefore the prepared
-  `smartnic_system_cdc.xdc` constraints are not active or physically validated
-  in this bitstream.  They remain for a future top that instantiates `System`.
-- Raw startup/TX-user heartbeat buses were replaced by slow toggle crossings,
-  two-flop `ASYNC_REG` synchronizers, and net-clock-domain activity counters.
-  The 17 diagnostic status bits also use independent two-flop synchronizers.
-- The board XDC false-paths only the 19 diagnostic first-stage D pins.  The
-  routed design contains exactly 19 matching first-stage registers; Vivado
-  reports the clocked crossings as depth-2 `CDC-3` structures with `False Path`.
-  The former debug/reset setup/hold-critical endpoints are absent from routing.
-- All four reported bus-skew constraints pass: actual skew is 0.386–0.588 ns
-  against a 6.4 ns requirement.
+### Clock, CDC, and implementation checks
 
-Remaining `report_cdc` criticals are not hidden: two `CDC-10` cases are inside
-the generated slave MAC, two `CDC-11` reset fan-outs are inside the master PCS,
-one `CDC-11` is the startup-reset diagnostic fan-out, and one local `CDC-10` is
-the combined startup/IP reset request before `net_reset_sync`.  The last item
-should be redesigned as separately synchronized reset causes before ORing if a
-zero-critical CDC report is required; it is not a normal data crossing.
+- Network, Processing, all four L1 caches, and L2 use the same honest 156.25 MHz
+  clock.  No functional L1/L2 multicycle or false-path exception hides setup
+  timing; the registered request protocol provides the required boundary.
+- Processing-to-System traffic uses the specialized AXI4 path and asynchronous
+  FIFOs/handshakes where clock domains differ.  All reported bus-skew checks
+  pass; the smallest slack is +5.934 ns.
+- Routed DRC contains no Error or Critical Warning rules.  The remaining three
+  LUT warnings and one no-routable-load warning are within the generated debug
+  hub; three BRAM advisories are within the PCIe IP.
+- Only the main system-clock ILA is enabled, probing PLL/GTX/10G/system status.
 
 Generated evidence:
 
-- `build/clock_module_wns.tsv`
-- `build/ethernet_timing.rpt`
-- `build/refreshed_timing_summary.rpt`
-- `build/refreshed_clock_interaction.rpt`
-- `build/refreshed_cdc.rpt`
-- `build/refreshed_exception_coverage.rpt`
-- `build/cdc_endpoint_counts.tsv`
+- `build/open_switch.runs/impl_1/klusterlab_top_postroute_physopt.dcp`
+- `build/open_switch.runs/impl_1/klusterlab_top_timing_summary_postroute_physopt.rpt`
+- `build/open_switch.runs/impl_1/klusterlab_top_drc_postroute_physopt.rpt`
+- `build/open_switch.runs/impl_1/klusterlab_top_bus_skew_postroute_physopted.rpt`
+- `open_switch.bit`, `open_switch.bin`, and `open_switch.ltx`
 
 ## Historical failing baseline
 

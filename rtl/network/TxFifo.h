@@ -8,6 +8,7 @@
 #include <cpphdl.h>
 #include "../common/ClockDomains.h"
 #include "../common/Memory.cpp"
+#include "../common/TxEopMemory.h"
 
 using namespace cpphdl;
 
@@ -64,6 +65,16 @@ private:
     // BRAM instead of building an asynchronous 1K-deep mux from LUTRAM.
     SmartNicMemory<ENTRY_BYTES, BANK_DEPTH, false, true> banks[WINDOW_WORDS];
 
+    // Keep the packet-boundary bit in a small asynchronous metadata RAM as
+    // well as in the payload BRAM.  OutputMerger must know whether it can pop
+    // one or two words before selecting the next synchronous BRAM read row.
+    // Taking that decision from the payload BRAM output creates a BRAM
+    // clock-to-out -> scheduler -> counter -> BRAM-address loop.  This
+    // duplicated one-bit metadata removes the loop without changing the
+    // payload window or dequeue rate.  Two asynchronous reads cause Vivado to
+    // replicate this inexpensive distributed RAM, one copy per window slot.
+    TxEopMemory<FIFO_WORDS> eop_metadata;
+
     reg<u<POINTER_BITS>> head_reg;
     reg<u<POINTER_BITS>> tail_reg;
     reg<u<COUNT_BITS>> total_count_reg;
@@ -102,6 +113,14 @@ private:
     {
         bank_write_addr_comb = (uint32_t)tail_reg >> 1;
         return bank_write_addr_comb;
+    }
+
+    u<POINTER_BITS> eop_read_addr1_comb;
+    u<POINTER_BITS>& eop_read_addr1_comb_func()
+    {
+        eop_read_addr1_comb = ((uint32_t)head_reg + 1u)
+            & (FIFO_WORDS - 1);
+        return eop_read_addr1_comb;
     }
 
 #define TX_FIFO_DECLARE_BANK_COMBS(number) \
@@ -195,17 +214,9 @@ private:
     }
 
     _LAZY_COMB(window_eop_comb, logic<WINDOW_WORDS>)
-        size_t slot;
-        uint32_t logical;
-        uint32_t bank;
-        logic<ENTRY_BITS> entry;
         window_eop_comb = 0;
-        for (slot = 0; slot < WINDOW_WORDS; ++slot) {
-            logical = ((uint32_t)head_reg + slot) & (FIFO_WORDS - 1);
-            bank = logical & (WINDOW_WORDS - 1);
-            entry = banks[bank].read_data_out();
-            window_eop_comb[slot] = entry[EOP_OFFSET];
-        }
+        window_eop_comb[0] = eop_metadata.read_data0_out();
+        window_eop_comb[1] = eop_metadata.read_data1_out();
         return window_eop_comb;
     }
 
@@ -235,6 +246,16 @@ public:
         TX_FIFO_FOR_EACH_BANK(TX_FIFO_BIND_BANK)
 #undef TX_FIFO_BIND_BANK
 
+        eop_metadata.write_addr_in = _ASSIGN_REG(tail_reg);
+        eop_metadata.write_in = _ASSIGN_COMB(
+            valid_in() && ready_comb_func());
+        eop_metadata.write_data_in = _ASSIGN((bool)eop_in());
+        eop_metadata.read_addr0_in = _ASSIGN_REG(head_reg);
+        eop_metadata.read_addr1_in = _ASSIGN_COMB(
+            eop_read_addr1_comb_func());
+        eop_metadata.__inst_name = __inst_name + "/eop_metadata";
+        eop_metadata._assign();
+
         ready_out = _ASSIGN_COMB(ready_comb_func());
         data_out = _ASSIGN_COMB(window_data_comb_func());
         keep_out = _ASSIGN_COMB(window_keep_comb_func());
@@ -263,6 +284,7 @@ public:
         for (bank_index = 0; bank_index < WINDOW_WORDS; ++bank_index) {
             banks[bank_index]._work(reset);
         }
+        eop_metadata._work(reset);
 
         if (reset) {
             head_reg.clr();
@@ -343,6 +365,7 @@ public:
 #ifdef SMARTNIC_TWO_CLOCKS
     void _strobe_net_clk()
     {
+        eop_metadata._strobe();
         for (size_t bank = 0; bank < WINDOW_WORDS; ++bank) {
             banks[bank]._strobe();
         }
@@ -358,6 +381,7 @@ public:
 
     void _strobe()
     {
+        eop_metadata._strobe();
         for (size_t bank = 0; bank < WINDOW_WORDS; ++bank) {
             banks[bank]._strobe();
         }

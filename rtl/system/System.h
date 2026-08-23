@@ -7,6 +7,11 @@
 
 #include "../../Config.h"
 
+// The converter requires the faster L2 clock to remain the primary clock.
+// Mark the included System-only modules explicitly so their state is emitted
+// on the PCIe system_clock rather than silently inheriting that primary clock.
+#define SMARTNIC_SYSTEM_DOMAIN 1
+
 // Network and System use different global clock names.  Specialize the shared
 // storage leaf names across the complete System include graph so their RTL
 // definitions cannot collide in the combined FPGA source set.
@@ -300,6 +305,23 @@ private:
     }
 
 public:
+#ifndef SYNTHESIS
+    bool controller_protocol_error() { return controller.protocol_error_out(); }
+    bool dma_protocol_error() { return master_dma.protocol_error_out(); }
+    uint32_t dma_protocol_error_code()
+    {
+        return master_dma.protocol_error_code();
+    }
+    bool rx_protocol_error(uint32_t queue)
+    {
+        return rx_queue[queue].protocol_error_out();
+    }
+    bool tx_protocol_error(uint32_t queue)
+    {
+        return tx_queue[queue].protocol_error_out();
+    }
+#endif
+
     void _assign()
     {
         uint32_t queue;
@@ -406,11 +428,11 @@ public:
     void _work_system_clock(bool reset)
     {
         uint32_t queue;
-        master_dma._work(reset);
-        controller._work(reset);
+        master_dma.SMARTNIC_SYSTEM_WORK_METHOD(reset);
+        controller.SMARTNIC_SYSTEM_WORK_METHOD(reset);
         for (queue = 0; queue < QUEUES; ++queue) {
-            rx_queue[queue]._work(reset);
-            tx_queue[queue]._work(reset);
+            rx_queue[queue].SMARTNIC_SYSTEM_WORK_METHOD(reset);
+            tx_queue[queue].SMARTNIC_SYSTEM_WORK_METHOD(reset);
             rx_cdc[queue]._work_system_clock(reset);
             tx_cdc[queue]._work_system_clock(reset);
         }
@@ -428,11 +450,11 @@ public:
     void _strobe_system_clock()
     {
         uint32_t queue;
-        master_dma._strobe();
-        controller._strobe();
+        master_dma.SMARTNIC_SYSTEM_STROBE_METHOD();
+        controller.SMARTNIC_SYSTEM_STROBE_METHOD();
         for (queue = 0; queue < QUEUES; ++queue) {
-            rx_queue[queue]._strobe();
-            tx_queue[queue]._strobe();
+            rx_queue[queue].SMARTNIC_SYSTEM_STROBE_METHOD();
+            tx_queue[queue].SMARTNIC_SYSTEM_STROBE_METHOD();
             rx_cdc[queue]._strobe_system_clock();
             tx_cdc[queue]._strobe_system_clock();
         }
@@ -449,3 +471,5 @@ public:
 };
 
 template class System<SYSTEM_QUEUES, 256>;
+
+#undef SMARTNIC_SYSTEM_DOMAIN

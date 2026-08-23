@@ -272,6 +272,12 @@ public:
 
         // Test 1: store-and-forward visibility and exact front packet length.
         send_packet(first, true);
+        // A BRAM-backed FWFT queue may need two clocks to prefetch data and
+        // length after EOP.  This is startup latency only; subsequent beats
+        // still transfer on consecutive cycles.
+        for (int prefetch = 0; prefetch < 4 && !read_valid_value(); ++prefetch) {
+            cycle();
+        }
         if (!read_valid_value() || packet_length_value() != first.size()) {
             fail("committed packet or length was not visible");
         }

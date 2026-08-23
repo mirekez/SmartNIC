@@ -264,6 +264,10 @@ class DescriptorFetcherTest
         if (!arready()) fail("AR was not ready");
         cycle();
         axi.ar.valid = false;
+        // Descriptor value decode and 256-bit AXI lane formatting are two
+        // registered stages.  Accept either implementation latency while
+        // still requiring a bounded response.
+        for (uint32_t wait = 0; wait < 3 && !rvalid(); ++wait) cycle();
         if (!rvalid()) {
             fail("R was not valid");
             return 0;

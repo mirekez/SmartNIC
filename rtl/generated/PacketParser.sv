@@ -61,7 +61,8 @@ module PacketParser #(
     PacketParserProgress ipv4_progress_reg;
     PacketParserProgress ipv6_progress_reg;
     PacketParserProgress ipv6_ext_progress_reg[4];
-    reg[3-1:0] ipv6_ext_stage_index_reg[4];
+    reg[1-1:0] ipv6_ext_active_reg[4];
+    reg[1-1:0] ipv6_ext_complete_reg[4];
     reg[48-1:0] destination_mac_reg;
     reg[48-1:0] source_mac_reg;
     reg[16-1:0] ethernet_type_reg;
@@ -164,7 +165,8 @@ module PacketParser #(
     PacketParserProgress ipv4_progress_reg_tmp;
     PacketParserProgress ipv6_progress_reg_tmp;
     PacketParserProgress ipv6_ext_progress_reg_tmp[4];
-    logic[3-1:0] ipv6_ext_stage_index_reg_tmp[4];
+    logic[1-1:0] ipv6_ext_active_reg_tmp[4];
+    logic[1-1:0] ipv6_ext_complete_reg_tmp[4];
     logic[48-1:0] destination_mac_reg_tmp;
     logic[48-1:0] source_mac_reg_tmp;
     logic[16-1:0] ethernet_type_reg_tmp;
@@ -497,7 +499,8 @@ module PacketParser #(
         ipv6_progress_reg_tmp = progress;
         for (index='h0;index < 'h4;index=index+1) begin
             ipv6_ext_progress_reg_tmp[index] = progress;
-            ipv6_ext_stage_index_reg_tmp[index] = 'h0;
+            ipv6_ext_active_reg_tmp[index] = 'h0;
+            ipv6_ext_complete_reg_tmp[index] = 'h0;
         end
         destination_mac_reg_tmp = 'h0;
         source_mac_reg_tmp = 'h0;
@@ -894,27 +897,39 @@ module PacketParser #(
         return call;
     endfunction
 
-    function PacketParserCall ipv6_options_work (
-        input logic[7:0] occurrence
-,       input logic[7:0] markup_pos
+    function PacketParserCall ipv6_options1_work (
+        input logic[7:0] markup_pos
 ,       input logic[64-1:0] markup_state
 ,       input PacketParserProgress progress
 ,       input logic[64-1:0] word
 ,       input logic[7:0] word_bytes
 ,       input logic[7:0] word_cntr
+,       input logic[7:0] extension_type
+,       input logic starting
     );
         logic[7:0] selector;
         logic[7:0] size;
+        logic[7:0] next_proto;
+        logic[7:0] stored_size;
         logic[15:0] fragment;
+        logic[15:0] stored_fragment;
+        logic noninitial_fragment;
         PacketParserCall call;
         call.markup_state = 'h0;
         call.progress = progress;
-        if (!header_active(markup_pos, markup_state, PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS, progress)) begin
-            return call;
+        next_proto=unsigned'(8'(ipv6_next_proto_reg['h0]));
+        stored_size=unsigned'(8'(ipv6_ext_size_reg['h0]));
+        stored_fragment=unsigned'(16'(ipv6_fragment_reg['h0]));
+        noninitial_fragment=noninitial_fragment_reg['h0];
+        if (starting) begin
+            next_proto=extension_type;
+            stored_size='h0;
+            stored_fragment='h0;
+            noninitial_fragment=0;
         end
-        selector=unsigned'(8'(ipv6_next_proto_reg_tmp[occurrence]));
+        selector=next_proto;
         if (byte_present(markup_pos, word_cntr, word_bytes)) begin
-            ipv6_next_proto_reg_tmp[occurrence] = unsigned'(8'(unsigned'(8'(word_byte(word, markup_pos)))));
+            next_proto=word_byte(word, markup_pos);
         end
         if (byte_present(unsigned'(8'((markup_pos + 'h1))), word_cntr, word_bytes)) begin
             if (selector == 'h2C) begin
@@ -928,30 +943,30 @@ module PacketParser #(
                     size=((word_byte(word, unsigned'(8'(((markup_pos + 'h1))))) + 'h1))*'h8;
                 end
             end
-            ipv6_ext_size_reg_tmp[occurrence] = unsigned'(8'(unsigned'(8'(size))));
+            stored_size=size;
             if (unsigned'(16'(((markup_pos + size)))) > 'hC0) begin
                 call.progress.limit = unsigned'(1'h1);
             end
         end
         if (selector == 'h2C) begin
-            ipv6_fragment_reg_tmp[occurrence] = capture_be16(word, unsigned'(16'(ipv6_fragment_reg_tmp[occurrence])), unsigned'(8'((markup_pos + 'h2))), word_cntr, word_bytes);
+            stored_fragment=unsigned'(16'(capture_be16(word, unsigned'(16'(unsigned'(16'(stored_fragment)))), unsigned'(8'((markup_pos + 'h2))), word_cntr, word_bytes)));
             if (field_complete(unsigned'(8'((markup_pos + 'h2))), 'h2, word_cntr, word_bytes)) begin
-                fragment=unsigned'(16'(ipv6_fragment_reg_tmp[occurrence]));
+                fragment=stored_fragment;
                 if (((fragment & 'hFFF8)) != 'h0) begin
-                    noninitial_fragment_reg_tmp[occurrence] = unsigned'(1'h1);
+                    noninitial_fragment=1;
                 end
             end
         end
-        size=unsigned'(8'(ipv6_ext_size_reg_tmp[occurrence]));
+        size=stored_size;
         if ((size != 'h0) && field_complete(markup_pos, size, word_cntr, word_bytes)) begin
-            selector=unsigned'(8'(ipv6_next_proto_reg_tmp[occurrence]));
-            if (noninitial_fragment_reg_tmp[occurrence]) begin
+            selector=next_proto;
+            if (noninitial_fragment) begin
                 call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_NONE));
                 call.progress.done = unsigned'(1'h1);
             end
             else begin
                 if (is_ipv6_extension(selector)) begin
-                    if ((occurrence + 'h1) == 'h4) begin
+                    if (('h0 + 'h1) == 'h4) begin
                         call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_NONE));
                         call.progress.limit = unsigned'(1'h1);
                         call.progress.done = unsigned'(1'h1);
@@ -970,6 +985,295 @@ module PacketParser #(
                 end
             end
         end
+        ipv6_next_proto_reg_tmp['h0] = unsigned'(8'(unsigned'(8'(next_proto))));
+        ipv6_ext_size_reg_tmp['h0] = unsigned'(8'(unsigned'(8'(stored_size))));
+        ipv6_fragment_reg_tmp['h0] = unsigned'(16'(unsigned'(16'(stored_fragment))));
+        noninitial_fragment_reg_tmp['h0] = unsigned'(1'(noninitial_fragment));
+        return call;
+    endfunction
+
+    function PacketParserCall ipv6_options2_work (
+        input logic[7:0] markup_pos
+,       input logic[64-1:0] markup_state
+,       input PacketParserProgress progress
+,       input logic[64-1:0] word
+,       input logic[7:0] word_bytes
+,       input logic[7:0] word_cntr
+,       input logic[7:0] extension_type
+,       input logic starting
+    );
+        logic[7:0] selector;
+        logic[7:0] size;
+        logic[7:0] next_proto;
+        logic[7:0] stored_size;
+        logic[15:0] fragment;
+        logic[15:0] stored_fragment;
+        logic noninitial_fragment;
+        PacketParserCall call;
+        call.markup_state = 'h0;
+        call.progress = progress;
+        next_proto=unsigned'(8'(ipv6_next_proto_reg['h1]));
+        stored_size=unsigned'(8'(ipv6_ext_size_reg['h1]));
+        stored_fragment=unsigned'(16'(ipv6_fragment_reg['h1]));
+        noninitial_fragment=noninitial_fragment_reg['h1];
+        if (starting) begin
+            next_proto=extension_type;
+            stored_size='h0;
+            stored_fragment='h0;
+            noninitial_fragment=0;
+        end
+        selector=next_proto;
+        if (byte_present(markup_pos, word_cntr, word_bytes)) begin
+            next_proto=word_byte(word, markup_pos);
+        end
+        if (byte_present(unsigned'(8'((markup_pos + 'h1))), word_cntr, word_bytes)) begin
+            if (selector == 'h2C) begin
+                size='h8;
+            end
+            else begin
+                if (selector == 'h33) begin
+                    size=((word_byte(word, unsigned'(8'(((markup_pos + 'h1))))) + 'h2))*'h4;
+                end
+                else begin
+                    size=((word_byte(word, unsigned'(8'(((markup_pos + 'h1))))) + 'h1))*'h8;
+                end
+            end
+            stored_size=size;
+            if (unsigned'(16'(((markup_pos + size)))) > 'hC0) begin
+                call.progress.limit = unsigned'(1'h1);
+            end
+        end
+        if (selector == 'h2C) begin
+            stored_fragment=unsigned'(16'(capture_be16(word, unsigned'(16'(unsigned'(16'(stored_fragment)))), unsigned'(8'((markup_pos + 'h2))), word_cntr, word_bytes)));
+            if (field_complete(unsigned'(8'((markup_pos + 'h2))), 'h2, word_cntr, word_bytes)) begin
+                fragment=stored_fragment;
+                if (((fragment & 'hFFF8)) != 'h0) begin
+                    noninitial_fragment=1;
+                end
+            end
+        end
+        size=stored_size;
+        if ((size != 'h0) && field_complete(markup_pos, size, word_cntr, word_bytes)) begin
+            selector=next_proto;
+            if (noninitial_fragment) begin
+                call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_NONE));
+                call.progress.done = unsigned'(1'h1);
+            end
+            else begin
+                if (is_ipv6_extension(selector)) begin
+                    if (('h1 + 'h1) == 'h4) begin
+                        call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_NONE));
+                        call.progress.limit = unsigned'(1'h1);
+                        call.progress.done = unsigned'(1'h1);
+                    end
+                    else begin
+                        call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS));
+                        call.progress.pos = unsigned'(8'(unsigned'(8'(markup_pos + size))));
+                    end
+                end
+                else begin
+                    call.progress.pos = unsigned'(8'(unsigned'(8'(markup_pos + size))));
+                    call.progress.state = select_transport(selector);
+                    if (unsigned'(8'(call.progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_NONE) begin
+                        call.progress.done = unsigned'(1'h1);
+                    end
+                end
+            end
+        end
+        ipv6_next_proto_reg_tmp['h1] = unsigned'(8'(unsigned'(8'(next_proto))));
+        ipv6_ext_size_reg_tmp['h1] = unsigned'(8'(unsigned'(8'(stored_size))));
+        ipv6_fragment_reg_tmp['h1] = unsigned'(16'(unsigned'(16'(stored_fragment))));
+        noninitial_fragment_reg_tmp['h1] = unsigned'(1'(noninitial_fragment));
+        return call;
+    endfunction
+
+    function PacketParserCall ipv6_options3_work (
+        input logic[7:0] markup_pos
+,       input logic[64-1:0] markup_state
+,       input PacketParserProgress progress
+,       input logic[64-1:0] word
+,       input logic[7:0] word_bytes
+,       input logic[7:0] word_cntr
+,       input logic[7:0] extension_type
+,       input logic starting
+    );
+        logic[7:0] selector;
+        logic[7:0] size;
+        logic[7:0] next_proto;
+        logic[7:0] stored_size;
+        logic[15:0] fragment;
+        logic[15:0] stored_fragment;
+        logic noninitial_fragment;
+        PacketParserCall call;
+        call.markup_state = 'h0;
+        call.progress = progress;
+        next_proto=unsigned'(8'(ipv6_next_proto_reg['h2]));
+        stored_size=unsigned'(8'(ipv6_ext_size_reg['h2]));
+        stored_fragment=unsigned'(16'(ipv6_fragment_reg['h2]));
+        noninitial_fragment=noninitial_fragment_reg['h2];
+        if (starting) begin
+            next_proto=extension_type;
+            stored_size='h0;
+            stored_fragment='h0;
+            noninitial_fragment=0;
+        end
+        selector=next_proto;
+        if (byte_present(markup_pos, word_cntr, word_bytes)) begin
+            next_proto=word_byte(word, markup_pos);
+        end
+        if (byte_present(unsigned'(8'((markup_pos + 'h1))), word_cntr, word_bytes)) begin
+            if (selector == 'h2C) begin
+                size='h8;
+            end
+            else begin
+                if (selector == 'h33) begin
+                    size=((word_byte(word, unsigned'(8'(((markup_pos + 'h1))))) + 'h2))*'h4;
+                end
+                else begin
+                    size=((word_byte(word, unsigned'(8'(((markup_pos + 'h1))))) + 'h1))*'h8;
+                end
+            end
+            stored_size=size;
+            if (unsigned'(16'(((markup_pos + size)))) > 'hC0) begin
+                call.progress.limit = unsigned'(1'h1);
+            end
+        end
+        if (selector == 'h2C) begin
+            stored_fragment=unsigned'(16'(capture_be16(word, unsigned'(16'(unsigned'(16'(stored_fragment)))), unsigned'(8'((markup_pos + 'h2))), word_cntr, word_bytes)));
+            if (field_complete(unsigned'(8'((markup_pos + 'h2))), 'h2, word_cntr, word_bytes)) begin
+                fragment=stored_fragment;
+                if (((fragment & 'hFFF8)) != 'h0) begin
+                    noninitial_fragment=1;
+                end
+            end
+        end
+        size=stored_size;
+        if ((size != 'h0) && field_complete(markup_pos, size, word_cntr, word_bytes)) begin
+            selector=next_proto;
+            if (noninitial_fragment) begin
+                call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_NONE));
+                call.progress.done = unsigned'(1'h1);
+            end
+            else begin
+                if (is_ipv6_extension(selector)) begin
+                    if (('h2 + 'h1) == 'h4) begin
+                        call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_NONE));
+                        call.progress.limit = unsigned'(1'h1);
+                        call.progress.done = unsigned'(1'h1);
+                    end
+                    else begin
+                        call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS));
+                        call.progress.pos = unsigned'(8'(unsigned'(8'(markup_pos + size))));
+                    end
+                end
+                else begin
+                    call.progress.pos = unsigned'(8'(unsigned'(8'(markup_pos + size))));
+                    call.progress.state = select_transport(selector);
+                    if (unsigned'(8'(call.progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_NONE) begin
+                        call.progress.done = unsigned'(1'h1);
+                    end
+                end
+            end
+        end
+        ipv6_next_proto_reg_tmp['h2] = unsigned'(8'(unsigned'(8'(next_proto))));
+        ipv6_ext_size_reg_tmp['h2] = unsigned'(8'(unsigned'(8'(stored_size))));
+        ipv6_fragment_reg_tmp['h2] = unsigned'(16'(unsigned'(16'(stored_fragment))));
+        noninitial_fragment_reg_tmp['h2] = unsigned'(1'(noninitial_fragment));
+        return call;
+    endfunction
+
+    function PacketParserCall ipv6_options4_work (
+        input logic[7:0] markup_pos
+,       input logic[64-1:0] markup_state
+,       input PacketParserProgress progress
+,       input logic[64-1:0] word
+,       input logic[7:0] word_bytes
+,       input logic[7:0] word_cntr
+,       input logic[7:0] extension_type
+,       input logic starting
+    );
+        logic[7:0] selector;
+        logic[7:0] size;
+        logic[7:0] next_proto;
+        logic[7:0] stored_size;
+        logic[15:0] fragment;
+        logic[15:0] stored_fragment;
+        logic noninitial_fragment;
+        PacketParserCall call;
+        call.markup_state = 'h0;
+        call.progress = progress;
+        next_proto=unsigned'(8'(ipv6_next_proto_reg['h3]));
+        stored_size=unsigned'(8'(ipv6_ext_size_reg['h3]));
+        stored_fragment=unsigned'(16'(ipv6_fragment_reg['h3]));
+        noninitial_fragment=noninitial_fragment_reg['h3];
+        if (starting) begin
+            next_proto=extension_type;
+            stored_size='h0;
+            stored_fragment='h0;
+            noninitial_fragment=0;
+        end
+        selector=next_proto;
+        if (byte_present(markup_pos, word_cntr, word_bytes)) begin
+            next_proto=word_byte(word, markup_pos);
+        end
+        if (byte_present(unsigned'(8'((markup_pos + 'h1))), word_cntr, word_bytes)) begin
+            if (selector == 'h2C) begin
+                size='h8;
+            end
+            else begin
+                if (selector == 'h33) begin
+                    size=((word_byte(word, unsigned'(8'(((markup_pos + 'h1))))) + 'h2))*'h4;
+                end
+                else begin
+                    size=((word_byte(word, unsigned'(8'(((markup_pos + 'h1))))) + 'h1))*'h8;
+                end
+            end
+            stored_size=size;
+            if (unsigned'(16'(((markup_pos + size)))) > 'hC0) begin
+                call.progress.limit = unsigned'(1'h1);
+            end
+        end
+        if (selector == 'h2C) begin
+            stored_fragment=unsigned'(16'(capture_be16(word, unsigned'(16'(unsigned'(16'(stored_fragment)))), unsigned'(8'((markup_pos + 'h2))), word_cntr, word_bytes)));
+            if (field_complete(unsigned'(8'((markup_pos + 'h2))), 'h2, word_cntr, word_bytes)) begin
+                fragment=stored_fragment;
+                if (((fragment & 'hFFF8)) != 'h0) begin
+                    noninitial_fragment=1;
+                end
+            end
+        end
+        size=stored_size;
+        if ((size != 'h0) && field_complete(markup_pos, size, word_cntr, word_bytes)) begin
+            selector=next_proto;
+            if (noninitial_fragment) begin
+                call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_NONE));
+                call.progress.done = unsigned'(1'h1);
+            end
+            else begin
+                if (is_ipv6_extension(selector)) begin
+                    if (('h3 + 'h1) == 'h4) begin
+                        call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_NONE));
+                        call.progress.limit = unsigned'(1'h1);
+                        call.progress.done = unsigned'(1'h1);
+                    end
+                    else begin
+                        call.progress.state = unsigned'(8'(PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS));
+                        call.progress.pos = unsigned'(8'(unsigned'(8'(markup_pos + size))));
+                    end
+                end
+                else begin
+                    call.progress.pos = unsigned'(8'(unsigned'(8'(markup_pos + size))));
+                    call.progress.state = select_transport(selector);
+                    if (unsigned'(8'(call.progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_NONE) begin
+                        call.progress.done = unsigned'(1'h1);
+                    end
+                end
+            end
+        end
+        ipv6_next_proto_reg_tmp['h3] = unsigned'(8'(unsigned'(8'(next_proto))));
+        ipv6_ext_size_reg_tmp['h3] = unsigned'(8'(unsigned'(8'(stored_size))));
+        ipv6_fragment_reg_tmp['h3] = unsigned'(16'(unsigned'(16'(stored_fragment))));
+        noninitial_fragment_reg_tmp['h3] = unsigned'(1'(noninitial_fragment));
         return call;
     endfunction
 
@@ -980,11 +1284,13 @@ module PacketParser #(
 ,       input logic[64-1:0] word
 ,       input logic[7:0] word_bytes
 ,       input logic[7:0] word_cntr
+,       input logic[7:0] extension_type
+,       input logic starting
     );
         logic[64-1:0] marked_state;
         PacketParserCall call;
         marked_state = mark_header(markup_state, markup_pos, PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS);
-        call = ipv6_options_work('h3, markup_pos, marked_state, progress, word, word_bytes, word_cntr);
+        call = ipv6_options4_work(markup_pos, marked_state, progress, word, word_bytes, word_cntr, extension_type, starting);
         return call;
     endfunction
 
@@ -995,11 +1301,13 @@ module PacketParser #(
 ,       input logic[64-1:0] word
 ,       input logic[7:0] word_bytes
 ,       input logic[7:0] word_cntr
+,       input logic[7:0] extension_type
+,       input logic starting
     );
         logic[64-1:0] marked_state;
         PacketParserCall call;
         marked_state = mark_header(markup_state, markup_pos, PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS);
-        call = ipv6_options_work('h2, markup_pos, marked_state, progress, word, word_bytes, word_cntr);
+        call = ipv6_options3_work(markup_pos, marked_state, progress, word, word_bytes, word_cntr, extension_type, starting);
         return call;
     endfunction
 
@@ -1010,11 +1318,13 @@ module PacketParser #(
 ,       input logic[64-1:0] word
 ,       input logic[7:0] word_bytes
 ,       input logic[7:0] word_cntr
+,       input logic[7:0] extension_type
+,       input logic starting
     );
         logic[64-1:0] marked_state;
         PacketParserCall call;
         marked_state = mark_header(markup_state, markup_pos, PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS);
-        call = ipv6_options_work('h1, markup_pos, marked_state, progress, word, word_bytes, word_cntr);
+        call = ipv6_options2_work(markup_pos, marked_state, progress, word, word_bytes, word_cntr, extension_type, starting);
         return call;
     endfunction
 
@@ -1025,11 +1335,13 @@ module PacketParser #(
 ,       input logic[64-1:0] word
 ,       input logic[7:0] word_bytes
 ,       input logic[7:0] word_cntr
+,       input logic[7:0] extension_type
+,       input logic starting
     );
         logic[64-1:0] marked_state;
         PacketParserCall call;
         marked_state = mark_header(markup_state, markup_pos, PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS);
-        call = ipv6_options_work('h0, markup_pos, marked_state, progress, word, word_bytes, word_cntr);
+        call = ipv6_options1_work(markup_pos, marked_state, progress, word, word_bytes, word_cntr, extension_type, starting);
         return call;
     endfunction
 
@@ -1610,105 +1922,122 @@ module PacketParser #(
         return result;
     endfunction
 
-    function PacketParserPipeWord ipv6_ext_stage (
-        input logic[7:0] occurrence
-,       input PacketParserPipeWord item
-    );
+    function PacketParserPipeWord ipv6_ext1_stage (input PacketParserPipeWord item);
         PacketParserPipeWord result;
         logic[7:0] markup_pos;
         logic[7:0] flags;
         logic[7:0] prior_state;
-        logic[7:0] stage_index;
         logic[7:0] prior_pos;
+        logic[7:0] output_index;
+        logic active;
+        logic complete;
+        logic starting;
         logic[64-1:0] markup_state;
         PacketParserCall call;
         PacketParserProgress progress;
         result = item;
+        starting=0;
         if (item.sop) begin
-            ipv6_next_proto_reg_tmp[occurrence] = unsigned'(8'h0);
-            ipv6_ext_size_reg_tmp[occurrence] = unsigned'(8'h0);
-            ipv6_ext_seen_reg_tmp[occurrence] = unsigned'(1'h0);
-            ipv6_fragment_reg_tmp[occurrence] = unsigned'(16'h0);
-            noninitial_fragment_reg_tmp[occurrence] = unsigned'(1'h0);
+            ipv6_next_proto_reg_tmp['h0] = unsigned'(8'h0);
+            ipv6_ext_size_reg_tmp['h0] = unsigned'(8'h0);
+            ipv6_ext_seen_reg_tmp['h0] = unsigned'(1'h0);
+            ipv6_fragment_reg_tmp['h0] = unsigned'(16'h0);
+            noninitial_fragment_reg_tmp['h0] = unsigned'(1'h0);
             progress = item.progress;
             prior_state=PacketParserHeaderId_pkg::PACKET_HEADER_NONE;
-            stage_index='h0;
-            ipv6_ext_progress_reg_tmp[occurrence] = progress;
-            ipv6_ext_stage_index_reg_tmp[occurrence] = 'h0;
+            active=0;
+            complete=0;
+            ipv6_ext_progress_reg_tmp['h0] = progress;
+            ipv6_ext_active_reg_tmp['h0] = active;
+            ipv6_ext_complete_reg_tmp['h0] = 'h0;
             result.progress = progress;
             result.ipv6_ext_index = 'h0;
             return result;
         end
-        else begin
-            progress = ipv6_ext_progress_reg[occurrence];
-            prior_state=unsigned'(8'(progress.state));
-            stage_index=unsigned'(8'(ipv6_ext_stage_index_reg[occurrence]));
-            if (stage_index < occurrence) begin
-                progress = item.progress;
-                if (item.ipv6_ext_index>=occurrence) begin
-                    stage_index=occurrence;
-                end
-            end
-            else begin
-                if (stage_index == occurrence) begin
-                    progress = accept_ipv6_ext_upstream(progress, item.progress);
-                end
-            end
-        end
-        if ((progress.error || progress.limit) || progress.done) begin
-            stage_index=occurrence + 'h1;
-            ipv6_ext_progress_reg_tmp[occurrence] = progress;
-            ipv6_ext_stage_index_reg_tmp[occurrence] = unsigned'(3'(unsigned'(3'(stage_index))));
+        progress = ipv6_ext_progress_reg['h0];
+        active=ipv6_ext_active_reg['h0];
+        complete=ipv6_ext_complete_reg['h0];
+        prior_state=unsigned'(8'(progress.state));
+        if (complete) begin
             result.progress = progress;
-            result.ipv6_ext_index = unsigned'(3'(unsigned'(3'(stage_index))));
-            if (ipv6_ext_seen_reg_tmp[occurrence]) begin
-                result.fields.protocol = ipv6_next_proto_reg_tmp[occurrence];
+            result.ipv6_ext_index = 'h0 + 'h1;
+            if (ipv6_ext_seen_reg_tmp['h0]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp['h0];
             end
-            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp[occurrence])) != 'h0)) begin
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h0])) != 'h0)) begin
                 flags=unsigned'(8'(result.fields.flags));
                 flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
                 result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
             end
             return result;
         end
-        if (((unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) && (stage_index == occurrence)) && (((prior_state != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) || !ipv6_ext_seen_reg_tmp[occurrence]))) begin
-            ipv6_next_proto_reg_tmp[occurrence] = item.fields.protocol;
-            ipv6_ext_size_reg_tmp[occurrence] = unsigned'(8'h0);
-            ipv6_fragment_reg_tmp[occurrence] = unsigned'(16'h0);
-            noninitial_fragment_reg_tmp[occurrence] = unsigned'(1'h0);
-            ipv6_ext_seen_reg_tmp[occurrence] = unsigned'(1'h1);
+        if (!active) begin
+            progress = item.progress;
+            if ((unsigned'(8'(item.ipv6_ext_index)) < 'h0) || (unsigned'(8'(progress.state)) != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS)) begin
+                ipv6_ext_progress_reg_tmp['h0] = progress;
+                result.progress = progress;
+                result.ipv6_ext_index = item.ipv6_ext_index;
+                return result;
+            end
+            active=1;
+        end
+        else begin
+            if (item.progress.error) begin
+                progress.error = unsigned'(1'h1);
+            end
+            if (item.progress.limit) begin
+                progress.limit = unsigned'(1'h1);
+            end
+            if (item.progress.done) begin
+                progress.done = unsigned'(1'h1);
+            end
+        end
+        if ((progress.error || progress.limit) || progress.done) begin
+            complete=1;
+            ipv6_ext_progress_reg_tmp['h0] = progress;
+            ipv6_ext_active_reg_tmp['h0] = active;
+            ipv6_ext_complete_reg_tmp['h0] = 'h1;
+            result.progress = progress;
+            result.ipv6_ext_index = 'h0 + 'h1;
+            if (ipv6_ext_seen_reg_tmp['h0]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp['h0];
+            end
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h0])) != 'h0)) begin
+                flags=unsigned'(8'(result.fields.flags));
+                flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+            end
+            return result;
+        end
+        if ((unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) && (((prior_state != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) || !ipv6_ext_seen_reg_tmp['h0]))) begin
+            starting=1;
+            ipv6_ext_seen_reg_tmp['h0] = unsigned'(1'h1);
         end
         markup_state = 'h0;
         markup_pos=unsigned'(8'(progress.pos));
         prior_pos=markup_pos;
-        if ((unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) && (stage_index == occurrence)) begin
+        if (unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) begin
             call.progress = progress;
             call.markup_state = 'h0;
-            if (occurrence == 'h0) begin
-                call = parse_ipv6_options1(markup_pos, markup_state, progress, item.data, unsigned'(8'(item.bytes)), unsigned'(8'(item.word_cntr)));
-            end
-            if (occurrence == 'h1) begin
-                call = parse_ipv6_options2(markup_pos, markup_state, progress, item.data, unsigned'(8'(item.bytes)), unsigned'(8'(item.word_cntr)));
-            end
-            if (occurrence == 'h2) begin
-                call = parse_ipv6_options3(markup_pos, markup_state, progress, item.data, unsigned'(8'(item.bytes)), unsigned'(8'(item.word_cntr)));
-            end
-            if (occurrence == 'h3) begin
-                call = parse_ipv6_options4(markup_pos, markup_state, progress, item.data, unsigned'(8'(item.bytes)), unsigned'(8'(item.word_cntr)));
-            end
+            call = parse_ipv6_options1(markup_pos, markup_state, progress, item.data, unsigned'(8'(item.bytes)), unsigned'(8'(item.word_cntr)), unsigned'(8'(item.fields.protocol)), starting);
             progress = call.progress;
             if (((((unsigned'(8'(progress.pos)) != prior_pos) || (unsigned'(8'(progress.state)) != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS)) || progress.error) || progress.limit) || progress.done) begin
-                stage_index=occurrence + 'h1;
+                complete=1;
             end
         end
-        ipv6_ext_progress_reg_tmp[occurrence] = progress;
-        ipv6_ext_stage_index_reg_tmp[occurrence] = unsigned'(3'(unsigned'(3'(stage_index))));
-        result.progress = progress;
-        result.ipv6_ext_index = unsigned'(3'(unsigned'(3'(stage_index))));
-        if (ipv6_ext_seen_reg_tmp[occurrence]) begin
-            result.fields.protocol = ipv6_next_proto_reg_tmp[occurrence];
+        output_index='h0;
+        if (complete) begin
+            output_index='h0 + 'h1;
         end
-        if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp[occurrence])) != 'h0)) begin
+        ipv6_ext_progress_reg_tmp['h0] = progress;
+        ipv6_ext_active_reg_tmp['h0] = active;
+        ipv6_ext_complete_reg_tmp['h0] = complete;
+        result.progress = progress;
+        result.ipv6_ext_index = unsigned'(3'(unsigned'(3'(output_index))));
+        if (ipv6_ext_seen_reg_tmp['h0]) begin
+            result.fields.protocol = ipv6_next_proto_reg_tmp['h0];
+        end
+        if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h0])) != 'h0)) begin
             flags=unsigned'(8'(result.fields.flags));
             flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
             result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
@@ -1716,20 +2045,373 @@ module PacketParser #(
         return result;
     endfunction
 
-    function PacketParserPipeWord ipv6_ext1_stage (input PacketParserPipeWord item);
-        return ipv6_ext_stage('h0, item);
-    endfunction
-
     function PacketParserPipeWord ipv6_ext2_stage (input PacketParserPipeWord item);
-        return ipv6_ext_stage('h1, item);
+        PacketParserPipeWord result;
+        logic[7:0] markup_pos;
+        logic[7:0] flags;
+        logic[7:0] prior_state;
+        logic[7:0] prior_pos;
+        logic[7:0] output_index;
+        logic active;
+        logic complete;
+        logic starting;
+        logic[64-1:0] markup_state;
+        PacketParserCall call;
+        PacketParserProgress progress;
+        result = item;
+        starting=0;
+        if (item.sop) begin
+            ipv6_next_proto_reg_tmp['h1] = unsigned'(8'h0);
+            ipv6_ext_size_reg_tmp['h1] = unsigned'(8'h0);
+            ipv6_ext_seen_reg_tmp['h1] = unsigned'(1'h0);
+            ipv6_fragment_reg_tmp['h1] = unsigned'(16'h0);
+            noninitial_fragment_reg_tmp['h1] = unsigned'(1'h0);
+            progress = item.progress;
+            prior_state=PacketParserHeaderId_pkg::PACKET_HEADER_NONE;
+            active=0;
+            complete=0;
+            ipv6_ext_progress_reg_tmp['h1] = progress;
+            ipv6_ext_active_reg_tmp['h1] = active;
+            ipv6_ext_complete_reg_tmp['h1] = 'h0;
+            result.progress = progress;
+            result.ipv6_ext_index = 'h0;
+            return result;
+        end
+        progress = ipv6_ext_progress_reg['h1];
+        active=ipv6_ext_active_reg['h1];
+        complete=ipv6_ext_complete_reg['h1];
+        prior_state=unsigned'(8'(progress.state));
+        if (complete) begin
+            result.progress = progress;
+            result.ipv6_ext_index = 'h1 + 'h1;
+            if (ipv6_ext_seen_reg_tmp['h1]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp['h1];
+            end
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h1])) != 'h0)) begin
+                flags=unsigned'(8'(result.fields.flags));
+                flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+            end
+            return result;
+        end
+        if (!active) begin
+            progress = item.progress;
+            if ((unsigned'(8'(item.ipv6_ext_index)) < 'h1) || (unsigned'(8'(progress.state)) != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS)) begin
+                ipv6_ext_progress_reg_tmp['h1] = progress;
+                result.progress = progress;
+                result.ipv6_ext_index = item.ipv6_ext_index;
+                return result;
+            end
+            active=1;
+        end
+        else begin
+            if (item.progress.error) begin
+                progress.error = unsigned'(1'h1);
+            end
+            if (item.progress.limit) begin
+                progress.limit = unsigned'(1'h1);
+            end
+            if (item.progress.done) begin
+                progress.done = unsigned'(1'h1);
+            end
+        end
+        if ((progress.error || progress.limit) || progress.done) begin
+            complete=1;
+            ipv6_ext_progress_reg_tmp['h1] = progress;
+            ipv6_ext_active_reg_tmp['h1] = active;
+            ipv6_ext_complete_reg_tmp['h1] = 'h1;
+            result.progress = progress;
+            result.ipv6_ext_index = 'h1 + 'h1;
+            if (ipv6_ext_seen_reg_tmp['h1]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp['h1];
+            end
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h1])) != 'h0)) begin
+                flags=unsigned'(8'(result.fields.flags));
+                flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+            end
+            return result;
+        end
+        if ((unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) && (((prior_state != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) || !ipv6_ext_seen_reg_tmp['h1]))) begin
+            starting=1;
+            ipv6_ext_seen_reg_tmp['h1] = unsigned'(1'h1);
+        end
+        markup_state = 'h0;
+        markup_pos=unsigned'(8'(progress.pos));
+        prior_pos=markup_pos;
+        if (unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) begin
+            call.progress = progress;
+            call.markup_state = 'h0;
+            call = parse_ipv6_options2(markup_pos, markup_state, progress, item.data, unsigned'(8'(item.bytes)), unsigned'(8'(item.word_cntr)), unsigned'(8'(item.fields.protocol)), starting);
+            progress = call.progress;
+            if (((((unsigned'(8'(progress.pos)) != prior_pos) || (unsigned'(8'(progress.state)) != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS)) || progress.error) || progress.limit) || progress.done) begin
+                complete=1;
+            end
+        end
+        output_index='h1;
+        if (complete) begin
+            output_index='h1 + 'h1;
+        end
+        ipv6_ext_progress_reg_tmp['h1] = progress;
+        ipv6_ext_active_reg_tmp['h1] = active;
+        ipv6_ext_complete_reg_tmp['h1] = complete;
+        result.progress = progress;
+        result.ipv6_ext_index = unsigned'(3'(unsigned'(3'(output_index))));
+        if (ipv6_ext_seen_reg_tmp['h1]) begin
+            result.fields.protocol = ipv6_next_proto_reg_tmp['h1];
+        end
+        if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h1])) != 'h0)) begin
+            flags=unsigned'(8'(result.fields.flags));
+            flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+            result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+        end
+        return result;
     endfunction
 
     function PacketParserPipeWord ipv6_ext3_stage (input PacketParserPipeWord item);
-        return ipv6_ext_stage('h2, item);
+        PacketParserPipeWord result;
+        logic[7:0] markup_pos;
+        logic[7:0] flags;
+        logic[7:0] prior_state;
+        logic[7:0] prior_pos;
+        logic[7:0] output_index;
+        logic active;
+        logic complete;
+        logic starting;
+        logic[64-1:0] markup_state;
+        PacketParserCall call;
+        PacketParserProgress progress;
+        result = item;
+        starting=0;
+        if (item.sop) begin
+            ipv6_next_proto_reg_tmp['h2] = unsigned'(8'h0);
+            ipv6_ext_size_reg_tmp['h2] = unsigned'(8'h0);
+            ipv6_ext_seen_reg_tmp['h2] = unsigned'(1'h0);
+            ipv6_fragment_reg_tmp['h2] = unsigned'(16'h0);
+            noninitial_fragment_reg_tmp['h2] = unsigned'(1'h0);
+            progress = item.progress;
+            prior_state=PacketParserHeaderId_pkg::PACKET_HEADER_NONE;
+            active=0;
+            complete=0;
+            ipv6_ext_progress_reg_tmp['h2] = progress;
+            ipv6_ext_active_reg_tmp['h2] = active;
+            ipv6_ext_complete_reg_tmp['h2] = 'h0;
+            result.progress = progress;
+            result.ipv6_ext_index = 'h0;
+            return result;
+        end
+        progress = ipv6_ext_progress_reg['h2];
+        active=ipv6_ext_active_reg['h2];
+        complete=ipv6_ext_complete_reg['h2];
+        prior_state=unsigned'(8'(progress.state));
+        if (complete) begin
+            result.progress = progress;
+            result.ipv6_ext_index = 'h2 + 'h1;
+            if (ipv6_ext_seen_reg_tmp['h2]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp['h2];
+            end
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h2])) != 'h0)) begin
+                flags=unsigned'(8'(result.fields.flags));
+                flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+            end
+            return result;
+        end
+        if (!active) begin
+            progress = item.progress;
+            if ((unsigned'(8'(item.ipv6_ext_index)) < 'h2) || (unsigned'(8'(progress.state)) != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS)) begin
+                ipv6_ext_progress_reg_tmp['h2] = progress;
+                result.progress = progress;
+                result.ipv6_ext_index = item.ipv6_ext_index;
+                return result;
+            end
+            active=1;
+        end
+        else begin
+            if (item.progress.error) begin
+                progress.error = unsigned'(1'h1);
+            end
+            if (item.progress.limit) begin
+                progress.limit = unsigned'(1'h1);
+            end
+            if (item.progress.done) begin
+                progress.done = unsigned'(1'h1);
+            end
+        end
+        if ((progress.error || progress.limit) || progress.done) begin
+            complete=1;
+            ipv6_ext_progress_reg_tmp['h2] = progress;
+            ipv6_ext_active_reg_tmp['h2] = active;
+            ipv6_ext_complete_reg_tmp['h2] = 'h1;
+            result.progress = progress;
+            result.ipv6_ext_index = 'h2 + 'h1;
+            if (ipv6_ext_seen_reg_tmp['h2]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp['h2];
+            end
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h2])) != 'h0)) begin
+                flags=unsigned'(8'(result.fields.flags));
+                flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+            end
+            return result;
+        end
+        if ((unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) && (((prior_state != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) || !ipv6_ext_seen_reg_tmp['h2]))) begin
+            starting=1;
+            ipv6_ext_seen_reg_tmp['h2] = unsigned'(1'h1);
+        end
+        markup_state = 'h0;
+        markup_pos=unsigned'(8'(progress.pos));
+        prior_pos=markup_pos;
+        if (unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) begin
+            call.progress = progress;
+            call.markup_state = 'h0;
+            call = parse_ipv6_options3(markup_pos, markup_state, progress, item.data, unsigned'(8'(item.bytes)), unsigned'(8'(item.word_cntr)), unsigned'(8'(item.fields.protocol)), starting);
+            progress = call.progress;
+            if (((((unsigned'(8'(progress.pos)) != prior_pos) || (unsigned'(8'(progress.state)) != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS)) || progress.error) || progress.limit) || progress.done) begin
+                complete=1;
+            end
+        end
+        output_index='h2;
+        if (complete) begin
+            output_index='h2 + 'h1;
+        end
+        ipv6_ext_progress_reg_tmp['h2] = progress;
+        ipv6_ext_active_reg_tmp['h2] = active;
+        ipv6_ext_complete_reg_tmp['h2] = complete;
+        result.progress = progress;
+        result.ipv6_ext_index = unsigned'(3'(unsigned'(3'(output_index))));
+        if (ipv6_ext_seen_reg_tmp['h2]) begin
+            result.fields.protocol = ipv6_next_proto_reg_tmp['h2];
+        end
+        if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h2])) != 'h0)) begin
+            flags=unsigned'(8'(result.fields.flags));
+            flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+            result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+        end
+        return result;
     endfunction
 
     function PacketParserPipeWord ipv6_ext4_stage (input PacketParserPipeWord item);
-        return ipv6_ext_stage('h3, item);
+        PacketParserPipeWord result;
+        logic[7:0] markup_pos;
+        logic[7:0] flags;
+        logic[7:0] prior_state;
+        logic[7:0] prior_pos;
+        logic[7:0] output_index;
+        logic active;
+        logic complete;
+        logic starting;
+        logic[64-1:0] markup_state;
+        PacketParserCall call;
+        PacketParserProgress progress;
+        result = item;
+        starting=0;
+        if (item.sop) begin
+            ipv6_next_proto_reg_tmp['h3] = unsigned'(8'h0);
+            ipv6_ext_size_reg_tmp['h3] = unsigned'(8'h0);
+            ipv6_ext_seen_reg_tmp['h3] = unsigned'(1'h0);
+            ipv6_fragment_reg_tmp['h3] = unsigned'(16'h0);
+            noninitial_fragment_reg_tmp['h3] = unsigned'(1'h0);
+            progress = item.progress;
+            prior_state=PacketParserHeaderId_pkg::PACKET_HEADER_NONE;
+            active=0;
+            complete=0;
+            ipv6_ext_progress_reg_tmp['h3] = progress;
+            ipv6_ext_active_reg_tmp['h3] = active;
+            ipv6_ext_complete_reg_tmp['h3] = 'h0;
+            result.progress = progress;
+            result.ipv6_ext_index = 'h0;
+            return result;
+        end
+        progress = ipv6_ext_progress_reg['h3];
+        active=ipv6_ext_active_reg['h3];
+        complete=ipv6_ext_complete_reg['h3];
+        prior_state=unsigned'(8'(progress.state));
+        if (complete) begin
+            result.progress = progress;
+            result.ipv6_ext_index = 'h3 + 'h1;
+            if (ipv6_ext_seen_reg_tmp['h3]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp['h3];
+            end
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h3])) != 'h0)) begin
+                flags=unsigned'(8'(result.fields.flags));
+                flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+            end
+            return result;
+        end
+        if (!active) begin
+            progress = item.progress;
+            if ((unsigned'(8'(item.ipv6_ext_index)) < 'h3) || (unsigned'(8'(progress.state)) != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS)) begin
+                ipv6_ext_progress_reg_tmp['h3] = progress;
+                result.progress = progress;
+                result.ipv6_ext_index = item.ipv6_ext_index;
+                return result;
+            end
+            active=1;
+        end
+        else begin
+            if (item.progress.error) begin
+                progress.error = unsigned'(1'h1);
+            end
+            if (item.progress.limit) begin
+                progress.limit = unsigned'(1'h1);
+            end
+            if (item.progress.done) begin
+                progress.done = unsigned'(1'h1);
+            end
+        end
+        if ((progress.error || progress.limit) || progress.done) begin
+            complete=1;
+            ipv6_ext_progress_reg_tmp['h3] = progress;
+            ipv6_ext_active_reg_tmp['h3] = active;
+            ipv6_ext_complete_reg_tmp['h3] = 'h1;
+            result.progress = progress;
+            result.ipv6_ext_index = 'h3 + 'h1;
+            if (ipv6_ext_seen_reg_tmp['h3]) begin
+                result.fields.protocol = ipv6_next_proto_reg_tmp['h3];
+            end
+            if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h3])) != 'h0)) begin
+                flags=unsigned'(8'(result.fields.flags));
+                flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+                result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+            end
+            return result;
+        end
+        if ((unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) && (((prior_state != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) || !ipv6_ext_seen_reg_tmp['h3]))) begin
+            starting=1;
+            ipv6_ext_seen_reg_tmp['h3] = unsigned'(1'h1);
+        end
+        markup_state = 'h0;
+        markup_pos=unsigned'(8'(progress.pos));
+        prior_pos=markup_pos;
+        if (unsigned'(8'(progress.state)) == PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS) begin
+            call.progress = progress;
+            call.markup_state = 'h0;
+            call = parse_ipv6_options4(markup_pos, markup_state, progress, item.data, unsigned'(8'(item.bytes)), unsigned'(8'(item.word_cntr)), unsigned'(8'(item.fields.protocol)), starting);
+            progress = call.progress;
+            if (((((unsigned'(8'(progress.pos)) != prior_pos) || (unsigned'(8'(progress.state)) != PacketParserHeaderId_pkg::PACKET_HEADER_IPV6_OPTIONS)) || progress.error) || progress.limit) || progress.done) begin
+                complete=1;
+            end
+        end
+        output_index='h3;
+        if (complete) begin
+            output_index='h3 + 'h1;
+        end
+        ipv6_ext_progress_reg_tmp['h3] = progress;
+        ipv6_ext_active_reg_tmp['h3] = active;
+        ipv6_ext_complete_reg_tmp['h3] = complete;
+        result.progress = progress;
+        result.ipv6_ext_index = unsigned'(3'(unsigned'(3'(output_index))));
+        if (ipv6_ext_seen_reg_tmp['h3]) begin
+            result.fields.protocol = ipv6_next_proto_reg_tmp['h3];
+        end
+        if (item.eop && (unsigned'(16'(ipv6_fragment_reg_tmp['h3])) != 'h0)) begin
+            flags=unsigned'(8'(result.fields.flags));
+            flags|=PacketParserFlags_pkg::PACKET_PARSER_FLAG_FRAGMENT;
+            result.fields.flags = unsigned'(8'(unsigned'(8'(flags))));
+        end
+        return result;
     endfunction
 
     function PacketParserPipeWord transport_stage (input PacketParserPipeWord item);
@@ -2118,7 +2800,8 @@ module PacketParser #(
         ipv6_progress_reg_tmp = ipv6_progress_reg;
         for (stage='h0;stage < 'h4;stage=stage+1) begin
             ipv6_ext_progress_reg_tmp[stage] = ipv6_ext_progress_reg[stage];
-            ipv6_ext_stage_index_reg_tmp[stage] = ipv6_ext_stage_index_reg[stage];
+            ipv6_ext_active_reg_tmp[stage] = ipv6_ext_active_reg[stage];
+            ipv6_ext_complete_reg_tmp[stage] = ipv6_ext_complete_reg[stage];
         end
         for (slot='h0;slot < OUTPUT_FIFO_WORDS;slot=slot+1) begin
             fifo_data_reg_tmp[slot] = fifo_data_reg[slot];
@@ -2145,7 +2828,6 @@ module PacketParser #(
             --output_reserved;
         end
         for (stage='h0;stage < PIPE_STAGES;stage=stage+1) begin
-            pipe_reg_tmp[stage] = 0;
             pipe_valid_reg_tmp[stage] = unsigned'(1'h0);
         end
         if (pipe_valid_reg[PIPE_STAGES - 'h1]) begin
@@ -2691,7 +3373,8 @@ module PacketParser #(
         ipv4_progress_reg_tmp = ipv4_progress_reg;
         ipv6_progress_reg_tmp = ipv6_progress_reg;
         ipv6_ext_progress_reg_tmp = ipv6_ext_progress_reg;
-        ipv6_ext_stage_index_reg_tmp = ipv6_ext_stage_index_reg;
+        ipv6_ext_active_reg_tmp = ipv6_ext_active_reg;
+        ipv6_ext_complete_reg_tmp = ipv6_ext_complete_reg;
         destination_mac_reg_tmp = destination_mac_reg;
         source_mac_reg_tmp = source_mac_reg;
         ethernet_type_reg_tmp = ethernet_type_reg;
@@ -2784,7 +3467,8 @@ module PacketParser #(
         ipv4_progress_reg <= ipv4_progress_reg_tmp;
         ipv6_progress_reg <= ipv6_progress_reg_tmp;
         ipv6_ext_progress_reg <= ipv6_ext_progress_reg_tmp;
-        ipv6_ext_stage_index_reg <= ipv6_ext_stage_index_reg_tmp;
+        ipv6_ext_active_reg <= ipv6_ext_active_reg_tmp;
+        ipv6_ext_complete_reg <= ipv6_ext_complete_reg_tmp;
         destination_mac_reg <= destination_mac_reg_tmp;
         source_mac_reg <= source_mac_reg_tmp;
         ethernet_type_reg <= ethernet_type_reg_tmp;

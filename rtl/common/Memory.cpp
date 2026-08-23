@@ -91,7 +91,7 @@ public:
     }
 #endif
 
-    void _strobe()
+    void SMARTNIC_NETWORK_STROBE_METHOD()
     {
         buffer.apply();
         data_out_reg.strobe();

@@ -344,7 +344,7 @@ module L1Cache #(
                 L1CacheLookup___input_request_comb.start = unsigned'(1'(1));
             end
         end
-        L1CacheLookup___input_request_comb.issue = unsigned'(1'(((flush_in && read_in)) || L1CacheLookup___input_request_comb.start));
+        L1CacheLookup___input_request_comb.issue = L1CacheLookup___input_request_comb.start;
     end
 
     always_comb begin : L1CacheRefill___refill_lines_comb_func  // L1CacheRefill___refill_lines_comb_func
@@ -420,6 +420,10 @@ module L1Cache #(
         invalidate_set=((unsigned'(32'(invalidate_addr_in))/CACHE_LINE_SIZE)) % SETS;
         invalidate_conflict=(invalidate_line_in && L1CacheState___req_reg.read) && (((unsigned'(32'(L1CacheState___req_reg.addr)) & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1)))))) == ((unsigned'(32'(invalidate_addr_in)) & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1)))))));
         invalidate_epoch_wrap=invalidate_line_in && (L1CacheState___tag_set_epoch_reg[invalidate_set] == 'hFF);
+        if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) begin
+            L1CacheState___refill_reg_tmp.beat = unsigned'(8'h0);
+            L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
+        end
         if (invalidate_line_in) begin
             if (invalidate_epoch_wrap) begin
                 for (i='h0;i < SETS;i=i+1) begin
@@ -454,13 +458,10 @@ module L1Cache #(
                 end
                 else begin
                     if (flush_in) begin
-                        L1CacheState___req_reg_tmp.addr = unsigned'(32'(addr_in));
-                        L1CacheState___req_reg_tmp.read = unsigned'(1'(read_in));
-                        L1CacheState___req_reg_tmp.cacheable = input_request.cacheable;
-                        L1CacheState___req_reg_tmp.cache_disable = unsigned'(1'(cache_disable_in));
+                        L1CacheState___req_reg_tmp.read = unsigned'(1'(0));
+                        L1CacheState___req_reg_tmp.cacheable = unsigned'(1'(0));
                         L1CacheState___response_reg_tmp.valid = unsigned'(1'(0));
-                        L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
-                        L1CacheState___state_reg_tmp = (read_in) ? (L1CacheFsmState_pkg::L1_ST_LOOKUP) : (L1CacheFsmState_pkg::L1_ST_IDLE);
+                        L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_IDLE;
                     end
                     else begin
                         if (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_INIT) begin
@@ -487,8 +488,6 @@ module L1Cache #(
                             end
                             else begin
                                 if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) begin
-                                    L1CacheState___refill_reg_tmp.beat = unsigned'(8'h0);
-                                    L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
                                     if (lookup.hit) begin
                                         if (stall_in) begin
                                             L1CacheState___response_reg_tmp.addr = L1CacheState___req_reg.addr;

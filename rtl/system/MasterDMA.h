@@ -6,6 +6,7 @@
 
 #include "../../Config.h"
 #include "../common/Axi4Master.h"
+#include "../common/ClockDomains.h"
 
 using namespace cpphdl;
 
@@ -96,6 +97,7 @@ private:
     reg<u1> completion_direction_reg;
     reg<u<32>> completed_reg;
     reg<u1> protocol_error_reg;
+    reg<u8> protocol_error_code_reg;
     logic<DATA_WIDTH> host_write_data_comb;
     logic<DATA_BYTES> host_write_keep_comb;
 
@@ -132,7 +134,10 @@ private:
         gap = false;
         for (byte = 0; byte < DATA_BYTES; ++byte) {
             if (keep[byte]) {
-                if (gap) protocol_error_reg._next = true;
+                if (gap) {
+                    protocol_error_reg._next = true;
+                    protocol_error_code_reg._next = 1;
+                }
                 ++count;
             }
             else gap = true;
@@ -149,7 +154,10 @@ private:
         gap = false;
         for (byte = 0; byte < QUEUE_BYTES; ++byte) {
             if (keep[byte]) {
-                if (gap) protocol_error_reg._next = true;
+                if (gap) {
+                    protocol_error_reg._next = true;
+                    protocol_error_code_reg._next = 2;
+                }
                 ++count;
             }
             else gap = true;
@@ -167,6 +175,13 @@ private:
     }
 
 public:
+#ifndef SYNTHESIS
+    uint32_t protocol_error_code() const
+    {
+        return (uint32_t)protocol_error_code_reg;
+    }
+#endif
+
     void _assign()
     {
         command_ready_out = _ASSIGN((uint32_t)state_reg == MASTER_DMA_IDLE);
@@ -204,7 +219,7 @@ public:
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
     }
 
-    void _work(bool reset)
+    void SMARTNIC_SYSTEM_WORK_METHOD(bool reset)
     {
         uint32_t bytes;
         uint32_t byte;
@@ -228,6 +243,7 @@ public:
                 || ((uint64_t)command_address_in() & 3u) != 0
                 || ((uint32_t)command_length_in() & 3u) != 0) {
                 protocol_error_reg._next = true;
+                protocol_error_code_reg._next = 3;
             }
             else if (command_direction_in() == MASTER_DMA_QUEUE_TO_HOST) {
                 state_reg._next = MASTER_DMA_WAIT_QUEUE;
@@ -246,6 +262,7 @@ public:
             if (bytes == 0 || bytes > (uint32_t)remaining_reg
                 || (bool)first_beat_reg != queue_input_sop_in()) {
                 protocol_error_reg._next = true;
+                protocol_error_code_reg._next = 4;
             }
             state_reg._next = MASTER_DMA_WRITE_ADDRESS;
         }
@@ -257,10 +274,16 @@ public:
             && host.bvalid_in()) {
             bytes = kept_bytes(host_write_keep_comb_func());
             if (bytes == 0 || bytes > (uint32_t)remaining_reg)
+            {
                 protocol_error_reg._next = true;
+                protocol_error_code_reg._next = 5;
+            }
             if (bytes >= (uint32_t)remaining_reg) {
                 if (!queue_eop_reg || bytes != (uint32_t)remaining_reg)
+                {
                     protocol_error_reg._next = true;
+                    protocol_error_code_reg._next = 6;
+                }
                 complete_command();
             }
             else if (((uint32_t)chunk_reg + 1) * DATA_BYTES
@@ -271,7 +294,10 @@ public:
                 state_reg._next = MASTER_DMA_WRITE_ADDRESS;
             }
             else {
-                if (queue_eop_reg) protocol_error_reg._next = true;
+                if (queue_eop_reg) {
+                    protocol_error_reg._next = true;
+                    protocol_error_code_reg._next = 7;
+                }
                 address_reg._next = address_reg + bytes;
                 remaining_reg._next = remaining_reg - bytes;
                 first_beat_reg._next = false;
@@ -340,10 +366,11 @@ public:
             completion_direction_reg.clr();
             completed_reg.clr();
             protocol_error_reg.clr();
+            protocol_error_code_reg.clr();
         }
     }
 
-    void _strobe()
+    void SMARTNIC_SYSTEM_STROBE_METHOD()
     {
         state_reg.strobe();
         direction_reg.strobe();
@@ -364,7 +391,10 @@ public:
         completion_direction_reg.strobe();
         completed_reg.strobe();
         protocol_error_reg.strobe();
+        protocol_error_code_reg.strobe();
     }
+
+    SMARTNIC_SYSTEM_CLOCK_METHODS()
 };
 
 template class MasterDMA<HOST_ADDR_WIDTH, HOST_DATA_WIDTH, 4, 16>;

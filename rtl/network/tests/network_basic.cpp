@@ -969,7 +969,7 @@ int main(int argc, char** argv)
             "RxRAMWritePair_pkg", "RxRAMScanEvent_pkg", "RxDescriptor_pkg",
             "RxDescriptorWord_pkg",
             "SmartNicMemory", "Fifo", "SmartNicRAM", "InputBalancer", "PacketParser",
-            "RxRAM", "RxFifo", "TxFifo", "OutputMerger"};
+            "RxRAM", "RxFifo", "TxEopMemory", "TxFifo", "OutputMerger"};
         ok &= VerilatorCompileInExactFolderFromGenerated(__FILE__, "Network_64",
             "Network", generated, modules, includes, 64, 1, 4096, 64);
         if (ok) {

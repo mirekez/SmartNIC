@@ -222,7 +222,13 @@ class ControllerTest
         while (!arready()) cycle();
         cycle();
         host.ar.valid = false;
-        if (!rvalid()) fail("missing AXI read response");
+        for (uint32_t timeout = 0; timeout < 32 && !rvalid(); ++timeout) {
+            cycle();
+        }
+        if (!rvalid()) {
+            fail("missing AXI read response");
+            return 0;
+        }
         uint32_t value = (uint32_t)rdata().bits(lane * 8 + 31, lane * 8);
         host.r.ready = true;
         cycle();
