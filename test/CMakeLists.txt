@@ -1,4 +1,6 @@
 set(CAPTURE_ELF "${CMAKE_CURRENT_BINARY_DIR}/capture.elf")
+set(CAPTURE_THROUGHPUT_ELF
+    "${CMAKE_CURRENT_BINARY_DIR}/capture_throughput.elf")
 find_program(CAPTURE_RISCV_GCC NAMES riscv32-unknown-elf-gcc
     HINTS "$ENV{RISCV_HOME}/bin" "/home/me/riscv/bin")
 set(CAPTURE_RISCV_CC_ARGS)
@@ -20,6 +22,7 @@ add_custom_command(
     OUTPUT "${CAPTURE_ELF}"
     COMMAND "${CAPTURE_RISCV_CC}"
         ${CAPTURE_RISCV_CC_ARGS}
+        -DCAPTURE_DDR_RING=1
         -march=rv32im_zicsr -mabi=ilp32
         -nostdlib
         -Wl,--no-relax
@@ -29,7 +32,22 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/capture.S"
     DEPENDS capture.S capture.ld
     VERBATIM)
-add_custom_target(capture_firmware DEPENDS "${CAPTURE_ELF}")
+add_custom_command(
+    OUTPUT "${CAPTURE_THROUGHPUT_ELF}"
+    COMMAND "${CAPTURE_RISCV_CC}"
+        ${CAPTURE_RISCV_CC_ARGS}
+        -DCAPTURE_DDR_RING=0
+        -march=rv32im_zicsr -mabi=ilp32
+        -nostdlib
+        -Wl,--no-relax
+        "-Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/capture.ld"
+        -Wl,--build-id=none
+        -o "${CAPTURE_THROUGHPUT_ELF}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/capture.S"
+    DEPENDS capture.S capture.ld
+    VERBATIM)
+add_custom_target(capture_firmware DEPENDS
+    "${CAPTURE_ELF}" "${CAPTURE_THROUGHPUT_ELF}")
 
 file(GLOB CAPTURE_STDCXXEXP
     "${PROJECT_SOURCE_DIR}/cpphdl/.conda/lib/gcc/*/*/libstdc++exp.a")
@@ -40,11 +58,13 @@ function(smartnic_add_capture_target rate sustained)
         add_executable(${target} capture.cpp)
         set(suffix _throughput)
         set(sustained_value 1)
+        set(capture_firmware_image "${CAPTURE_THROUGHPUT_ELF}")
     else()
         set(target capture_${rate}_test)
         add_executable(${target} capture.cpp)
         set(suffix "")
         set(sustained_value 0)
+        set(capture_firmware_image "${CAPTURE_ELF}")
     endif()
     add_dependencies(${target} capture_firmware)
     if(rate EQUAL 800)
@@ -72,7 +92,7 @@ function(smartnic_add_capture_target rate sustained)
 
     if(BUILD_TESTING)
         add_test(NAME system_capture_${rate}${suffix}
-            COMMAND "$<TARGET_FILE:${target}>" "${CAPTURE_ELF}")
+            COMMAND "$<TARGET_FILE:${target}>" "${capture_firmware_image}")
         set_tests_properties(system_capture_${rate}${suffix} PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
             LABELS "system;capture;cpu;avalon;${rate}g${suffix}"
@@ -85,7 +105,8 @@ foreach(rate 400 800)
     if(rate EQUAL 400)
         smartnic_add_capture_target(${rate} TRUE)
         add_custom_target(run_capture_${rate}_throughput
-            COMMAND "$<TARGET_FILE:capture_${rate}_throughput_test>" "${CAPTURE_ELF}"
+            COMMAND "$<TARGET_FILE:capture_${rate}_throughput_test>"
+                "${CAPTURE_THROUGHPUT_ELF}"
             DEPENDS capture_${rate}_throughput_test capture_firmware
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
             USES_TERMINAL

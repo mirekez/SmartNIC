@@ -1,75 +1,64 @@
-# Sustained 400G SmartNIC video demonstration
+# Eight-CPU SmartNIC capture video
 
-The demo runs the complete native C++ sustained 400G capture system. A compact
-40-packet image is replayed 64 times at minimum IPG: 2,560 full-size packets and
-24,448 uninterrupted Network clocks. This is longer than the modeled complete
-receive-buffer absorption interval, so the run must recycle RxRAM while traffic
-is still arriving. One video frame is recorded per eight Network clocks at
-140 fps. Eight CPU clusters and all clock domains retain their configured
-ratios; the observer never changes RTL state.
+The demo compiles and runs the real `test/capture.cpp` functional full-system
+test with visualization enabled. The observer only reads public C++HDL state:
+it does not alter RTL behavior. All 640 packets must pass the normal host,
+protocol, backpressure, L2 and private-DDR assertions before the run succeeds.
 
 ## Build and run
 
 ```text
 conda activate ./cpphdl/.conda
 cmake -S . -B build
-cmake --build build --target smartnic_400g_long_video -j
+cmake --build build --target smartnic_capture_video -j
 ```
 
-To give the AVI a solid compositing/chroma-key background, invoke the test
-directly with an optional six-digit color (shown here with magenta):
+Run directly to select another output path or background color:
 
 ```text
-build/demo/smartnic_400g_long_demo build/demo/capture.elf \
-  demo/output/smartnic_400g_long.avi '#FF00FF'
+build/demo/smartnic_capture_demo build/demo/capture_8cpu.elf \
+  demo/output/capture.avi '#7F7F7F'
 ```
 
-Omitting the background argument uses `(127,127,127)` outside the blocks; all
-block interiors use `(195,195,195)`.
+Block interiors are `(195,195,195)` and the default outside background is
+`(127,127,127)`.
 
-Outputs:
+Generated files use the stem `demo/output/smartnic_capture_8cpu_32core`:
 
-- `demo/output/smartnic_400g_long.avi`: 140-fps indexed RLE8 video.
-- `demo/output/smartnic_400g_long.csv`: one row per sampled video frame.
-- `demo/output/smartnic_400g_long_final.{ppm,bmp,png}`: final previews.
-- `demo/output/smartnic_400g_long_{loaded,mid,queue}.png`: event snapshots.
-
-AVI/RLE8 does not define portable alpha-channel semantics, so the long-run AVI
-is opaque. APNG output is disabled for this workload because per-frame PNG
-compression dominates simulation time. The AVI requires no `ffmpeg`. For an
-H.264 copy on a machine with `ffmpeg`:
-
-```text
-ffmpeg -i demo/output/smartnic_400g_long.avi -c:v libx264 -crf 18 -pix_fmt yuv420p demo/output/smartnic_400g_long.mp4
-```
+- `.avi`: 800x480, 60-fps indexed RLE8 video.
+- `.csv`: per-frame clock and traffic counters.
+- `_final.{ppm,bmp,png}`: final stills.
+- `_loaded.png`, `_mid.png`, `_queue.png`: event snapshots.
 
 ## Picture layout
 
 ```text
-+------+--------+----------+-----------+-----------+----------+
-| 400G | RX FIFO|          | CPU0      | CPU4      | RX QUEUE |
-|      |        |          | L2 I$/D$  | L2 I$/D$  |          |
-|channel+-------+  RX RAM  +-----------+-----------+          |
-|      | TX FIFO| 8 banks  | CPU1..3   | CPU5..7   +----------+
-|      |        |          | L2 I$/D$  | L2 I$/D$  | TX QUEUE |
-+------+--------+----------+-----------+-----------+----------+
++--------+--------+--------+-------------------------------+----------+
+| 400G   | RXFIFO | RX RAM | CPU0 / four horizontal cores  | RX QUEUE |
+| channel+--------+ banks  | CPU1 ... CPU7, 2 x 4 packages |          |
+|        | TXFIFO |        | each: shared L2 + 4 x I$/D$   | TX QUEUE |
++--------+--------+--------+-------------------------------+----------+
+| DDR0 ring | DDR1 ring | ... independent DDR6 / DDR7 packet rings   |
++--------------------------------------------------------------------+
 ```
 
-- One colored pixel represents one little-endian two-byte word.
-- For word `0xDCBA`, A/B/C select red/green/blue and `D+1` is their gain.
-- Packet boundaries, eight RxRAM banks and eight System queues are separated
-  by grid lines.
-- L2 rectangles show the coherent packet window at `0x00010000`.
-- Eight beveled CPU backgrounds are arranged in two columns of four. Each
-  smaller I$ rectangle is above its cluster's larger D$ rectangle and
-  contains bytes from the actual loaded ELF.
-- Demo firmware copies every packet from RxRAM into the CPU cluster's coherent
-  L2 packet buffer. Every tenth packet is read across its first 40 bytes through
-  L1 D-cache and is then transferred from L2 to the System RxQueue and host.
-- The capture workload is RX-only, so TX FIFO and TX Queue normally remain empty.
+- The CPU packages use the beveled grayscale background brought forward from
+  the `open_switch2` demo.
+- Every package contains its complete shared L2 view and four distinct core
+  tiles. Each core has a smaller instruction-cache panel above its data-cache
+  panel.
+- The bottom row shows the complete 512-slot, 1-MiB packet-ring region of
+  every CPU's private DDR. The ring is proportionally folded into its panel;
+  occupied words are contiguous and no decorative spaces are inserted.
+- FIFO, RxRAM and cache renderers show two-byte words without the previous
+  five-pixel packet spacing. If storage exceeds its panel, every source range
+  contributes to a proportionally folded destination pixel.
+- Bright packet colors are derived from repeating little-endian 16-bit words.
+  For `0xDCBA`, A/B/C select red/green/blue and `D+1` is their gain.
+- The RX queue keeps its two most recent completed transfers visible so short
+  live residency does not disappear between decimated video frames.
 
-The generator fills complete packets, including the Ethernet-header positions,
-with vivid repeating words such as `0x000F`, `0x00F0`, `0x0F00`, `0x00FF`,
-`0x0F0F` and `0x0FF0`. The test checks host packet bytes, zero Network-input
-backpressure, the absorption-duration proof, continued second-half retirement,
-and all existing RTL protocol-error signals.
+The capture workload is RX-only, so Network TX FIFO and System TX Queue remain
+empty. Every packet is loaded through PacketDMA into the corresponding CPU's
+L2/private DDR circular buffer, and every tenth local packet is also sent to
+host memory.

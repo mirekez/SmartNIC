@@ -10,6 +10,7 @@
 #include "DescriptorFetcher.h"
 #include "PacketDMA.h"
 #include "../common/AsyncFifo.h"
+#include "../common/Axi4WriteArbiter.h"
 #include "../../cpphdl/tribe_cpu/common/Axi4RegionMux.h"
 
 using namespace cpphdl;
@@ -36,7 +37,12 @@ public:
     CPU cpu[CPU_COUNT];
     DescriptorFetcher<4, 32, 4, 256, HANDLE_BITS>
         descriptor_fetcher[CPU_COUNT];
-    PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS> packet_dma[CPU_COUNT];
+    // Each four-core cluster owns a deep command FIFO and a private packet
+    // backing path into its own DDR.  The FIFO lets a hart release the MMIO
+    // staging lock immediately after enqueue instead of holding it throughout
+    // a complete packet transfer.
+    PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS, 64, 32, 4, 256,
+        CPU::EXTERNAL_ADDR_WIDTH, 64> packet_dma[CPU_COUNT];
 
     // Aggregate descriptor stream from SmartNIC's L2-side CDC boundary.
     _PORT(bool) descriptor_valid_in;
@@ -103,6 +109,8 @@ private:
     AsyncFifoCpuToL2<DMA_LINE_BITS, 16> dma_line_cdc[CPU_COUNT];
     AsyncFifoL2ToCpu<1, 4> dma_commit_cdc[CPU_COUNT];
     Axi4RegionMux<2, 32, 4, 256> iomem_mux[CPU_COUNT];
+    Axi4WriteArbiter<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
+        CPU::DATA_WIDTH> ddr_arbiter[CPU_COUNT];
     reg<u<TARGET_BITS>> descriptor_target_reg;
 
     logic<DESCRIPTOR_CDC_BITS> descriptor_pack_comb;
@@ -285,6 +293,22 @@ private:
     }
 
 public:
+#if DEMO_VIDEO
+    // Native-demo observers for the descriptor path. These expose existing
+    // handshakes only and are absent from production/synthesis builds.
+    uint32_t demo_descriptor_target() const
+    {
+        return (uint32_t)descriptor_target_reg;
+    }
+
+    bool demo_descriptor_command_fire(uint32_t index)
+    {
+        return index < CPU_COUNT
+            && descriptor_fetcher[index].packet_command_valid_out()
+            && packet_dma[index].descriptor_command_ready_out();
+    }
+#endif
+
     void _assign()
     {
         uint32_t index;
@@ -480,10 +504,21 @@ public:
                 to_network_ready_in()[index]);
             to_network_cdc[index]._assign();
 
-            // Preserve every CPU-memory AXI request and response signal at the
-            // Processing boundary for attachment to external DDR controllers.
-            AXI4_MASTER_FROM_MASTER(ddr[index], cpu[index].memory);
-            AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory, ddr[index]);
+            // Each CPU has a distinct DDR port.  Its ordinary L2 traffic and
+            // PacketDMA's write-through circular packet store share only that
+            // CPU's local arbiter; traffic from the other seven clusters can
+            // never consume this memory port or its bandwidth.
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].cpu,
+                cpu[index].memory);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(cpu[index].memory,
+                ddr_arbiter[index].cpu);
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].packet,
+                packet_dma[index].backing_dma);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].backing_dma,
+                ddr_arbiter[index].packet);
+            AXI4_MASTER_FROM_MASTER(ddr[index], ddr_arbiter[index].memory);
+            AXI4_MASTER_RESPONDER_FROM_MASTER(ddr_arbiter[index].memory,
+                ddr[index]);
             cpu[index].reset_pc_in = _ASSIGN((u32)0);
             cpu[index].boot_hartid_in = _ASSIGN_INDEXED((index),
                 (u32)(index * CPU::CORES));
@@ -507,11 +542,14 @@ public:
                 __inst_name + "/packet_dma" + std::to_string(index);
             iomem_mux[index].__inst_name =
                 __inst_name + "/iomem_mux" + std::to_string(index);
+            ddr_arbiter[index].__inst_name =
+                __inst_name + "/ddr_arbiter" + std::to_string(index);
 #endif
             cpu[index]._assign();
             descriptor_fetcher[index]._assign();
             packet_dma[index]._assign();
             iomem_mux[index]._assign();
+            ddr_arbiter[index]._assign();
 
             // The child modules above create their output function bindings
             // in _assign(). Refresh peer and boundary links afterward so a
@@ -561,8 +599,18 @@ public:
                 packet_dma[index].l2_commit_ready_out;
             packet_dma[index].l2_commit_valid_in =
                 dma_commit_cdc[index].read_valid_out;
-            AXI4_MASTER_FROM_MASTER(ddr[index], cpu[index].memory);
-            AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory, ddr[index]);
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].cpu,
+                cpu[index].memory);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(cpu[index].memory,
+                ddr_arbiter[index].cpu);
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].packet,
+                packet_dma[index].backing_dma);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].backing_dma,
+                ddr_arbiter[index].packet);
+            AXI4_MASTER_RESPONDER_FROM_MASTER(ddr_arbiter[index].memory,
+                ddr[index]);
+            ddr_arbiter[index]._assign();
+            AXI4_MASTER_FROM_MASTER(ddr[index], ddr_arbiter[index].memory);
         }
     }
 
@@ -574,6 +622,7 @@ public:
             descriptor_fetcher[index]._work(reset);
             packet_dma[index]._work(reset);
             iomem_mux[index]._work(reset);
+            ddr_arbiter[index]._work(reset);
             descriptor_cdc[index]._work_clk(reset);
             read_command_cdc[index]._work_clk(reset);
             rx_stream_cdc[index]._work_clk(reset);
@@ -622,6 +671,7 @@ public:
             descriptor_fetcher[index]._strobe();
             packet_dma[index]._strobe();
             iomem_mux[index]._strobe();
+            ddr_arbiter[index]._strobe();
             descriptor_cdc[index]._strobe_clk();
             read_command_cdc[index]._strobe_clk();
             rx_stream_cdc[index]._strobe_clk();

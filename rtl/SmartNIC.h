@@ -471,6 +471,40 @@ public:
     }
 #endif
 
+#if DEMO_VIDEO
+    // Native-demo observers. They expose only already-existing handshakes and
+    // descriptor metadata; no visualization state enters synthesizable RTL.
+    bool demo_rx_descriptor_fire()
+    {
+        return network.descriptor_valid_out()
+            && descriptor_fifo.write_ready_out();
+    }
+
+    uint32_t demo_rx_descriptor_handle()
+    {
+        return (uint32_t)network.descriptor_data_out()
+            .descriptor.packet_address;
+    }
+
+    uint32_t demo_rx_descriptor_stream()
+    {
+        return (uint32_t)network.descriptor_data_out()
+            .descriptor.ingress_stream;
+    }
+
+    bool demo_rx_release_fire(uint32_t port)
+    {
+        return network_release_valid_comb_func()[port];
+    }
+
+    uint32_t demo_rx_release_handle(uint32_t port)
+    {
+        return (uint32_t)network_release_handle_comb_func().bits(
+            port * HANDLE_BITS + HANDLE_BITS - 1,
+            port * HANDLE_BITS);
+    }
+#endif
+
     void _assign()
     {
         network.valid_in = net_rx_valid_in;

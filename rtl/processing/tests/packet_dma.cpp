@@ -53,6 +53,7 @@ class PacketDmaTest
 #endif
     Axi4Driver<32, 4, 256> mmio = {};
     Axi4Responder<4, 256> l2 = {};
+    Axi4Responder<4, 256> backing = {};
 
     bool rx_read_ready = false;
     bool rx_valid = false;
@@ -60,6 +61,15 @@ class PacketDmaTest
     logic<32> rx_keep = 0;
     bool rx_sop = false;
     bool rx_eop = false;
+
+    bool descriptor_command_valid = false;
+    u<16> descriptor_command_handle = 0;
+    u<14> descriptor_command_length = 0;
+    bool descriptor_command_system = false;
+    bool descriptor_command_cache = false;
+    u32 descriptor_command_destination = 0;
+    bool l2_line_ready = true;
+    bool l2_commit_valid = false;
 
     bool system_rx_valid = false;
     logic<256> system_rx_data = 0;
@@ -72,6 +82,9 @@ class PacketDmaTest
     uint32_t pending_aw = 0;
     bool have_aw = false;
     std::vector<uint8_t> memory = std::vector<uint8_t>(8192, 0);
+    uint32_t pending_backing_aw = 0;
+    bool have_backing_aw = false;
+    std::vector<uint8_t> backing_memory = std::vector<uint8_t>(8192, 0);
     std::vector<uint8_t> system_output;
     std::vector<uint8_t> network_output;
     bool system_output_sop = false;
@@ -95,17 +108,25 @@ class PacketDmaTest
 
     void bind_native()
     {
+        backing.aw.ready = true;
+        backing.w.ready = true;
+        backing.b.valid = true;
+        backing.b.id = 0;
+        backing.ar.ready = true;
+        backing.r.valid = false;
 #ifndef VERILATOR
         dut.mmio = mmio;
         dut.l2_dma = l2;
-        dut.descriptor_command_valid_in = _ASSIGN(false);
-        dut.descriptor_command_handle_in = _ASSIGN((u<16>)0);
-        dut.descriptor_command_length_in = _ASSIGN((u<14>)0);
-        dut.descriptor_command_system_in = _ASSIGN(false);
-        dut.descriptor_command_cache_in = _ASSIGN(false);
-        dut.descriptor_command_destination_in = _ASSIGN((uint32_t)0);
-        dut.l2_line_ready_in = _ASSIGN(true);
-        dut.l2_commit_valid_in = _ASSIGN(false);
+        dut.backing_dma = backing;
+        dut.descriptor_command_valid_in = _ASSIGN(descriptor_command_valid);
+        dut.descriptor_command_handle_in = _ASSIGN(descriptor_command_handle);
+        dut.descriptor_command_length_in = _ASSIGN(descriptor_command_length);
+        dut.descriptor_command_system_in = _ASSIGN(descriptor_command_system);
+        dut.descriptor_command_cache_in = _ASSIGN(descriptor_command_cache);
+        dut.descriptor_command_destination_in =
+            _ASSIGN(descriptor_command_destination);
+        dut.l2_line_ready_in = _ASSIGN(l2_line_ready);
+        dut.l2_commit_valid_in = _ASSIGN(l2_commit_valid);
         dut.rx_read_ready_in = _ASSIGN(rx_read_ready);
         dut.rx_valid_in = _ASSIGN(rx_valid);
         dut.rx_data_in = _ASSIGN(rx_data);
@@ -129,14 +150,16 @@ class PacketDmaTest
 #ifdef VERILATOR
         dut.clk = clock;
         dut.reset = reset;
-        dut.descriptor_command_valid_in = false;
-        dut.descriptor_command_handle_in = 0;
-        dut.descriptor_command_length_in = 0;
-        dut.descriptor_command_system_in = false;
-        dut.descriptor_command_cache_in = false;
-        dut.descriptor_command_destination_in = 0;
-        dut.l2_line_ready_in = true;
-        dut.l2_commit_valid_in = false;
+        dut.descriptor_command_valid_in = descriptor_command_valid;
+        dut.descriptor_command_handle_in = (uint32_t)descriptor_command_handle;
+        dut.descriptor_command_length_in =
+            (uint32_t)descriptor_command_length;
+        dut.descriptor_command_system_in = descriptor_command_system;
+        dut.descriptor_command_cache_in = descriptor_command_cache;
+        dut.descriptor_command_destination_in =
+            (uint32_t)descriptor_command_destination;
+        dut.l2_line_ready_in = l2_line_ready;
+        dut.l2_commit_valid_in = l2_commit_valid;
         dut.rx_read_ready_in = rx_read_ready;
         dut.rx_valid_in = rx_valid;
         copy_to_verilator(dut.rx_data_in, rx_data);
@@ -173,6 +196,15 @@ class PacketDmaTest
         copy_to_verilator(dut.l2_dma___05Frdata_in, l2.r.data);
         dut.l2_dma___05Frlast_in = l2.r.last;
         dut.l2_dma___05Frid_in = (uint8_t)(uint32_t)l2.r.id;
+        dut.backing_dma___05Fawready_in = true;
+        dut.backing_dma___05Fwready_in = true;
+        dut.backing_dma___05Fbvalid_in = true;
+        dut.backing_dma___05Fbid_in = 0;
+        dut.backing_dma___05Farready_in = backing.ar.ready;
+        dut.backing_dma___05Frvalid_in = backing.r.valid;
+        copy_to_verilator(dut.backing_dma___05Frdata_in, backing.r.data);
+        dut.backing_dma___05Frlast_in = backing.r.last;
+        dut.backing_dma___05Frid_in = (uint8_t)(uint32_t)backing.r.id;
         dut.eval();
 #else
         (void)reset;
@@ -250,6 +282,113 @@ class PacketDmaTest
         return dut.l2_dma___05Frready_out;
 #else
         return dut.l2_dma.rready_out();
+#endif
+    }
+
+    bool backing_arvalid()
+    {
+#ifdef VERILATOR
+        return dut.backing_dma___05Farvalid_out;
+#else
+        return dut.backing_dma.arvalid_out();
+#endif
+    }
+    bool backing_awvalid()
+    {
+#ifdef VERILATOR
+        return dut.backing_dma___05Fawvalid_out;
+#else
+        return dut.backing_dma.awvalid_out();
+#endif
+    }
+    uint32_t backing_awaddr()
+    {
+#ifdef VERILATOR
+        return dut.backing_dma___05Fawaddr_out;
+#else
+        return (uint32_t)dut.backing_dma.awaddr_out();
+#endif
+    }
+    bool backing_wvalid()
+    {
+#ifdef VERILATOR
+        return dut.backing_dma___05Fwvalid_out;
+#else
+        return dut.backing_dma.wvalid_out();
+#endif
+    }
+    logic<256> backing_wdata()
+    {
+#ifdef VERILATOR
+        return copy_from_verilator<logic<256>>(
+            dut.backing_dma___05Fwdata_out);
+#else
+        return dut.backing_dma.wdata_out();
+#endif
+    }
+    logic<32> backing_wstrb()
+    {
+#ifdef VERILATOR
+        return logic<32>(dut.backing_dma___05Fwstrb_out);
+#else
+        return dut.backing_dma.wstrb_out();
+#endif
+    }
+    uint32_t backing_araddr()
+    {
+#ifdef VERILATOR
+        return dut.backing_dma___05Faraddr_out;
+#else
+        return (uint32_t)dut.backing_dma.araddr_out();
+#endif
+    }
+    bool backing_rready()
+    {
+#ifdef VERILATOR
+        return dut.backing_dma___05Frready_out;
+#else
+        return dut.backing_dma.rready_out();
+#endif
+    }
+
+    bool l2_line_valid()
+    {
+#ifdef VERILATOR
+        return dut.l2_line_valid_out;
+#else
+        return dut.l2_line_valid_out();
+#endif
+    }
+    uint32_t l2_line_addr()
+    {
+#ifdef VERILATOR
+        return dut.l2_line_addr_out;
+#else
+        return (uint32_t)dut.l2_line_addr_out();
+#endif
+    }
+    logic<256> l2_line_data()
+    {
+#ifdef VERILATOR
+        return copy_from_verilator<logic<256>>(dut.l2_line_data_out);
+#else
+        return dut.l2_line_data_out();
+#endif
+    }
+    logic<32> l2_line_keep()
+    {
+#ifdef VERILATOR
+        return logic<32>(dut.l2_line_keep_out);
+#else
+        return dut.l2_line_keep_out();
+#endif
+    }
+    bool l2_line_eop()
+    {
+#ifdef VERILATOR
+        return dut.l2_line_eop_out;
+#else
+        return dut.l2_line_eop_out();
 #endif
     }
 
@@ -397,10 +536,32 @@ class PacketDmaTest
         bool b_handshake = l2.b.valid && l2_bready();
         bool ar_handshake = l2_arvalid() && l2.ar.ready;
         bool r_handshake = l2.r.valid && l2_rready();
+        bool backing_ar_handshake = backing_arvalid() && backing.ar.ready;
+        bool backing_r_handshake = backing.r.valid && backing_rready();
+        bool backing_aw_handshake = backing_awvalid() && backing.aw.ready;
+        bool backing_w_handshake = backing_wvalid() && backing.w.ready;
         uint32_t aw_address = l2_awaddr();
         uint32_t ar_address = l2_araddr();
+        uint32_t backing_ar_address = backing_araddr();
+        uint32_t backing_aw_address = backing_awaddr();
+        logic<256> backing_write_data = backing_wdata();
+        logic<32> backing_write_strobe = backing_wstrb();
         logic<256> write_data = l2_wdata();
         logic<32> write_strobe = l2_wstrb();
+        const bool next_l2_commit = l2_line_valid() && l2_line_ready
+            && l2_line_eop();
+
+        if (l2_line_valid() && l2_line_ready) {
+            const uint32_t address = l2_line_addr();
+            const logic<256> data = l2_line_data();
+            const logic<32> keep = l2_line_keep();
+            for (uint32_t byte = 0; byte < 32; ++byte) {
+                if (keep[byte] && address + byte < memory.size()) {
+                    memory[address + byte] =
+                        (uint8_t)data.bits(byte * 8 + 7, byte * 8);
+                }
+            }
+        }
 
         bool system_handshake = system_tx_valid_out() && system_tx_ready;
         bool network_handshake = network_tx_valid_out() && network_tx_ready;
@@ -415,19 +576,66 @@ class PacketDmaTest
             append_beat(network_output, network_tx_data_out(), network_tx_keep_out());
         }
 
+        if (backing_aw_handshake) {
+            pending_backing_aw = backing_aw_address;
+            have_backing_aw = true;
+        }
+        if (backing_w_handshake) {
+            if (!have_backing_aw)
+                fail("backing write data arrived without an address");
+            for (uint32_t byte = 0; byte < 32; ++byte) {
+                if (backing_write_strobe[byte]
+                    && pending_backing_aw + byte < backing_memory.size()) {
+                    backing_memory[pending_backing_aw + byte] =
+                        (uint8_t)backing_write_data.bits(
+                            byte * 8 + 7, byte * 8);
+                }
+            }
+            have_backing_aw = false;
+        }
+
 #ifdef VERILATOR
         drive_verilator(reset, true);
         update_l2_after_edge(aw_handshake, aw_address, w_handshake,
             write_data, write_strobe, b_handshake, ar_handshake, ar_address,
             r_handshake);
+        if (backing_r_handshake) backing.r.valid = false;
+        if (backing_ar_handshake) {
+            backing.r.data = 0;
+            for (uint32_t byte = 0; byte < 32; ++byte) {
+                if (backing_ar_address + byte < backing_memory.size()) {
+                    backing.r.data.bits(byte * 8 + 7, byte * 8) =
+                        backing_memory[backing_ar_address + byte];
+                }
+            }
+            backing.r.valid = true;
+            backing.r.last = true;
+            backing.r.id = 0;
+        }
         drive_verilator(reset, false);
 #else
         dut._work(reset);
         update_l2_after_edge(aw_handshake, aw_address, w_handshake,
             write_data, write_strobe, b_handshake, ar_handshake, ar_address,
             r_handshake);
+        if (backing_r_handshake) backing.r.valid = false;
+        if (backing_ar_handshake) {
+            backing.r.data = 0;
+            for (uint32_t byte = 0; byte < 32; ++byte) {
+                if (backing_ar_address + byte < backing_memory.size()) {
+                    backing.r.data.bits(byte * 8 + 7, byte * 8) =
+                        backing_memory[backing_ar_address + byte];
+                }
+            }
+            backing.r.valid = true;
+            backing.r.last = true;
+            backing.r.id = 0;
+        }
         dut._strobe();
 #endif
+        // Model Processing's reverse CDC: the packet becomes visible to
+        // firmware one cycle after its EOP line is accepted into L2.
+        l2_commit_valid = reset ? false : next_l2_commit;
         ++_system_clock;
     }
 
@@ -512,12 +720,21 @@ class PacketDmaTest
     uint32_t read32(uint32_t address)
     {
         uint32_t lane = address & 31u;
+        uint32_t timeout;
         mmio.ar.valid = true;
         mmio.ar.addr = address;
         mmio.ar.id = 2;
-        if (!mmio_arready()) fail("MMIO AR not ready");
+        for (timeout = 0; timeout < 16 && !mmio_arready(); ++timeout)
+            cycle();
+        if (!mmio_arready()) {
+            fail("MMIO AR not ready");
+            mmio.ar.valid = false;
+            return 0;
+        }
         cycle();
         mmio.ar.valid = false;
+        for (timeout = 0; timeout < 16 && !mmio_rvalid(); ++timeout)
+            cycle();
         if (!mmio_rvalid()) {
             fail("MMIO R not valid");
             return 0;
@@ -581,6 +798,15 @@ class PacketDmaTest
         return dut.busy_out();
 #endif
     }
+    bool command_ready()
+    {
+#ifdef VERILATOR
+        drive_verilator(false, false);
+        return dut.command_ready_out;
+#else
+        return dut.command_ready_out();
+#endif
+    }
     bool protocol_error()
     {
 #ifdef VERILATOR
@@ -599,7 +825,7 @@ class PacketDmaTest
 
     void issue(uint32_t operation, uint32_t length, uint32_t source,
         uint32_t destination, uint32_t handle = 0,
-        uint32_t extra_flags = 0)
+        uint32_t extra_flags = Dma::FLAG_CACHE_ALLOCATE)
     {
         write32(Dma::REG_RX_HANDLE, handle);
         write32(Dma::REG_LENGTH, length);
@@ -607,6 +833,17 @@ class PacketDmaTest
         write32(Dma::REG_DESTINATION, destination);
         write32(Dma::REG_FLAGS, operation | extra_flags);
         write32(Dma::REG_COMMAND, Dma::COMMAND_PUSH);
+    }
+
+    void issue_descriptor(uint32_t handle, uint32_t length, bool system)
+    {
+        if (!command_ready()) fail("descriptor command queue was not ready");
+        descriptor_command_handle = handle;
+        descriptor_command_length = length;
+        descriptor_command_system = system;
+        descriptor_command_valid = true;
+        cycle();
+        descriptor_command_valid = false;
     }
 
     void send_input(const std::vector<uint8_t>& packet, bool network)
@@ -679,11 +916,35 @@ public:
         l2.ar.ready = true;
         for (int i = 0; i < 3; ++i) cycle(true);
 
+        // The first hart token owns the shared staged-command registers until
+        // it explicitly releases them. Competing hart writes are ignored.
+        write32(Dma::REG_COMMAND_LOCK, 1);
+        if (read32(Dma::REG_COMMAND_LOCK) != 1)
+            fail("hart 0 could not acquire command lock");
+        write32(Dma::REG_COMMAND_LOCK, 2);
+        if (read32(Dma::REG_COMMAND_LOCK) != 1)
+            fail("command lock changed owner while held");
+        write32(Dma::REG_COMMAND_LOCK, 0);
+        write32(Dma::REG_COMMAND_LOCK, 2);
+        if (read32(Dma::REG_COMMAND_LOCK) != 2)
+            fail("hart 1 could not acquire released command lock");
+        write32(Dma::REG_COMMAND_LOCK, 0);
+
         // Network RxRAM -> coherent CPU memory.
         const uint32_t handle = 0x3456;
         const uint32_t network_destination = 0x400;
         auto network_input = make_packet(77);
+        write32(Dma::REG_COMMAND_LOCK, 1);
         issue(DMA_NETWORK_CPU, network_input.size(), 0, network_destination, handle);
+        if (!busy()) fail("queued packet did not start before lock release");
+        // The lock protects only staged MMIO fields. Once COMMAND_PUSH has
+        // copied them into CMD-FIFO, another hart may acquire the bank while
+        // this packet is still waiting for/streaming its RxRAM contents.
+        write32(Dma::REG_COMMAND_LOCK, 0);
+        write32(Dma::REG_COMMAND_LOCK, 2);
+        if (read32(Dma::REG_COMMAND_LOCK) != 2)
+            fail("second hart could not stage while first DMA was active");
+        write32(Dma::REG_COMMAND_LOCK, 0);
         bool command_seen = false;
         for (uint32_t timeout = 0; timeout < 100 && !read_command_valid(); ++timeout) {
             cycle();
@@ -701,44 +962,73 @@ public:
         if (!command_seen) fail("DMA never issued its RxRAM command");
         check_memory(network_destination, network_input,
             "network-to-CPU payload mismatch");
+        if (!std::equal(network_input.begin(), network_input.end(),
+                backing_memory.begin() + network_destination)) {
+            fail("network packet was not written through to backing DDR");
+        }
 
-        // Unselected ingress packet drains without consuming L2 bandwidth.
+        // Hardware descriptor command: unselected ingress is drained without
+        // consuming coherent L2 bandwidth or changing the packet buffer.
         auto discarded_input = make_packet(73);
-        issue(DMA_NETWORK_CPU, discarded_input.size(), 0, network_destination,
-            handle + 1, Dma::FLAG_NETWORK_DISCARD);
-        for (uint32_t timeout = 0; timeout < 100 && !read_command_valid(); ++timeout) {
+        issue_descriptor(handle + 1, discarded_input.size(), false);
+        for (uint32_t timeout = 0;
+            timeout < 100 && !read_command_valid(); ++timeout) {
             cycle();
         }
-        if (!read_command_valid()) fail("discard never issued its RxRAM command");
+        if (!read_command_valid()) fail("descriptor discard never issued RxRAM read");
+        else if (read_handle() != handle + 1
+            || read_length() != discarded_input.size()) {
+            fail("descriptor discard RxRAM command mismatch");
+        }
         rx_read_ready = true;
         cycle();
         rx_read_ready = false;
         send_input(discarded_input, true);
         check_memory(network_destination, network_input,
-            "discard fast path modified coherent memory");
+            "descriptor discard modified coherent memory");
 
-        // Selected ingress packet streams directly to the System RxQueue.
+        // Hardware descriptor command: selected ingress streams directly to
+        // the System queue and observes downstream backpressure.
         auto direct_system_input = make_packet(91);
         system_output.clear();
         system_output_sop = false;
         system_output_eop = false;
-        issue(DMA_NETWORK_CPU, direct_system_input.size(), 0,
-            network_destination, handle + 2, Dma::FLAG_NETWORK_SYSTEM);
-        for (uint32_t timeout = 0; timeout < 100 && !read_command_valid(); ++timeout) {
+        system_tx_ready = false;
+        issue_descriptor(handle + 2, direct_system_input.size(), true);
+        for (uint32_t timeout = 0;
+            timeout < 100 && !read_command_valid(); ++timeout) {
             cycle();
         }
         if (!read_command_valid()) {
-            fail("network-to-system fast path never issued its RxRAM command");
+            fail("descriptor network-to-system never issued RxRAM read");
         }
         rx_read_ready = true;
         cycle();
         rx_read_ready = false;
+        if (rx_ready()) fail("direct System path ignored output backpressure");
+        // Advance the native model's per-cycle port cache while ready is low,
+        // then release backpressure in a fresh combinational cycle.
+        cycle();
+        system_tx_ready = true;
         send_input(direct_system_input, true);
         if (system_output != direct_system_input) {
-            fail("network-to-system fast-path payload mismatch");
+            std::print(stderr,
+                "direct System size mismatch: expected={} received={}\n",
+                direct_system_input.size(), system_output.size());
+            const size_t compared = std::min(
+                direct_system_input.size(), system_output.size());
+            for (size_t byte = 0; byte < compared; ++byte) {
+                if (system_output[byte] != direct_system_input[byte]) {
+                    std::print(stderr,
+                        "first direct System mismatch at byte {}: expected={:#04x} received={:#04x}\n",
+                        byte, direct_system_input[byte], system_output[byte]);
+                    break;
+                }
+            }
+            fail("descriptor network-to-system payload mismatch");
         }
         if (!system_output_sop || !system_output_eop) {
-            fail("network-to-system fast-path framing mismatch");
+            fail("descriptor network-to-system framing mismatch");
         }
 
         // System TxQueue -> coherent CPU memory.
@@ -777,7 +1067,27 @@ public:
             fail("CPU-to-network framing mismatch");
         }
 
-        if (read32(Dma::REG_COMPLETED) != 6) fail("completion count mismatch");
+        // Authoritative DDR-ring source bypasses coherent L2 for the bulk TX
+        // stream while retaining the same framed network output contract.
+        const uint32_t ring_source = 0x1400;
+        auto from_ring = make_packet(93);
+        std::copy(from_ring.begin(), from_ring.end(),
+            backing_memory.begin() + ring_source);
+        network_output.clear();
+        network_output_sop = false;
+        network_output_eop = false;
+        issue(DMA_CPU_NETWORK, from_ring.size(), ring_source, 0, 0,
+            Dma::FLAG_RING_SOURCE);
+        // A replayed/sticky AXI doorbell must not enqueue the already consumed
+        // staged command a second time.
+        write32(Dma::REG_COMMAND, Dma::COMMAND_PUSH);
+        wait_for_output();
+        if (network_output != from_ring)
+            fail("DDR-ring-to-network payload mismatch");
+        if (!network_output_sop || !network_output_eop)
+            fail("DDR-ring-to-network framing mismatch");
+
+        if (read32(Dma::REG_COMPLETED) != 7) fail("completion count mismatch");
         if (read32(Dma::REG_LAST_OPERATION) != DMA_CPU_NETWORK) {
             fail("last operation register mismatch");
         }

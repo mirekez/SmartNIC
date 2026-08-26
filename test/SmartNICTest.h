@@ -8,7 +8,8 @@
 #include "../rtl/SmartNIC.h"
 #include "../rtl/processing/Processing.h"
 #include "../rtl/system/System.h"
-#include "../cpphdl/tribe_cpu/common/Axi4Ram.h"
+#include "../rtl/common/Axi4DDR4.h"
+#include "../sim/DDR4.h"
 #include "TrafficGenerator.h"
 #include "AvalonHost.h"
 
@@ -37,8 +38,16 @@ public:
     System<8, 256> system;
     TrafficGenerator<LANE_WIDTH, TRAFFIC_DEPTH> traffic;
     AvalonHost<HOST_MEMORY_BYTES> host;
-    Axi4Ram<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
-        CPU::DATA_WIDTH, CPU_RAM_WORDS> cpu_memory[CPU_COUNT];
+    // The harness models eight physically independent DDR devices, one per
+    // Tribe cluster.  CPU_RAM_WORDS remains a source-compatible template
+    // argument; the DDR capacity is intentionally large enough for a 512-slot
+    // 2 KiB circular packet region plus firmware/hash state.
+    static constexpr size_t DDR_BYTES = 2 * 1024 * 1024;
+    static constexpr size_t DDR_WIDTH = 256;
+    Axi4DDR4<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
+        CPU::DATA_WIDTH, DDR_WIDTH> cpu_memory_adapter[CPU_COUNT];
+    DDR4<DDR_BYTES, DDR_WIDTH, CPU::EXTERNAL_ADDR_WIDTH>
+        cpu_memory[CPU_COUNT];
 
     // Traffic image loader and launch interface.
     _PORT(bool) traffic_load_valid_in;
@@ -256,7 +265,15 @@ private:
         smartnic.net_rx_keep_in = traffic.keep_out;
         smartnic.net_rx_sop_in = traffic.sop_out;
         smartnic.net_rx_eop_in = traffic.eop_out;
+#if DEMO_VIDEO
+        // The functional capture test uses parsed descriptors. For the visual
+        // demo use the architecturally supported RAW form so the 128-byte
+        // descriptor body visibly carries the packet prefix instead of sparse
+        // parsed fields and reserved zeros.
+        smartnic.net_rx_raw_in = _ASSIGN(true);
+#else
         smartnic.net_rx_raw_in = _ASSIGN(false);
+#endif
         smartnic.net_tx_ready_in = _ASSIGN(true);
 
         processing.descriptor_valid_in = smartnic.l2_descriptor_valid_out;
@@ -343,11 +360,26 @@ private:
         system.host_dma_out.readdatavalid_out = host.dma.readdatavalid_out;
 
         for (index = 0; index < CPU_COUNT; ++index) {
-            AXI4_TARGET_IF_DRIVER_FROM_MASTER(cpu_memory[index].axi_in,
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(cpu_memory_adapter[index].axi,
                 processing.ddr[index]);
             AXI4_MASTER_RESPONDER_FROM_TARGET(processing.ddr[index],
-                cpu_memory[index].axi_in);
-            cpu_memory[index].debugen_in = false;
+                cpu_memory_adapter[index].axi);
+            cpu_memory[index].valid_in =
+                cpu_memory_adapter[index].ddr_valid_out;
+            cpu_memory[index].write_in =
+                cpu_memory_adapter[index].ddr_write_out;
+            cpu_memory[index].address_in =
+                cpu_memory_adapter[index].ddr_address_out;
+            cpu_memory[index].writedata_in =
+                cpu_memory_adapter[index].ddr_writedata_out;
+            cpu_memory[index].byteenable_in =
+                cpu_memory_adapter[index].ddr_byteenable_out;
+            cpu_memory_adapter[index].ddr_ready_in =
+                cpu_memory[index].ready_out;
+            cpu_memory_adapter[index].ddr_readdatavalid_in =
+                cpu_memory[index].readdatavalid_out;
+            cpu_memory_adapter[index].ddr_readdata_in =
+                cpu_memory[index].readdata_out;
             processing.cache_invalidate_in[index] = _ASSIGN(false);
             for (core = 0; core < CPU::CORES; ++core) {
                 processing.software_irq_in[index * CPU::CORES + core] =
@@ -376,6 +408,9 @@ public:
         system._assign();
         host._assign();
         for (index = 0; index < CPU_COUNT; ++index) {
+            cpu_memory_adapter[index].__inst_name = __inst_name
+                + "/cpu_memory_adapter" + std::to_string(index);
+            cpu_memory_adapter[index]._assign();
             cpu_memory[index].__inst_name = __inst_name + "/cpu_memory"
                 + std::to_string(index);
             cpu_memory[index]._assign();
@@ -390,6 +425,7 @@ public:
         system._assign();
         host._assign();
         for (index = 0; index < CPU_COUNT; ++index) {
+            cpu_memory_adapter[index]._assign();
             cpu_memory[index]._assign();
         }
         bind_children();
@@ -413,6 +449,7 @@ public:
         // internal L2-to-primary CDC, so attached DDR controllers must sample
         // them on cpu_clk rather than l2_clk.
         for (index = 0; index < CPU_COUNT; ++index) {
+            cpu_memory_adapter[index]._work(reset);
             cpu_memory[index]._work(reset);
         }
     }
@@ -422,6 +459,7 @@ public:
         uint32_t index;
         processing._strobe();
         for (index = 0; index < CPU_COUNT; ++index) {
+            cpu_memory_adapter[index]._strobe();
             cpu_memory[index]._strobe();
         }
     }
@@ -467,10 +505,14 @@ public:
 #ifndef SYNTHESIS
     void load_cpu_byte(size_t cluster, uint32_t address, uint8_t value)
     {
-        if (cluster >= CPU_COUNT
-            || address >= CPU_RAM_WORDS * CPU::DATA_WIDTH / 8) return;
-        cpu_memory[cluster].ram.buffer.data[address / (CPU::DATA_WIDTH / 8)]
-            [address % (CPU::DATA_WIDTH / 8)] = value;
+        if (cluster >= CPU_COUNT || address >= DDR_BYTES) return;
+        cpu_memory[cluster].load_byte(address, value);
+    }
+
+    uint8_t cpu_memory_byte(size_t cluster, uint32_t address) const
+    {
+        if (cluster >= CPU_COUNT || address >= DDR_BYTES) return 0;
+        return cpu_memory[cluster].read_byte(address);
     }
 
     uint8_t host_byte(uint64_t address) const

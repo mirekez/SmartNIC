@@ -31,15 +31,50 @@
 #undef ENABLE_MMU_TLB
 #endif
 
+// Tribe retains sfence_vma_comb() in the non-MMU build but that helper names
+// the MMU-only issue latch.  Alias it while parsing this deliberately minimal
+// SmartNIC profile instead of modifying the shared cpphdl/tribe_cpu checkout.
+// Firmware cannot execute SFENCE.VMA when address translation is disabled.
+#define sfence_vma_issued_reg icache_invalidate_issued_reg
 #include "../../cpphdl/tribe_cpu/TribeTestModule.h"
+#undef sfence_vma_issued_reg
 #include "../common/Axi4Master.h"
 
 using namespace cpphdl;
+
+// Tribe's original coherent-line input waits for every L1 invalidation
+// acknowledgement to cross CPU->L2 before accepting the next line. SmartNIC's
+// CPU clock is four times the L2 clock, so its existing two-stage toggle CDC
+// can safely deliver one invalidation per L2 cycle without that return-path
+// serialization: the address is stable for four CPU edges and every toggle is
+// observed before the following L2 edge. Keep Tribe's invalidation generation
+// intact, but connect the line input directly to the shared-L2 ready signal.
+// Defining this derived composition locally keeps the shared cpphdl checkout
+// unchanged and makes the bypass legal RTL (L2 is a direct child here).
+template<size_t CPU_CORES = 4>
+class SmartNICTribe : public TribeTest<CPU_CORES>
+{
+    using Base = TribeTest<CPU_CORES>;
+
+public:
+    void _assign()
+    {
+        Base::_assign();
+        this->l2cache.dma_line_valid_in = this->dma_line_valid_in;
+        this->l2cache.dma_line_addr_in = this->dma_line_addr_in;
+        this->l2cache.dma_line_data_in = this->dma_line_data_in;
+        this->l2cache.dma_line_keep_in = this->dma_line_keep_in;
+        this->dma_line_ready_out = this->l2cache.dma_line_ready_out;
+    }
+};
 
 class CPU : public Module
 {
 public:
     static constexpr size_t CORES = 4;
+    // CppHDL retains the child template parameter name on inherited array
+    // ports. Export the identical literal in this parent for generated SV.
+    static constexpr size_t CPU_CORES = CORES;
     static constexpr size_t DATA_WIDTH = 256;
     static constexpr size_t ID_WIDTH = 4;
     static constexpr size_t MEMORY_BYTES = CPU_MEMORY;
@@ -62,7 +97,7 @@ public:
     static_assert(MEMORY_BYTES + IO_BYTES == MAX_RAM_SIZE,
         "Tribe address layout must match CPU_MEMORY plus IOMEM");
 
-    TribeTest<CORES> tribe;
+    SmartNICTribe<CORES> tribe;
 
     // Coherent, write-allocating ingress used by the packet DMA.
     Axi4If<32, ID_WIDTH, DATA_WIDTH> dma_in;

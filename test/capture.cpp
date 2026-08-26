@@ -1,12 +1,16 @@
 // Full-system capture test. A finite but uninterrupted minimum-IPG burst is
 // injected at 400G or 800G. Capture firmware running on the Tribe clusters
-// consumes every descriptor, copies every packet from RxRAM, and forwards one
-// packet in ten to the host. The host driver posts buffers, and the test
-// verifies byte-exact host memory for the selected packets.
+// Functional mode loads every packet through PacketDMA into its cluster-private
+// L2 and DDR circular buffer. Sustained mode uses discard/direct-host commands
+// to isolate 400G network throughput. Both verify sampled host packets; the
+// functional test also checks the final contents of all eight DDR rings.
 
 #include "SmartNICTest.h"
 #include "../rtl/testing/GenEthStream.h"
 #include "../rtl/system/Controller.h"
+#if DEMO_VIDEO
+#include "../demo/Visualizer.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -16,6 +20,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <print>
 #include <string>
 #include <vector>
@@ -26,12 +31,23 @@ namespace
 #ifndef SUSTAINED_CAPTURE
 #define SUSTAINED_CAPTURE 0
 #endif
+#ifndef DEMO_VIDEO
+#define DEMO_VIDEO 0
+#endif
+#ifndef DEMO_VIDEO_DECIMATION
+#define DEMO_VIDEO_DECIMATION 32
+#endif
 
 constexpr size_t TRAFFIC_DEPTH = 1024;
 constexpr size_t TEST_RX_RAM_DEPTH = RX_RAM_BANK_DEPTH;
 using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, TRAFFIC_DEPTH, 4096,
     4 * 1024 * 1024, TEST_RX_RAM_DEPTH>;
 using Generator = GenEthStream<NET_LANE_WIDTH>;
+#if DEMO_VIDEO
+using Beat = Generator::Beat;
+using Visualizer = smartnic_demo::Visualizer<Dut, Beat>;
+using smartnic_demo::Canvas;
+#endif
 
 constexpr uint64_t HOST_PACKET_BASE = 0x00100000;
 constexpr uint32_t HOST_PACKET_STRIDE = 2048;
@@ -43,9 +59,13 @@ constexpr uint32_t BASE_FRAME_COUNT = SUSTAINED_CAPTURE ? 40 : 32;
 // draining it later; RxRAM must recycle consumed packet allocations while the
 // non-stallable wire source is still active.
 constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE
-    ? (ENABLE_800G ? 24 : 64) : 1;
+    ? (ENABLE_800G ? 24 : 64) : 20;
 constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_REPEATS;
 constexpr uint32_t HOST_SAMPLE_PERIOD = 10;
+constexpr uint32_t PACKET_RING_BASE = 0x00010000;
+constexpr uint32_t PACKET_RING_STRIDE = 2048;
+constexpr uint32_t PACKET_RING_SLOT_MASK = 511;
+constexpr uint32_t PACKET_RING_SLOTS = PACKET_RING_SLOT_MASK + 1;
 static_assert(FRAME_COUNT % CPUS_USED == 0);
 constexpr uint32_t FRAMES_PER_CPU = FRAME_COUNT / CPUS_USED;
 constexpr uint32_t HOST_FRAMES_PER_CPU =
@@ -121,8 +141,16 @@ class CaptureTest
     bool wire_midpoint_seen = false;
     uint32_t wire_midpoint_completed = 0;
     uint32_t wire_end_completed = 0;
+    uint32_t traffic_image_beats = 0;
     bool backpressure_reported = false;
     bool error = false;
+#if DEMO_VIDEO
+    uint32_t video_decimation_phase = 0;
+    uint32_t video_host_consumer = 0;
+    std::vector<uint8_t> firmware_image;
+    std::vector<Beat> traffic_beats;
+    std::unique_ptr<Visualizer> visualizer;
+#endif
 
     static constexpr uint64_t CPU_CLOCK_HZ = L2_CLK_HZ * 4;
 
@@ -137,8 +165,14 @@ class CaptureTest
     {
         uint32_t completed = 0;
         for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
-            completed += (uint32_t)dut.processing.packet_dma[cluster]
-                .completed_count_out();
+            if constexpr (SUSTAINED_CAPTURE) {
+                completed += (uint32_t)dut.processing.packet_dma[cluster]
+                    .completed_count_out();
+            }
+            else {
+                completed += (uint32_t)dut.processing.packet_dma[cluster]
+                    .cache_completed_count_out();
+            }
         }
         return completed;
     }
@@ -179,12 +213,16 @@ class CaptureTest
     Edges cycle(bool reset = false)
     {
         Edges edges;
+#if DEMO_VIDEO
+        if (visualizer) visualizer->observe_cpu_before(dut);
+#endif
         dut._work_cpu_clk(reset);
         dut._strobe_cpu_clk();
 
         net_phase += NET_CLK_HZ;
         if (net_phase >= CPU_CLOCK_HZ) {
             net_phase -= CPU_CLOCK_HZ;
+            const bool video_wire_active = dut.traffic.valid_out();
             if (dut.traffic.valid_out()) {
                 if (!wire_started) {
                     wire_started = true;
@@ -200,12 +238,15 @@ class CaptureTest
                         (uint32_t)dut.traffic_emitted_beats_out()));
                 }
             }
+#if DEMO_VIDEO
+            if (visualizer) visualizer->observe_net_before(dut);
+#endif
             dut._work_net_clk(reset);
             dut._strobe_net_clk();
-            if (SUSTAINED_CAPTURE && !ENABLE_800G && wire_started
-                && !wire_midpoint_seen
+            if (wire_started && !wire_midpoint_seen
+                && traffic_image_beats != 0
                 && (uint32_t)dut.traffic_emitted_beats_out()
-                    >= (382u * TRAFFIC_REPEATS) / 2) {
+                    >= (traffic_image_beats * TRAFFIC_REPEATS) / 2) {
                 wire_midpoint_seen = true;
                 wire_midpoint_completed = completed_packets();
             }
@@ -216,10 +257,24 @@ class CaptureTest
             }
             ++net_cycles;
             edges.net = true;
+#if DEMO_VIDEO
+            if (visualizer) {
+                // Every AVI frame is one active network cycle. Continue the
+                // functional simulation after ingress ends, but do not append
+                // idle drain frames that make a continuous burst look sparse.
+                if (video_wire_active) {
+                    visualizer->frame(dut, ticks, video_host_consumer,
+                        true, false);
+                }
+            }
+#endif
         }
         l2_phase += L2_CLK_HZ;
         if (l2_phase >= CPU_CLOCK_HZ) {
             l2_phase -= CPU_CLOCK_HZ;
+#if DEMO_VIDEO
+            if (visualizer) visualizer->observe_l2_before(dut);
+#endif
             dut._work_l2_clk(reset);
             dut._strobe_l2_clk();
             edges.l2 = true;
@@ -227,6 +282,9 @@ class CaptureTest
         system_phase += SYSTEM_CLK_HZ;
         if (system_phase >= CPU_CLOCK_HZ) {
             system_phase -= CPU_CLOCK_HZ;
+#if DEMO_VIDEO
+            if (visualizer) visualizer->observe_system_before(dut);
+#endif
             dut._work_system_clk(reset);
             dut._strobe_system_clk();
             edges.system = true;
@@ -284,11 +342,19 @@ class CaptureTest
                 return false;
             }
             const uint32_t address = segment.paddr ? segment.paddr : segment.vaddr;
+#if DEMO_VIDEO
+            if (firmware_image.size() < (size_t)address + segment.memsz) {
+                firmware_image.resize((size_t)address + segment.memsz, 0);
+            }
+#endif
             for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
                 for (uint32_t byte = 0; byte < segment.memsz; ++byte) {
                     const uint8_t value = byte < segment.filesz
                         ? image[segment.offset + byte] : 0;
                     dut.load_cpu_byte(cluster, address + byte, value);
+#if DEMO_VIDEO
+                    firmware_image[address + byte] = value;
+#endif
                 }
             }
             loaded += segment.memsz;
@@ -356,15 +422,30 @@ class CaptureTest
     {
         static constexpr std::array<uint32_t, 8> functional_sizes = {
             64, 128, 256, 512, 1024, 1516, 768, 300};
+#if DEMO_VIDEO
+        static constexpr std::array<uint16_t, 16> patterns = {
+            0x000f, 0x00f0, 0x0f00, 0x00ff,
+            0x0f0f, 0x0ff0, 0x0fff, 0x00cc,
+            0x0c0c, 0x0cc0, 0x1099, 0x1909,
+            0x1990, 0x2066, 0x2606, 0x2660};
+#endif
         std::vector<std::vector<uint8_t>> frames;
         for (uint32_t frame_index = 0;
             frame_index < BASE_FRAME_COUNT; ++frame_index) {
             const uint32_t size = SUSTAINED_CAPTURE ? 1516
                 : functional_sizes[frame_index % functional_sizes.size()];
             std::vector<uint8_t> frame(size);
+#if DEMO_VIDEO
+            const uint16_t pattern = patterns[frame_index % patterns.size()];
+            for (uint32_t byte = 0; byte < frame.size(); byte += 2) {
+                frame[byte] = (uint8_t)pattern;
+                if (byte + 1 < frame.size()) frame[byte + 1] = pattern >> 8;
+            }
+#else
             for (uint32_t byte = 0; byte < frame.size(); ++byte) {
                 frame[byte] = (uint8_t)(frame_index * 29 + byte * 17 + 3);
             }
+#endif
             const uint8_t header[14] = {
                 0x02, 0, 0, 0, 0, (uint8_t)frame_index,
                 0x02, 1, 2, 3, 4, (uint8_t)(0x80 + frame_index),
@@ -412,9 +493,13 @@ class CaptureTest
     bool load_traffic(const std::vector<std::vector<uint8_t>>& frames)
     {
         Generator generator;
+#if DEMO_VIDEO
+        traffic_beats.clear();
+#endif
         generator.clear();
         for (const auto& frame : frames) generator.push(frame, 12);
         generator.finalize();
+        traffic_image_beats = generator.size();
         if (generator.size() > TRAFFIC_DEPTH) {
             fail("traffic image exceeds harness generator depth");
             return false;
@@ -425,6 +510,9 @@ class CaptureTest
                 return false;
             }
             const auto& beat = generator.front();
+#if DEMO_VIDEO
+            traffic_beats.push_back(beat);
+#endif
             traffic_load_data = beat.data;
             traffic_load_keep = beat.keep;
             traffic_load_sop = beat.sop;
@@ -482,6 +570,93 @@ class CaptureTest
         return true;
     }
 
+    bool verify_ddr_rings(const std::vector<std::vector<uint8_t>>& frames)
+    {
+        std::array<uint32_t, BASE_FRAME_COUNT> expected_count{};
+        std::array<uint32_t, BASE_FRAME_COUNT> seen_count{};
+        for (const auto& frame : frames) {
+            const uint32_t packet_id = (uint32_t)frame[14]
+                | ((uint32_t)frame[15] << 8)
+                | ((uint32_t)frame[16] << 16)
+                | ((uint32_t)frame[17] << 24);
+            if (packet_id >= BASE_FRAME_COUNT) {
+                fail("generated packet ID is outside the compact image");
+                return false;
+            }
+            ++expected_count[packet_id];
+        }
+        const uint32_t packets_per_cluster = frames.size() / CPUS_USED;
+        const uint32_t occupied_slots = std::min<uint32_t>(
+            packets_per_cluster, PACKET_RING_SLOTS);
+
+        for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
+            for (uint32_t slot = 0; slot < occupied_slots; ++slot) {
+                const uint32_t address = PACKET_RING_BASE
+                    + slot * PACKET_RING_STRIDE;
+                const uint32_t packet_id =
+                    (uint32_t)dut.cpu_memory_byte(cluster, address + 14)
+                    | ((uint32_t)dut.cpu_memory_byte(cluster, address + 15) << 8)
+                    | ((uint32_t)dut.cpu_memory_byte(cluster, address + 16) << 16)
+                    | ((uint32_t)dut.cpu_memory_byte(cluster, address + 17) << 24);
+                uint32_t frame = BASE_FRAME_COUNT;
+                for (uint32_t candidate = 0;
+                    candidate < BASE_FRAME_COUNT; ++candidate) {
+                    if ((uint32_t)frames[candidate][14]
+                            == (packet_id & 0xffu)
+                        && (uint32_t)frames[candidate][15]
+                            == ((packet_id >> 8) & 0xffu)
+                        && (uint32_t)frames[candidate][16]
+                            == ((packet_id >> 16) & 0xffu)
+                        && (uint32_t)frames[candidate][17]
+                            == ((packet_id >> 24) & 0xffu)) {
+                        frame = candidate;
+                        break;
+                    }
+                }
+                if (frame == BASE_FRAME_COUNT) {
+                    fail(std::format(
+                        "CPU {} DDR ring slot {} contains unknown packet id {}",
+                        cluster, slot, packet_id));
+                    return false;
+                }
+                ++seen_count[frame];
+                for (uint32_t byte = 0; byte < frames[frame].size(); ++byte) {
+                    const uint8_t actual = dut.cpu_memory_byte(
+                        cluster, address + byte);
+                    if (actual != frames[frame][byte]) {
+                        fail(std::format(
+                            "CPU {} DDR ring slot {} differs from packet {} "
+                            "at byte {}: got {:02x}, expected {:02x}",
+                            cluster, slot, frame, byte, actual,
+                            frames[frame][byte]));
+                        return false;
+                    }
+                }
+            }
+            // The programmed mask must wrap before the following slot. This
+            // byte is outside both firmware and the 64-slot packet region.
+            const uint32_t guard = PACKET_RING_BASE
+                + PACKET_RING_SLOTS * PACKET_RING_STRIDE;
+            if (dut.cpu_memory_byte(cluster, guard) != 0) {
+                fail(std::format(
+                    "CPU {} DDR packet ring wrote beyond its slot mask",
+                    cluster));
+                return false;
+            }
+        }
+        if (!SUSTAINED_CAPTURE) {
+            for (uint32_t packet = 0; packet < BASE_FRAME_COUNT; ++packet) {
+                if (seen_count[packet] != expected_count[packet]) {
+                    fail(std::format(
+                        "packet ID {} occurs {} times in DDR rings, expected {}",
+                        packet, seen_count[packet], expected_count[packet]));
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     void report_progress(uint32_t host_consumer)
     {
         std::cerr << (ENABLE_800G ? "800G" : "400G")
@@ -492,9 +667,15 @@ class CaptureTest
                       << "{descriptors="
                       << (uint32_t)dut.processing.descriptor_fetcher[cluster]
                           .descriptor_count_out()
-                      << ",dma="
+                      << ",loaded="
                       << (uint32_t)dut.processing.packet_dma[cluster]
-                          .completed_count_out()
+                          .cache_completed_count_out()
+                      << ",commands="
+                      << (uint32_t)dut.processing.packet_dma[cluster]
+                          .command_completed_count_out()
+                      << ",ddr_pending="
+                      << (uint32_t)dut.processing.packet_dma[cluster]
+                          .backing_pending_count_out()
                       << ",busy="
                       << dut.processing.packet_dma[cluster].busy_out()
                       << '}';
@@ -536,7 +717,7 @@ class CaptureTest
         uint32_t dma_operations = 0;
         for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
             dma_operations += (uint32_t)dut.processing
-                .packet_dma[cluster].completed_count_out();
+                .packet_dma[cluster].cache_completed_count_out();
         }
         const uint64_t elapsed_cycles = wire_elapsed_cycles();
         const double elapsed_seconds = (double)elapsed_cycles / NET_CLK_HZ;
@@ -571,7 +752,12 @@ class CaptureTest
     }
 
 public:
+#if DEMO_VIDEO
+    bool run(const std::filesystem::path& firmware,
+        const std::filesystem::path& output, uint8_t background)
+#else
     bool run(const std::filesystem::path& firmware)
+#endif
     {
         bind();
         if (!load_elf(firmware)) return false;
@@ -593,6 +779,28 @@ public:
         write32(Controller<>::REG_CONTROL, Controller<>::CONTROL_ENABLE);
         if (!load_traffic(base_frames)) return false;
 
+        // Boot latency is not receive-pipeline throughput. Hold the compact
+        // generator image until every cluster has enabled its DescriptorFetcher,
+        // then release one uninterrupted 20-pass burst with no warm-up gaps.
+        bool workers_ready = false;
+        for (uint32_t timeout = 0; timeout < 100000; ++timeout) {
+            workers_ready = true;
+            for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
+                workers_ready &= dut.processing.descriptor_fetcher[cluster]
+                    .prefetch_enabled_out();
+            }
+            if (workers_ready) break;
+            cycle();
+        }
+        if (!workers_ready) {
+            fail("capture firmware workers did not become ready");
+            return false;
+        }
+#if DEMO_VIDEO
+        visualizer = std::make_unique<Visualizer>(output, frames,
+            traffic_beats, firmware_image, TRAFFIC_REPEATS, 60, background);
+#endif
+
         traffic_start = true;
         wait_net_edge();
         traffic_start = false;
@@ -608,6 +816,9 @@ public:
             cycle();
             if (ticks >= next_poll) {
                 consumer = read32(Controller<>::REG_RX_CONSUMER);
+#if DEMO_VIDEO
+                video_host_consumer = consumer;
+#endif
                 next_poll = ticks + 20000;
             }
             if (ticks >= next_progress) {
@@ -618,9 +829,16 @@ public:
                 report_protocol_errors();
                 fail("RTL protocol_error asserted");
             }
-            if (dut.storage_full_out()) fail("RxRAM/RxFIFO storage_full asserted");
+            if (dut.storage_full_out()) {
+                report_progress(consumer);
+                report_backpressure_state(consumer);
+                fail("RxRAM/RxFIFO storage_full asserted");
+            }
         }
         consumer = read32(Controller<>::REG_RX_CONSUMER);
+#if DEMO_VIDEO
+        video_host_consumer = consumer;
+#endif
         if (backpressure_reported) report_backpressure_state(consumer);
         if (consumer != host_frames.size()) {
             fail(std::format("capture timed out: {} of {} packets reached host",
@@ -634,6 +852,28 @@ public:
         if ((uint32_t)dut.traffic_backpressure_cycles_out() != 0) {
             fail(std::format("wire-speed violation: {} network cycles backpressured",
                 (uint32_t)dut.traffic_backpressure_cycles_out()));
+        }
+        if (!SUSTAINED_CAPTURE && TRAFFIC_REPEATS > 1) {
+            if (!wire_midpoint_seen) {
+                fail("functional burst midpoint was not observed");
+            }
+            const uint32_t second_half_retired = wire_end_completed
+                - wire_midpoint_completed;
+            // A long capture must make measurable forward progress while the
+            // latter half of the wire burst is still arriving. This prevents
+            // the test from passing by buffering the complete input and only
+            // processing it after the generator stops.
+            if (second_half_retired < FRAME_COUNT / 8) {
+                fail(std::format(
+                    "processing did not keep working during the long burst: "
+                    "only {} packets retired during its second half",
+                    second_half_retired));
+            }
+            std::print(
+                "long-burst progress: midpoint_retired={} wire_end_retired={} "
+                "second_half_retired={}\n",
+                wire_midpoint_completed, wire_end_completed,
+                second_half_retired);
         }
         if (SUSTAINED_CAPTURE && !ENABLE_800G) {
             if (wire_elapsed_cycles() <= ABSORPTION_NET_CYCLES) {
@@ -668,6 +908,10 @@ public:
         // initial descriptor-to-cluster phase is intentionally unspecified.
         // Verify the sampled output against the complete injected population.
         if (!error) verify_packets(frames, host_frames.size());
+        if (!error && !SUSTAINED_CAPTURE) verify_ddr_rings(frames);
+#if DEMO_VIDEO
+        visualizer->finish();
+#endif
 
         std::print("{} capture: ingress_packets={} host_packets={} beats={} "
             "net_cycles={} CPU ticks={} backpressure={} result={}\n",
@@ -685,5 +929,31 @@ public:
 int main(int argc, char** argv)
 {
     const std::filesystem::path firmware = argc > 1 ? argv[1] : "capture.elf";
+#if DEMO_VIDEO
+    try {
+        const std::filesystem::path output = argc > 2
+            ? argv[2] : "smartnic_capture_8cpu_32core.avi";
+        uint8_t background = Canvas::UI_OUTSIDE;
+        if (argc > 3) {
+            std::string color = argv[3];
+            if (!color.empty() && color.front() == '#') color.erase(0, 1);
+            size_t consumed = 0;
+            const unsigned long rgb = std::stoul(color, &consumed, 16);
+            if (color.size() != 6 || consumed != color.size()
+                || rgb > 0xfffffful) {
+                throw std::runtime_error(
+                    "background must be a six-digit #RRGGBB color");
+            }
+            background = Canvas::rgb332((uint8_t)(rgb >> 16),
+                (uint8_t)(rgb >> 8), (uint8_t)rgb);
+        }
+        return CaptureTest().run(firmware, output, background) ? 0 : 1;
+    }
+    catch (const std::exception& exception) {
+        std::cerr << "capture video exception: " << exception.what() << '\n';
+        return 1;
+    }
+#else
     return CaptureTest().run(firmware) ? 0 : 1;
+#endif
 }

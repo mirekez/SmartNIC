@@ -20,11 +20,13 @@
 #define HOST_ADDR_WIDTH 64
 #define SYSTEM_CLK_HZ 256000000ULL
 
-// Datapath clocks. In 400G mode, 312.5 MHz gives eight 256-bit PacketDMA lanes
-// 800 Gb/s gross capacity and 1.25 GHz CPU cores. This leaves both DMA boundary
-// cycles and enough instructions for the descriptor/doorbell loop. Exact rate
-// matching (195.3125 MHz) provides neither margin. The 800G configuration is
-// not part of the current throughput target and retains its prior rate match.
+// Datapath clocks. In 400G mode, RxRAM still supplies one 160-bit stored word
+// per processing clock. Running that side at the 312.5 MHz wire clock gives
+// exactly 50 Gb/s per stream and leaves no cycles for packet/descriptor
+// turnover. Restore the intended 400 MHz processing/L2 domain: every read port
+// then supplies 64 Gb/s, while eight 256-bit PacketDMA lanes have ample gross
+// bandwidth. The four-times-faster Tribe core clock is consequently 1.6 GHz.
+// The 800G configuration remains outside the current throughput target.
 #define NET_CLK_HZ 312500000ULL
 #define L2_DATA_WIDTH 256
 #if ENABLE_800G
@@ -32,7 +34,7 @@
 #define L2_CLK_HZ ((NET_CLK_HZ * NET_LANE_WIDTH) / L2_DATA_WIDTH)
 #else
 #define NET_LANE_WIDTH 160
-#define L2_CLK_HZ 312500000ULL
+#define L2_CLK_HZ 400000000ULL
 #endif
 
 // PacketParser bounds.  These are deliberately finite: the parser examines a

@@ -342,6 +342,27 @@ public:
         }
         write32(Fetcher::REG_ACTION, Fetcher::ACTION_NEXT);
         if (available()) fail("skip/pop did not empty the queue");
+
+        // Automatic L2 destinations form a programmable circular DDR packet
+        // buffer independently of the four-entry descriptor pre-read queue.
+        // A two-slot geometry must wrap on the third accepted descriptor.
+        write32(Fetcher::REG_AUTO_BASE, 0x00020000);
+        write32(Fetcher::REG_AUTO_SLOT_MASK, 1);
+        write32(Fetcher::REG_CONTROL,
+            Fetcher::CONTROL_ENABLE | Fetcher::CONTROL_AUTO_L2);
+        send(make_descriptor(0x100));
+        if (read32(Fetcher::REG_PACKET_BUFFER) != 0x00020000)
+            fail("automatic DDR ring first slot mismatch");
+        write32(Fetcher::REG_ACTION, Fetcher::ACTION_NEXT);
+        send(make_descriptor(0x101));
+        if (read32(Fetcher::REG_PACKET_BUFFER) != 0x00020800)
+            fail("automatic DDR ring second slot mismatch");
+        write32(Fetcher::REG_ACTION, Fetcher::ACTION_NEXT);
+        send(make_descriptor(0x102));
+        if (read32(Fetcher::REG_PACKET_BUFFER) != 0x00020000)
+            fail("automatic DDR ring did not wrap");
+        write32(Fetcher::REG_ACTION, Fetcher::ACTION_NEXT);
+
         if (read32(Fetcher::REG_STATUS) & Fetcher::STATUS_PROTOCOL_ERROR) {
             fail("well-formed descriptor traffic set protocol error");
         }

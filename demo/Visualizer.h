@@ -8,6 +8,7 @@
 #include "Video.h"
 #include "../Config.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <deque>
@@ -32,9 +33,22 @@ class Visualizer
 {
     static constexpr uint32_t QUEUES = 8;
     static constexpr uint32_t CLUSTERS = CPUS_USED;
-    static constexpr uint32_t L2_VIEW_BYTES = 2048;
-    static constexpr uint32_t L1_VIEW_BYTES = 512;
+    static constexpr uint32_t CORES = CPU::CORES;
+    static constexpr uint32_t TOTAL_CORES = CLUSTERS * CORES;
+    static constexpr uint32_t L2_VIEW_BYTES = CPU::L2_BYTES;
+    static constexpr uint32_t L1I_VIEW_BYTES = CPU::L1I_BYTES;
+    static constexpr uint32_t L1D_VIEW_BYTES = CPU::L1D_BYTES;
     static constexpr uint32_t PACKET_BUFFER = 0x00010000;
+    static constexpr uint32_t PACKET_SLOT_BYTES = 2048;
+    static constexpr uint32_t PACKET_SLOT_COUNT = 512;
+    static constexpr uint32_t DDR_VIEW_COLUMNS = 92;
+    static constexpr uint32_t DDR_VIEW_ROWS = 106;
+    static constexpr uint32_t DDR_VIEW_PIXELS =
+        DDR_VIEW_COLUMNS * DDR_VIEW_ROWS;
+    static constexpr uint32_t CHANNEL_VIEW_COLUMNS = 71;
+    static constexpr uint32_t CHANNEL_VIEW_ROWS = 342;
+    static constexpr uint32_t CHANNEL_VIEW_PIXELS =
+        CHANNEL_VIEW_COLUMNS * CHANNEL_VIEW_ROWS;
     static constexpr uint64_t HOST_PACKET_BASE = 0x00100000;
     static constexpr uint32_t HOST_PACKET_STRIDE = 2048;
 
@@ -61,9 +75,20 @@ class Visualizer
     uint64_t cpu_cycles = 0;
     uint64_t l2_cycles = 0;
     uint64_t system_cycles = 0;
+    std::vector<uint16_t> channel_data;
+    std::vector<bool> channel_valid;
+    size_t channel_write_word = 0;
 
-    std::array<std::vector<Packet>, QUEUES> rx_ram;
+    struct RxRamPacket
+    {
+        uint32_t handle = 0;
+        Packet data;
+    };
+
+    std::array<std::vector<RxRamPacket>, QUEUES> rx_ram;
+    std::array<std::deque<Packet>, QUEUES> rx_ram_pending;
     std::array<std::deque<Packet>, CLUSTERS> rx_fifo;
+    std::array<Packet, CLUSTERS> rx_fifo_assembling;
     std::array<std::deque<Packet>, QUEUES> tx_fifo;
     std::array<Packet, QUEUES> tx_fifo_assembling;
     std::array<std::deque<Packet>, QUEUES> rx_queue;
@@ -77,12 +102,15 @@ class Visualizer
     std::array<uint32_t, CLUSTERS> l2_previous_write_address{};
     std::array<bool, CLUSTERS> l2_previous_write_valid{};
     std::array<bool, CLUSTERS> l2_write_address_valid{};
-    std::array<Packet, CLUSTERS> l1_instruction;
-    std::array<std::vector<bool>, CLUSTERS> l1_instruction_valid;
-    std::array<Packet, CLUSTERS> l1_data;
-    std::array<std::vector<bool>, CLUSTERS> l1_data_valid;
-    std::array<uint32_t, CLUSTERS> l1_instruction_address{};
-    std::array<uint32_t, CLUSTERS> l1_data_address{};
+    std::array<Packet, TOTAL_CORES> l1_instruction;
+    std::array<std::vector<bool>, TOTAL_CORES> l1_instruction_valid;
+    std::array<Packet, TOTAL_CORES> l1_data;
+    std::array<std::vector<bool>, TOTAL_CORES> l1_data_valid;
+    std::array<uint32_t, TOTAL_CORES> l1_instruction_address{};
+    std::array<uint32_t, TOTAL_CORES> l1_data_address{};
+    std::array<uint8_t, TOTAL_CORES> l1_activity{};
+    std::array<std::vector<uint16_t>, CLUSTERS> ddr_data;
+    std::array<std::vector<bool>, CLUSTERS> ddr_valid;
     bool loaded_snapshot_written = false;
     bool mid_snapshot_written = false;
     bool queue_snapshot_written = false;
@@ -94,17 +122,15 @@ class Visualizer
     static constexpr uint8_t TEXT = Canvas::UI_TEXT;
     static constexpr uint8_t ACTIVE = Canvas::UI_ACTIVE;
 
-    static Packet descriptor_for(const Packet& packet, uint32_t index)
+    static uint32_t l2_physical_offset(uint32_t address)
     {
-        Packet descriptor(160, 0);
-        descriptor[0] = (uint8_t)index;
-        descriptor[1] = (uint8_t)(index >> 8);
-        descriptor[4] = (uint8_t)packet.size();
-        descriptor[5] = (uint8_t)(packet.size() >> 8);
-        descriptor[6] = (uint8_t)(index & 7u);
-        const size_t copied = std::min<size_t>(128, packet.size());
-        std::copy_n(packet.begin(), copied, descriptor.begin() + 32);
-        return descriptor;
+        constexpr uint32_t line_bytes = CPU::CACHE_LINE_BYTES;
+        constexpr uint32_t sets = CPU::L2_BYTES
+            / line_bytes / CPU::L2_WAYS;
+        const uint32_t line = address / line_bytes;
+        const uint32_t set = line % sets;
+        const uint32_t way = (line / sets) % CPU::L2_WAYS;
+        return (way * sets + set) * line_bytes;
     }
 
     template<size_t DATA_WIDTH, size_t KEEP_WIDTH>
@@ -130,38 +156,28 @@ class Visualizer
         }
     }
 
-    PacketList channel_packets() const
+    static void channel_memory(Canvas& image, Rect rect,
+        const std::vector<uint16_t>& data, const std::vector<bool>& valid,
+        size_t write_word)
     {
-        PacketList packets;
-        Packet current;
-        const size_t end = std::min(loaded_beats, source_beats.size());
-        const uint64_t total_beats = (uint64_t)source_beats.size()
-            * source_repeats;
-        if (source_beats.empty() || emitted_beats >= total_beats) return packets;
-        // The hardware generator retains one compact image and replays it.
-        // Show the unconsumed tail of the current pass; it refills at the next
-        // replay boundary instead of pretending all repeated beats are stored.
-        const size_t begin = std::min<size_t>(emitted_beats
-            % source_beats.size(), end);
-        for (size_t index = begin; index < end; ++index) {
-            const BEAT& beat = source_beats[index];
-            for (size_t byte = 0; byte < DUT::NET_BYTES; ++byte) {
-                if (beat.sop[byte] && !current.empty()) {
-                    packets.push_back(std::move(current));
-                    current.clear();
-                }
-                if (beat.keep[byte]) {
-                    current.push_back((uint8_t)beat.data.bits(
-                        byte * 8 + 7, byte * 8));
-                }
-                if (beat.eop[byte]) {
-                    packets.push_back(std::move(current));
-                    current.clear();
-                }
+        const int left = rect.x + 2;
+        const int top = rect.y + 10;
+        const int columns = std::max(1, rect.width - 4);
+        const int rows = std::max(1, rect.height - 12);
+        const size_t pixels = std::min(data.size(),
+            (size_t)columns * rows);
+        for (size_t pixel = 0; pixel < pixels; ++pixel) {
+            if (pixel < valid.size() && valid[pixel]) {
+                image.pixel(left + (int)(pixel % columns),
+                    top + (int)(pixel / columns),
+                    Canvas::word_color(data[pixel]));
             }
         }
-        if (!current.empty()) packets.push_back(std::move(current));
-        return packets;
+        if (pixels != 0) {
+            const size_t cursor = write_word % pixels;
+            image.pixel(left + (int)(cursor % columns),
+                top + (int)(cursor / columns), ACTIVE);
+        }
     }
 
     static PacketList flatten(const std::deque<Packet>& packets)
@@ -222,25 +238,49 @@ class Visualizer
     {
         const int left = rect.x + 2;
         const int right = rect.x + rect.width - 2;
-        int x = left;
-        int y = rect.y + 10;
+        const int top = rect.y + 10;
         const int bottom = rect.y + rect.height - 2;
-        bool first = true;
+        const int columns = std::max(0, right - left);
+        const int rows = std::max(0, bottom - top);
+        const size_t pixels = (size_t)columns * rows;
+        size_t source_words = 0;
         for (const Packet& packet : list) {
-            if (!first) {
-                if (x != left) { x = left; ++y; }
-                if (y >= bottom) return;
-                image.hline(left, y++, right - left, GRID);
-            }
-            first = false;
+            source_words += (packet.size() + 1) / 2;
+        }
+        if (pixels == 0 || source_words == 0) return;
+
+        // Map two bytes to each pixel while the panel has room. If it fills,
+        // fold the complete contents proportionally instead of truncating the
+        // newest packets or inserting the old five-pixel visual spacing.
+        std::vector<uint16_t> values(pixels, 0);
+        std::vector<bool> occupied(pixels, false);
+        std::vector<size_t> boundaries;
+        size_t source_word = 0;
+        for (const Packet& packet : list) {
+            if (source_word != 0) boundaries.push_back(source_word);
             for (size_t byte = 0; byte < packet.size(); byte += 2) {
-                if (y >= bottom) return;
                 const uint16_t word = packet[byte]
                     | (uint16_t)(byte + 1 < packet.size() ? packet[byte + 1] : 0)
                         << 8;
-                image.pixel(x, y, Canvas::word_color(word));
-                if (++x >= right) { x = left; ++y; }
+                const size_t pixel = source_words <= pixels
+                    ? source_word
+                    : std::min(pixels - 1,
+                        source_word * pixels / source_words);
+                occupied[pixel] = true;
+                if (word != 0 || values[pixel] == 0) values[pixel] = word;
+                ++source_word;
             }
+        }
+        for (size_t pixel = 0; pixel < pixels; ++pixel) {
+            if (occupied[pixel]) image.pixel(left + (int)(pixel % columns),
+                top + (int)(pixel / columns), Canvas::word_color(values[pixel]));
+        }
+        for (const size_t boundary : boundaries) {
+            const size_t pixel = source_words <= pixels
+                ? std::min(pixels - 1, boundary)
+                : std::min(pixels - 1, boundary * pixels / source_words);
+            image.pixel(left + (int)(pixel % columns),
+                top + (int)(pixel / columns), GRID);
         }
     }
 
@@ -265,58 +305,152 @@ class Visualizer
     {
         const int left = rect.x + 2;
         const int top = rect.y + 10;
-        const int columns = 16; // one visible row is one 32-byte cache line
+        const int columns = std::min(32, std::max(1, rect.width - 6));
         const int rows = std::max(0, rect.height - 12);
-        const size_t words = std::min<size_t>(bytes.size() / 2,
-            (size_t)columns * rows);
-        for (size_t word = 0; word < words; ++word) {
-            const size_t byte = word * 2;
-            if (byte >= valid.size() || !valid[byte]) continue;
-            const uint16_t value = bytes[byte]
-                | (uint16_t)bytes[byte + 1] << 8;
-            image.pixel(left + (int)(word % columns),
-                top + (int)(word / columns), Canvas::word_color(value));
+        const size_t source_words = bytes.size() / 2;
+        const size_t pixels = (size_t)columns * rows;
+        // Compress the complete cache capacity into the panel. Every source
+        // range contributes; valid nonzero data wins when several words fold
+        // into one destination pixel.
+        for (size_t pixel = 0; pixel < pixels && source_words != 0; ++pixel) {
+            const size_t begin = pixel * source_words / pixels;
+            const size_t end = std::max(begin + 1,
+                (pixel + 1) * source_words / pixels);
+            bool occupied = false;
+            uint16_t value = 0;
+            for (size_t word = begin; word < end && word < source_words;
+                ++word) {
+                const size_t byte = word * 2;
+                if (byte + 1 >= valid.size() || !valid[byte]) continue;
+                const uint16_t candidate = bytes[byte]
+                    | (uint16_t)bytes[byte + 1] << 8;
+                occupied = true;
+                if (candidate != 0 || value == 0) value = candidate;
+            }
+            if (occupied) image.pixel(left + (int)(pixel % columns),
+                top + (int)(pixel / columns), Canvas::word_color(value));
         }
-        for (int row = 1; row < rows; ++row) {
-            image.pixel(left + columns, top + row, GRID);
-        }
-        const uint32_t line = (address / 32u) % (uint32_t)std::max(1, rows);
-        if (line < (uint32_t)rows) {
-            image.pixel(left + columns + 1, top + (int)line, ACTIVE);
+        if (source_words != 0 && pixels != 0) {
+            const size_t active_word = (address % bytes.size()) / 2;
+            const size_t active_pixel = std::min(pixels - 1,
+                active_word * pixels / source_words);
+            image.pixel(left + (int)(active_pixel % columns),
+                top + (int)(active_pixel / columns), ACTIVE);
         }
     }
 
-    void render(uint64_t ticks, uint32_t host_consumer,
+    static void ddr_memory(Canvas& image, Rect rect,
+        const std::vector<uint16_t>& data, const std::vector<bool>& valid)
+    {
+        const int left = rect.x + 2;
+        const int top = rect.y + 10;
+        const int columns = std::max(1, rect.width - 4);
+        const int rows = std::max(1, rect.height - 12);
+        const size_t pixels = (size_t)columns * rows;
+        // The mirror is updated only on accepted writes at the native DDR
+        // port. Rendering is therefore proportional to image pixels rather
+        // than rescanning eight complete 1 MiB rings for every video frame.
+        for (size_t pixel = 0;
+            pixel < pixels && pixel < data.size(); ++pixel) {
+            if (pixel < valid.size() && valid[pixel]) {
+                image.pixel(left + (int)(pixel % columns),
+                    top + (int)(pixel / columns),
+                    Canvas::word_color(data[pixel]));
+            }
+        }
+    }
+
+    static void rx_ram_memory(Canvas& image, Rect rect,
+        const std::array<std::vector<RxRamPacket>, QUEUES>& contents)
+    {
+        constexpr size_t capacity_bytes = RX_RAM_BANK_DEPTH * 2
+            * (NET_LANE_WIDTH / 8);
+        constexpr size_t capacity_words = capacity_bytes / 2;
+        const int top = rect.y + 9;
+        const int available = rect.height - 10;
+        for (size_t stream = 0; stream < QUEUES; ++stream) {
+            const int y0 = top + (int)stream * available / QUEUES;
+            const int y1 = top + (int)(stream + 1) * available / QUEUES;
+            if (stream != 0) image.hline(rect.x + 1, y0,
+                rect.width - 2, GRID);
+            const int left = rect.x + 2;
+            const int columns = std::max(1, rect.width - 4);
+            const int rows = std::max(1, y1 - y0 - 1);
+            const size_t pixels = (size_t)columns * rows;
+            std::vector<uint16_t> values(pixels, 0);
+            std::vector<bool> valid(pixels, false);
+
+            // A handle contains the fixed logical start row above its low
+            // three stream bits. Map every byte from that physical circular
+            // address into a fixed pixel bucket. Occupancy changes therefore
+            // affect only the released/allocated address ranges.
+            for (const RxRamPacket& packet : contents[stream]) {
+                const size_t start_byte = (packet.handle >> 3)
+                    * (NET_LANE_WIDTH / 8);
+                for (size_t byte = 0; byte < packet.data.size(); byte += 2) {
+                    const size_t physical = (start_byte + byte)
+                        % capacity_bytes;
+                    const size_t word = physical / 2;
+                    const size_t pixel = std::min(pixels - 1,
+                        word * pixels / capacity_words);
+                    const uint16_t value = packet.data[byte]
+                        | (uint16_t)(byte + 1 < packet.data.size()
+                            ? packet.data[byte + 1] : 0) << 8;
+                    valid[pixel] = true;
+                    if (value != 0 || values[pixel] == 0)
+                        values[pixel] = value;
+                }
+            }
+            for (size_t pixel = 0; pixel < pixels; ++pixel) {
+                if (valid[pixel]) image.pixel(
+                    left + (int)(pixel % columns),
+                    y0 + 1 + (int)(pixel / columns),
+                    Canvas::word_color(values[pixel]));
+            }
+        }
+    }
+
+    void render(DUT& dut, uint64_t ticks, uint32_t host_consumer,
         bool l2_edge, bool system_edge)
     {
         canvas.clear(background_color);
-        const Rect channel{3, 2, 43, 296};
-        const Rect rx_fifo_rect{49, 2, 56, 146};
-        const Rect tx_fifo_rect{49, 152, 56, 146};
-        const Rect rx_ram_rect{108, 2, 106, 296};
+        const Rect channel{3, 2, 75, 354};
+        const Rect rx_fifo_rect{81, 2, 83, 172};
+        const Rect tx_fifo_rect{81, 178, 83, 178};
+        const Rect rx_ram_rect{167, 2, 112, 354};
         std::array<Rect, CLUSTERS> chip_rects{};
         std::array<Rect, CLUSTERS> l2_rects{};
-        std::array<Rect, CLUSTERS> l1i_rects{};
-        std::array<Rect, CLUSTERS> l1d_rects{};
-        // Eight CPU chips are arranged as two columns of four. Each retains a
-        // compact I$ above its larger D$ and a separate L2 view.
+        std::array<Rect, TOTAL_CORES> core_rects{};
+        std::array<Rect, TOTAL_CORES> l1i_rects{};
+        std::array<Rect, TOTAL_CORES> l1d_rects{};
+        // Eight beveled CPU packages use a 2x4 layout. Inside every package,
+        // its four cores form one horizontal row beside the shared L2.
         for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
-            const int column = (int)(cluster / 4);
-            const int row = (int)(cluster % 4);
-            const int x = 216 + column * 110;
-            const int y = 1 + row * 75;
-            chip_rects[cluster] = Rect{x, y, 108, 73};
-            l2_rects[cluster] = Rect{x + 4, y + 4, 32, 65};
-            l1i_rects[cluster] = Rect{x + 39, y + 4, 65, 22};
-            l1d_rects[cluster] = Rect{x + 39, y + 29, 65, 40};
+            const int column = (int)(cluster & 1u);
+            const int row = (int)(cluster / 2u);
+            const int x = 282 + column * 207;
+            const int y = 2 + row * 89;
+            chip_rects[cluster] = Rect{x, y, 204, 86};
+            l2_rects[cluster] = Rect{x + 4, y + 13, 44, 69};
+            for (uint32_t core = 0; core < CORES; ++core) {
+                const uint32_t index = cluster * CORES + core;
+                const int core_x = x + 51 + (int)core * 37;
+                core_rects[index] = Rect{core_x, y + 13, 35, 69};
+                l1i_rects[index] = Rect{core_x + 2, y + 16, 31, 20};
+                l1d_rects[index] = Rect{core_x + 2, y + 39, 31, 40};
+            }
         }
-        const Rect rx_queue_rect{437, 2, 60, 146};
-        const Rect tx_queue_rect{437, 152, 60, 146};
+        const Rect rx_queue_rect{699, 2, 98, 172};
+        const Rect tx_queue_rect{699, 178, 98, 178};
+        std::array<Rect, CLUSTERS> ddr_rects{};
+        for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
+            ddr_rects[cluster] = Rect{3 + (int)cluster * 99, 360, 96, 118};
+        }
 
         panel(canvas, channel, ENABLE_800G ? "800G" : "400G");
         canvas.text(channel.x + 3, channel.y + 9, "CHANNEL", TEXT);
-        packets(canvas, Rect{channel.x, channel.y + 7,
-            channel.width, channel.height - 7}, channel_packets());
+        channel_memory(canvas, channel, channel_data, channel_valid,
+            channel_write_word);
 
         panel(canvas, rx_fifo_rect, "RX FIFO");
         partitioned(canvas, rx_fifo_rect, rx_fifo);
@@ -324,33 +458,48 @@ class Visualizer
         partitioned(canvas, tx_fifo_rect, tx_fifo);
 
         panel(canvas, rx_ram_rect, "RX RAM");
-        partitioned(canvas, rx_ram_rect, rx_ram);
+        rx_ram_memory(canvas, rx_ram_rect, rx_ram);
 
-        for (const Rect& chip : chip_rects) cpu_chip(canvas, chip);
         for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
+            cpu_chip(canvas, chip_rects[cluster]);
+            canvas.text(chip_rects[cluster].x + 6,
+                chip_rects[cluster].y + 4,
+                std::format("CPU {} / 4 CORES", cluster), TEXT);
             panel(canvas, l2_rects[cluster], std::format("L2 {}", cluster),
                 l2_edge && l2_write_address_valid[cluster]);
             cache(canvas, l2_rects[cluster], l2_data[cluster],
-                l2_valid[cluster], l2_write_address[cluster]
-                    - l2_packet_base[cluster]);
-            panel(canvas, l1i_rects[cluster],
-                std::format("I$ {}", cluster));
-            cache(canvas, l1i_rects[cluster], l1_instruction[cluster],
-                l1_instruction_valid[cluster], l1_instruction_address[cluster]);
-            // Cache contents change as lines are filled, but the panel frame is
-            // intentionally static so CPU activity does not make it blink.
-            panel(canvas, l1d_rects[cluster],
-                std::format("D$ {}", cluster));
-            cache(canvas, l1d_rects[cluster], l1_data[cluster],
-                l1_data_valid[cluster], l1_data_address[cluster]);
+                l2_valid[cluster], l2_physical_offset(
+                    l2_write_address[cluster]));
+            for (uint32_t core = 0; core < CORES; ++core) {
+                const uint32_t index = cluster * CORES + core;
+                cpu_chip(canvas, core_rects[index]);
+                panel(canvas, l1i_rects[index],
+                    std::format("{}I", core));
+                cache(canvas, l1i_rects[index], l1_instruction[index],
+                    l1_instruction_valid[index],
+                    l1_instruction_address[index]);
+                panel(canvas, l1d_rects[index],
+                    std::format("{}D", core), l1_activity[index] != 0);
+                cache(canvas, l1d_rects[index], l1_data[index],
+                    l1_data_valid[index], l1_data_address[index]);
+                if (l1_activity[index] != 0) --l1_activity[index];
+            }
         }
 
         // Do not key the border to the unrelated sys/net phase relationship;
         // that made this rectangle blink at the sampling cadence.
         panel(canvas, rx_queue_rect, "RX QUEUE");
+        // This must be the live queue model. Keeping the two most recently
+        // observed packets here made completed host DMA traffic look stalled.
         partitioned(canvas, rx_queue_rect, rx_queue);
         panel(canvas, tx_queue_rect, "TX QUEUE");
         partitioned(canvas, tx_queue_rect, tx_queue);
+        for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
+            panel(canvas, ddr_rects[cluster],
+                std::format("DDR{} 1M RING", cluster));
+            ddr_memory(canvas, ddr_rects[cluster], ddr_data[cluster],
+                ddr_valid[cluster]);
+        }
 
         const auto snapshot = [this](std::string_view suffix) {
             canvas.write_png(video_path.parent_path()
@@ -381,10 +530,17 @@ class Visualizer
 #if DEMO_TRANSPARENT_VIDEO
         transparent_video.write(canvas);
 #endif
+        size_t rx_queue_packets = 0;
+        size_t rx_queue_bytes = 0;
+        for (const auto& queue : rx_queue) {
+            rx_queue_packets += queue.size();
+            for (const auto& packet : queue) rx_queue_bytes += packet.size();
+        }
         trace << video.frame_count() - 1 << ',' << ticks << ',' << net_cycles
               << ',' << cpu_cycles << ',' << l2_cycles << ',' << system_cycles
               << ',' << loaded_beats << ',' << emitted_beats << ','
-              << completed_packets << ',' << host_consumer << '\n';
+              << completed_packets << ',' << host_consumer << ','
+              << rx_queue_packets << ',' << rx_queue_bytes << '\n';
     }
 
 public:
@@ -401,21 +557,31 @@ public:
 #endif
           background_color(background)
     {
+        // Capture constructs the observer after loading the compact generator
+        // image, immediately before releasing traffic.
+        loaded_beats = source_beats.size();
         const std::filesystem::path trace_path = path.parent_path()
             / (path.stem().string() + ".csv");
         trace.open(trace_path);
         if (!trace) throw std::runtime_error("cannot create trace "
             + trace_path.string());
         trace << "video_frame,cpu_tick,net_cycle,cpu_cycle,l2_cycle,system_cycle,"
-                 "loaded_beats,emitted_beats,rx_packets,host_consumer\n";
+                 "loaded_beats,emitted_beats,rx_packets,host_consumer,"
+                 "rx_queue_packets,rx_queue_bytes\n";
         for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
             l2_data[cluster].assign(L2_VIEW_BYTES, 0);
             l2_valid[cluster].assign(L2_VIEW_BYTES, false);
             l2_packet_base[cluster] = PACKET_BUFFER;
-            l1_instruction[cluster].assign(L1_VIEW_BYTES, 0);
-            l1_instruction_valid[cluster].assign(L1_VIEW_BYTES, false);
-            l1_data[cluster].assign(L1_VIEW_BYTES, 0);
-            l1_data_valid[cluster].assign(L1_VIEW_BYTES, false);
+            ddr_data[cluster].assign(DDR_VIEW_PIXELS, 0);
+            ddr_valid[cluster].assign(DDR_VIEW_PIXELS, false);
+        }
+        channel_data.assign(CHANNEL_VIEW_PIXELS, 0);
+        channel_valid.assign(CHANNEL_VIEW_PIXELS, false);
+        for (uint32_t index = 0; index < TOTAL_CORES; ++index) {
+            l1_instruction[index].assign(L1I_VIEW_BYTES, 0);
+            l1_instruction_valid[index].assign(L1I_VIEW_BYTES, false);
+            l1_data[index].assign(L1D_VIEW_BYTES, 0);
+            l1_data_valid[index].assign(L1D_VIEW_BYTES, false);
         }
     }
 
@@ -423,42 +589,64 @@ public:
     {
         ++cpu_cycles;
         for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
+            if (dut.processing.demo_descriptor_command_fire(cluster)
+                && !rx_fifo[cluster].empty()) {
+                rx_fifo[cluster].pop_front();
+            }
+            auto& memory = dut.cpu_memory_adapter[cluster];
+            if (memory.ddr_valid_out() && memory.ddr_write_out()
+                && memory.ddr_ready_in()) {
+                constexpr uint32_t ring_bytes =
+                    PACKET_SLOT_BYTES * PACKET_SLOT_COUNT;
+                constexpr size_t source_words = ring_bytes / 2;
+                const uint32_t address = (uint32_t)memory.ddr_address_out();
+                for (uint32_t byte = 0; byte < DUT::DDR_WIDTH / 8;
+                    byte += 2) {
+                    const uint32_t current = address + byte;
+                    if (current < PACKET_BUFFER
+                        || current + 1 >= PACKET_BUFFER + ring_bytes)
+                        continue;
+                    if (!memory.ddr_byteenable_out()[byte]
+                        && !memory.ddr_byteenable_out()[byte + 1])
+                        continue;
+                    const uint16_t value =
+                        (memory.ddr_byteenable_out()[byte]
+                            ? (uint16_t)memory.ddr_writedata_out().bits(
+                                byte * 8 + 7, byte * 8) : 0)
+                        | (memory.ddr_byteenable_out()[byte + 1]
+                            ? (uint16_t)memory.ddr_writedata_out().bits(
+                                byte * 8 + 15, byte * 8 + 8) << 8 : 0);
+                    const size_t word = (current - PACKET_BUFFER) / 2;
+                    const size_t pixel = std::min<size_t>(
+                        DDR_VIEW_PIXELS - 1,
+                        word * DDR_VIEW_PIXELS / source_words);
+                    if (value != 0 || !ddr_valid[cluster][pixel])
+                        ddr_data[cluster][pixel] = value;
+                    ddr_valid[cluster][pixel] = true;
+                }
+            }
             auto& packet_dma = dut.processing.packet_dma[cluster];
             if (packet_dma.l2_line_valid_out()
                 && packet_dma.l2_line_ready_in()) {
                 const uint32_t address =
                     (uint32_t)packet_dma.l2_line_addr_out();
-                if (!l2_previous_write_valid[cluster]
-                    || address != l2_previous_write_address[cluster] + 32u) {
-                    l2_packet_base[cluster] = address;
-                    std::fill(l2_data[cluster].begin(), l2_data[cluster].end(), 0);
-                    std::fill(l2_valid[cluster].begin(), l2_valid[cluster].end(),
-                        false);
-                }
                 l2_write_address[cluster] = address;
                 l2_previous_write_address[cluster] = address;
                 l2_previous_write_valid[cluster] = true;
+                const uint32_t physical = l2_physical_offset(address);
                 for (uint32_t byte = 0; byte < 32; ++byte) {
-                    const uint32_t offset = address - l2_packet_base[cluster];
                     if (packet_dma.l2_line_keep_out()[byte]
-                        && offset + byte < L2_VIEW_BYTES) {
-                        l2_data[cluster][offset + byte] =
+                        && physical + byte < L2_VIEW_BYTES) {
+                        l2_data[cluster][physical + byte] =
                             (uint8_t)packet_dma.l2_line_data_out().bits(
                                 byte * 8 + 7, byte * 8);
-                        l2_valid[cluster][offset + byte] = true;
+                        l2_valid[cluster][physical + byte] = true;
                     }
                 }
             }
             auto& dma = dut.processing.packet_dma[cluster].l2_dma;
             if (dma.awvalid_out() && dma.awready_in()) {
                 const uint32_t address = (uint32_t)dma.awaddr_out();
-                if (!l2_previous_write_valid[cluster]
-                    || address != l2_previous_write_address[cluster] + 32u) {
-                    l2_packet_base[cluster] = address;
-                    std::fill(l2_data[cluster].begin(), l2_data[cluster].end(), 0);
-                    std::fill(l2_valid[cluster].begin(), l2_valid[cluster].end(),
-                        false);
-                }
                 l2_write_address[cluster] = address;
                 l2_previous_write_address[cluster] = address;
                 l2_previous_write_valid[cluster] = true;
@@ -467,62 +655,49 @@ public:
             if (dma.wvalid_out() && dma.wready_in()
                 && l2_write_address_valid[cluster]) {
                 const uint32_t address = l2_write_address[cluster];
-                if (address >= l2_packet_base[cluster]
-                    && address < l2_packet_base[cluster] + L2_VIEW_BYTES) {
-                    const uint32_t offset = address - l2_packet_base[cluster];
-                    for (uint32_t byte = 0; byte < 32; ++byte) {
-                        if (dma.wstrb_out()[byte]
-                            && offset + byte < L2_VIEW_BYTES) {
-                            l2_data[cluster][offset + byte] =
-                                (uint8_t)dma.wdata_out().bits(
-                                    byte * 8 + 7, byte * 8);
-                            l2_valid[cluster][offset + byte] = true;
-                        }
+                const uint32_t physical = l2_physical_offset(address);
+                for (uint32_t byte = 0; byte < 32; ++byte) {
+                    if (dma.wstrb_out()[byte]
+                        && physical + byte < L2_VIEW_BYTES) {
+                        l2_data[cluster][physical + byte] =
+                            (uint8_t)dma.wdata_out().bits(
+                                byte * 8 + 7, byte * 8);
+                        l2_valid[cluster][physical + byte] = true;
                     }
                 }
                 l2_write_address_valid[cluster] = false;
             }
-            for (uint32_t core = 0; core < 4; ++core) {
+            for (uint32_t core = 0; core < CORES; ++core) {
+                const uint32_t index = cluster * CORES + core;
                 const TribeCacheDebug cache_debug = dut.processing
                     .cpu[cluster].demo_cache_debug(core);
                 const uint32_t instruction = cache_debug.icache_read_addr;
-                l1_instruction_address[cluster] = instruction;
+                l1_instruction_address[index] = instruction;
                 const uint32_t line = instruction & ~31u;
-                if (line < L1_VIEW_BYTES && line < firmware.size()) {
+                const uint32_t physical_i = line % L1I_VIEW_BYTES;
+                if (line < firmware.size()) {
                     for (uint32_t byte = 0; byte < 32
-                        && line + byte < L1_VIEW_BYTES
+                        && physical_i + byte < L1I_VIEW_BYTES
                         && line + byte < firmware.size(); ++byte) {
-                        l1_instruction[cluster][line + byte] = firmware[line + byte];
-                        l1_instruction_valid[cluster][line + byte] = true;
+                        l1_instruction[index][physical_i + byte] =
+                            firmware[line + byte];
+                        l1_instruction_valid[index][physical_i + byte] = true;
                     }
                 }
                 if (cache_debug.dcache_cpu_read
                     || cache_debug.dcache_cpu_write) {
                     const uint32_t address = cache_debug.dcache_cpu_addr;
-                    if (address >= l2_packet_base[cluster]
-                        && address < l2_packet_base[cluster] + L1_VIEW_BYTES) {
-                        const uint32_t packet_offset =
-                            address - l2_packet_base[cluster];
-                        l1_data_address[cluster] = packet_offset;
-                        const uint32_t line_address = packet_offset & ~31u;
-                        for (uint32_t byte = 0; byte < 32
-                            && line_address + byte < L1_VIEW_BYTES; ++byte) {
-                            l1_data[cluster][line_address + byte] =
-                                l2_data[cluster][line_address + byte];
-                            l1_data_valid[cluster][line_address + byte] =
-                                l2_valid[cluster][line_address + byte];
-                        }
-                    }
-                    else if (address < L1_VIEW_BYTES) {
-                        l1_data_address[cluster] = address;
+                    l1_activity[index] = 8;
+                    if (address < DUT::DDR_BYTES) {
+                        l1_data_address[index] = address;
                         const uint32_t line_address = address & ~31u;
+                        const uint32_t physical_d =
+                            line_address % L1D_VIEW_BYTES;
                         for (uint32_t byte = 0; byte < 32
-                            && line_address + byte < L1_VIEW_BYTES; ++byte) {
-                            if (line_address + byte < firmware.size()) {
-                                l1_data[cluster][line_address + byte] =
-                                    firmware[line_address + byte];
-                                l1_data_valid[cluster][line_address + byte] = true;
-                            }
+                            && physical_d + byte < L1D_VIEW_BYTES; ++byte) {
+                            l1_data[index][physical_d + byte] =
+                                dut.cpu_memory_byte(cluster, line_address + byte);
+                            l1_data_valid[index][physical_d + byte] = true;
                         }
                     }
                 }
@@ -533,19 +708,26 @@ public:
     void observe_l2_before(DUT& dut)
     {
         ++l2_cycles;
-        for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
-            if (dut.processing.rx_read_valid_out()[cluster]
-                && dut.processing.rx_read_ready_in()[cluster]
-                && !rx_fifo[cluster].empty()) {
-                rx_fifo[cluster].pop_front();
-                const uint32_t handle = (uint32_t)dut.processing
-                    .rx_read_handle_out().bits(cluster * DUT::HANDLE_BITS
-                        + DUT::HANDLE_BITS - 1,
-                        cluster * DUT::HANDLE_BITS);
-                const uint32_t stream = handle & 7u;
-                if (!rx_ram[stream].empty()) rx_ram[stream].erase(
-                    rx_ram[stream].begin());
+        if (dut.processing.descriptor_valid_in()
+            && dut.processing.descriptor_ready_out()) {
+            const uint32_t cluster =
+                dut.processing.demo_descriptor_target();
+            if (cluster < CLUSTERS) {
+                if (dut.processing.descriptor_sop_in())
+                    rx_fifo_assembling[cluster].clear();
+                const logic<256> word = dut.processing.descriptor_data_in();
+                for (uint32_t byte = 0; byte < 32; ++byte) {
+                    rx_fifo_assembling[cluster].push_back(
+                        (uint8_t)word.bits(byte * 8 + 7, byte * 8));
+                }
+                if (dut.processing.descriptor_eop_in()) {
+                    rx_fifo[cluster].push_back(
+                        std::move(rx_fifo_assembling[cluster]));
+                    rx_fifo_assembling[cluster].clear();
+                }
             }
+        }
+        for (uint32_t cluster = 0; cluster < CLUSTERS; ++cluster) {
             if (dut.system.l2_rx_valid_in()[cluster]
                 && dut.system.l2_rx_ready_out()[cluster]) {
                 if (dut.system.l2_rx_sop_in()[cluster]) {
@@ -605,11 +787,48 @@ public:
     void observe_net_before(DUT& dut)
     {
         ++net_cycles;
+        if (dut.smartnic.demo_rx_descriptor_fire()) {
+            const uint32_t handle =
+                dut.smartnic.demo_rx_descriptor_handle();
+            const uint32_t stream =
+                dut.smartnic.demo_rx_descriptor_stream();
+            if (stream < QUEUES && !rx_ram_pending[stream].empty()) {
+                rx_ram[stream].push_back(RxRamPacket{
+                    handle, std::move(rx_ram_pending[stream].front())});
+                rx_ram_pending[stream].pop_front();
+            }
+        }
+        for (uint32_t port = 0; port < CLUSTERS; ++port) {
+            if (!dut.smartnic.demo_rx_release_fire(port)) continue;
+            const uint32_t handle = dut.smartnic.demo_rx_release_handle(port);
+            const uint32_t stream = handle & 7u;
+            if (stream < QUEUES) {
+                std::erase_if(rx_ram[stream], [handle](const RxRamPacket& item) {
+                    return item.handle == handle;
+                });
+            }
+        }
         if (dut.traffic.load_valid_in() && dut.traffic.load_ready_out()
             && loaded_beats < source_beats.size()) {
             ++loaded_beats;
         }
         if (!dut.traffic.valid_out()) return;
+        // Record the live aggregate input at its native representation: one
+        // pixel per two wire byte positions. A fixed circular address avoids
+        // rescaling or shifting old data as the generator advances.
+        for (uint32_t byte = 0; byte < DUT::NET_BYTES; byte += 2) {
+            const size_t pixel = channel_write_word % CHANNEL_VIEW_PIXELS;
+            const bool low_valid = dut.traffic.keep_out()[byte];
+            const bool high_valid = byte + 1 < DUT::NET_BYTES
+                && dut.traffic.keep_out()[byte + 1];
+            channel_data[pixel] =
+                (low_valid ? (uint16_t)dut.traffic.data_out().bits(
+                    byte * 8 + 7, byte * 8) : 0)
+                | (high_valid ? (uint16_t)dut.traffic.data_out().bits(
+                    byte * 8 + 15, byte * 8 + 8) << 8 : 0);
+            channel_valid[pixel] = low_valid || high_valid;
+            ++channel_write_word;
+        }
         const uint64_t total_beats = (uint64_t)source_beats.size()
             * source_repeats;
         if (emitted_beats < total_beats) ++emitted_beats;
@@ -621,18 +840,15 @@ public:
             && completed_packets < source_packets.size(); ++completion) {
             const Packet& packet = source_packets[completed_packets];
             const uint32_t stream = completed_packets % QUEUES;
-            const uint32_t cluster = completed_packets % CLUSTERS;
-            rx_ram[stream].push_back(packet);
-            rx_fifo[cluster].push_back(
-                descriptor_for(packet, (uint32_t)completed_packets));
+            rx_ram_pending[stream].push_back(packet);
             ++completed_packets;
         }
     }
 
-    void frame(uint64_t ticks, uint32_t host_consumer,
+    void frame(DUT& dut, uint64_t ticks, uint32_t host_consumer,
         bool l2_edge, bool system_edge)
     {
-        render(ticks, host_consumer, l2_edge, system_edge);
+        render(dut, ticks, host_consumer, l2_edge, system_edge);
     }
 
     void finish()

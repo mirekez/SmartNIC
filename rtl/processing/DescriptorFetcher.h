@@ -32,6 +32,11 @@ public:
         REG_CONTROL = 0x000,
         REG_STATUS = 0x004,
         REG_ACTION = 0x008,
+        // Automatic coherent prefetch writes consecutive 2 KiB packet slots
+        // and wraps with this programmable power-of-two mask.  The base lets
+        // firmware keep its text/data outside the packet half of private DDR.
+        REG_AUTO_SLOT_MASK = 0x00c,
+        REG_AUTO_BASE = 0x010,
         REG_DESCRIPTOR_BASE = 0x020,
         REG_PACKET_ADDRESS = 0x100,
         REG_PACKET_META = 0x104,
@@ -64,6 +69,7 @@ public:
     static constexpr uint32_t STATUS_LOADED = 1u << 4;
     static constexpr uint32_t PACKET_BUFFER_BASE = 0x00010000;
     static constexpr uint32_t PACKET_BUFFER_STRIDE = 2048;
+    static constexpr uint32_t AUTO_SLOT_MASK_RESET = 511;
 
     _PORT(bool) descriptor_valid_in;
     _PORT(logic<DESCRIPTOR_WORD_BITS>) descriptor_data_in;
@@ -103,6 +109,9 @@ private:
     reg<u1> assembly_active_reg;
     reg<u1> enabled_reg;
     reg<u1> auto_l2_reg;
+    reg<u<9>> auto_slot_mask_reg;
+    reg<u32> auto_base_reg;
+    reg<u32> auto_sequence_reg;
     reg<u1> protocol_error_reg;
     reg<u1> packet_command_valid_reg;
     reg<u<HANDLE_BITS>> packet_command_handle_reg;
@@ -110,6 +119,7 @@ private:
     reg<u1> packet_command_system_reg;
     reg<u1> packet_command_cache_reg;
     reg<u32> packet_command_destination_reg;
+    reg<u32> packet_buffer_reg[DEPTH];
     reg<u<PTR_BITS>> load_head_reg;
     reg<u32> cache_completed_seen_reg;
     reg<u1> loaded_reg[DEPTH];
@@ -177,6 +187,9 @@ private:
                     && loaded_reg[(uint32_t)head_reg]) ? STATUS_LOADED : 0)
                 | ((uint32_t)count_reg << 8);
         }
+        if (address == REG_AUTO_SLOT_MASK)
+            return (uint32_t)auto_slot_mask_reg;
+        if (address == REG_AUTO_BASE) return (uint32_t)auto_base_reg;
         if (address >= REG_DESCRIPTOR_BASE
             && address < REG_DESCRIPTOR_BASE + DESCRIPTOR_BITS / 8
             && (address & 3u) == 0) {
@@ -186,8 +199,7 @@ private:
         if (address == REG_PACKET_ADDRESS) return descriptor_bits32(0);
         if (address == REG_PACKET_META) return descriptor_bits32(32);
         if (address == REG_PACKET_BUFFER) {
-            return PACKET_BUFFER_BASE
-                + (uint32_t)head_reg * PACKET_BUFFER_STRIDE;
+            return (uint32_t)packet_buffer_reg[(uint32_t)head_reg];
         }
         if (address == REG_DESTINATION_MAC_LO) return descriptor_bits32(256);
         if (address == REG_DESTINATION_MAC_HI) return descriptor_bits32(288) & 0xffffu;
@@ -241,8 +253,13 @@ private:
 public:
     void _assign()
     {
+        // Automatic L2 mode has a one-entry descriptor-to-DMA command stage.
+        // Do not accept another descriptor while that stage is occupied: its
+        // EOP would otherwise overwrite a command that PacketDMA has not yet
+        // accepted. The upstream descriptor CDC holds the complete stream.
         descriptor_ready_out = _ASSIGN((bool)enabled_reg
-            && (uint32_t)count_reg < DEPTH);
+            && (uint32_t)count_reg < DEPTH
+            && (!(bool)auto_l2_reg || !(bool)packet_command_valid_reg));
         descriptor_available_out = _ASSIGN((uint32_t)count_reg != 0);
         descriptor_count_out = _ASSIGN_REG(count_reg);
         prefetch_enabled_out = _ASSIGN_REG(enabled_reg);
@@ -280,6 +297,7 @@ public:
         uint32_t value;
         uint32_t bit;
         uint32_t word_index;
+        uint32_t packet_destination;
         bool input_fire;
         bool pop;
         logic<DESCRIPTOR_BITS> assembly;
@@ -302,6 +320,15 @@ public:
             if (address == REG_CONTROL) {
                 enabled_reg._next = (value & CONTROL_ENABLE) != 0;
                 auto_l2_reg._next = (value & CONTROL_AUTO_L2) != 0;
+            }
+            else if (address == REG_AUTO_SLOT_MASK) {
+                // A 9-bit mask describes as many as 512 x 2 KiB slots.
+                // Firmware normally programs 2^n-1; masking is deliberately
+                // cheap hardware and deterministic even for another value.
+                auto_slot_mask_reg._next = value & 511u;
+            }
+            else if (address == REG_AUTO_BASE) {
+                auto_base_reg._next = value & ~(PACKET_BUFFER_STRIDE - 1);
             }
             else if (address == REG_ACTION && (value & ACTION_NEXT) != 0) {
                 if ((value & (ACTION_DMA_DISCARD | ACTION_DMA_SYSTEM)) == 0) {
@@ -378,17 +405,24 @@ public:
                 }
                 queue_reg[(uint32_t)tail_reg]._next = assembly;
                 loaded_reg[(uint32_t)tail_reg]._next = false;
+                packet_destination = PACKET_BUFFER_BASE
+                    + (uint32_t)tail_reg * PACKET_BUFFER_STRIDE;
                 if (auto_l2_reg) {
+                    packet_destination = (uint32_t)auto_base_reg
+                        + (((uint32_t)auto_sequence_reg
+                            & (uint32_t)auto_slot_mask_reg) *
+                            PACKET_BUFFER_STRIDE);
                     packet_command_handle_reg._next =
                         supplied_descriptor_bits32(assembly, 0);
                     packet_command_length_reg._next =
                         supplied_descriptor_bits32(assembly, 32);
                     packet_command_system_reg._next = false;
                     packet_command_cache_reg._next = true;
-                    packet_command_destination_reg._next = PACKET_BUFFER_BASE
-                        + (uint32_t)tail_reg * PACKET_BUFFER_STRIDE;
+                    packet_command_destination_reg._next = packet_destination;
                     packet_command_valid_reg._next = true;
+                    auto_sequence_reg._next = auto_sequence_reg + 1;
                 }
+                packet_buffer_reg[(uint32_t)tail_reg]._next = packet_destination;
                 tail_reg._next = ((uint32_t)tail_reg + 1) & (DEPTH - 1);
                 ++count;
                 assembly_active_reg._next = false;
@@ -419,6 +453,9 @@ public:
             assembly_active_reg.clr();
             enabled_reg.clr();
             auto_l2_reg.clr();
+            auto_slot_mask_reg._next = AUTO_SLOT_MASK_RESET;
+            auto_base_reg._next = PACKET_BUFFER_BASE;
+            auto_sequence_reg.clr();
             protocol_error_reg.clr();
             packet_command_valid_reg.clr();
             packet_command_handle_reg.clr();
@@ -439,6 +476,8 @@ public:
             for (slot = 0; slot < DEPTH; ++slot) {
                 queue_reg[slot].clr();
                 loaded_reg[slot].clr();
+                packet_buffer_reg[slot]._next = PACKET_BUFFER_BASE
+                    + slot * PACKET_BUFFER_STRIDE;
             }
         }
     }
@@ -455,6 +494,9 @@ public:
         assembly_active_reg.strobe();
         enabled_reg.strobe();
         auto_l2_reg.strobe();
+        auto_slot_mask_reg.strobe();
+        auto_base_reg.strobe();
+        auto_sequence_reg.strobe();
         protocol_error_reg.strobe();
         packet_command_valid_reg.strobe();
         packet_command_handle_reg.strobe();
@@ -472,7 +514,10 @@ public:
         read_id_reg.strobe();
         read_data_reg.strobe();
         read_valid_reg.strobe();
-        for (slot = 0; slot < DEPTH; ++slot) loaded_reg[slot].strobe();
+        for (slot = 0; slot < DEPTH; ++slot) {
+            loaded_reg[slot].strobe();
+            packet_buffer_reg[slot].strobe();
+        }
     }
 };
 

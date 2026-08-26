@@ -1,7 +1,7 @@
 #pragma once
 
 // Minimal indexed-color canvas and Microsoft RLE8 AVI writer. The demo uses
-// no GUI or codec dependency: every completed 500x300 visualization is encoded
+// no GUI or codec dependency: every completed 800x480 visualization is encoded
 // immediately and the AVI headers/index are finalized when the test ends.
 
 #include <algorithm>
@@ -30,8 +30,8 @@ struct Rect
 class Canvas
 {
 public:
-    static constexpr int WIDTH = 500;
-    static constexpr int HEIGHT = 300;
+    static constexpr int WIDTH = 800;
+    static constexpr int HEIGHT = 480;
 
     struct Rgb
     {

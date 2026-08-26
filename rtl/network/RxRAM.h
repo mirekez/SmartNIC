@@ -48,7 +48,16 @@ public:
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
     static constexpr size_t READ_RR_BITS = READ_PORTS <= 1 ? 1 : clog2(READ_PORTS);
     static constexpr size_t FRAME_LENGTH_BITS = 14;
-    static constexpr size_t COMPLETION_FIFO_WORDS = 4;
+    // Output arbitration and CPU assignment can temporarily drain the eight
+    // streams unevenly even when aggregate throughput is sufficient. Four
+    // entries let one stream stop the non-stallable MAC while the other seven
+    // are nearly empty; 32 descriptors per stream cover that arbitration
+    // skew without using packet RAM as a hidden absorption buffer.
+    static constexpr size_t COMPLETION_FIFO_WORDS = 32;
+    static constexpr size_t COMPLETION_PTR_BITS =
+        clog2(COMPLETION_FIFO_WORDS);
+    static constexpr size_t COMPLETION_COUNT_BITS =
+        clog2(COMPLETION_FIFO_WORDS + 1);
     // Descriptor processing is independent across CPU clusters, so packet
     // reads from one ingress stream may finish out of order.  Reclamation can
     // only advance at the oldest packet; hold later releases in this CAM.
@@ -116,9 +125,9 @@ private:
 
     reg<u<HANDLE_BITS>> completion_handle_reg[STREAMS][COMPLETION_FIFO_WORDS];
     reg<u<FRAME_LENGTH_BITS>> completion_length_reg[STREAMS][COMPLETION_FIFO_WORDS];
-    reg<u<2>> completion_head_reg[STREAMS];
-    reg<u<2>> completion_tail_reg[STREAMS];
-    reg<u<3>> completion_count_reg[STREAMS];
+    reg<u<COMPLETION_PTR_BITS>> completion_head_reg[STREAMS];
+    reg<u<COMPLETION_PTR_BITS>> completion_tail_reg[STREAMS];
+    reg<u<COMPLETION_COUNT_BITS>> completion_count_reg[STREAMS];
 
     reg<u1> read_pipe_valid_reg[READ_PORTS];
     reg<u<4>> read_pipe_bank_reg[READ_PORTS];
