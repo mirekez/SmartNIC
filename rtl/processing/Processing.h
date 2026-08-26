@@ -9,9 +9,14 @@
 #include "CPU.h"
 #include "DescriptorFetcher.h"
 #include "PacketDMA.h"
+#include "../common/Axi4WriteArbiter.h"
 #include "../../cpphdl/tribe_cpu/common/Axi4RegionMux.h"
 
 using namespace cpphdl;
+
+#ifndef CPU_RESET_PC
+#define CPU_RESET_PC 0
+#endif
 
 template<size_t CPU_COUNT = CPUS_USED, size_t HANDLE_BITS = 16,
     size_t FRAME_LENGTH_BITS = 14>
@@ -32,7 +37,12 @@ public:
     CPU cpu[CPU_COUNT];
     DescriptorFetcher<4, 32, 4, 256, HANDLE_BITS>
         descriptor_fetcher[CPU_COUNT];
-    PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS> packet_dma[CPU_COUNT];
+    // Automatic ingress and sampled host egress share this command engine.
+    // A 64-entry queue absorbs the uncached-MMIO reservation latency without
+    // reducing steady-state wire throughput; standalone DMA tests retain the
+    // smaller default geometry.
+    PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS, 64, 32, 4, 256,
+        CPU::EXTERNAL_ADDR_WIDTH, 64> packet_dma[CPU_COUNT];
 
     // Aggregate descriptor stream from SmartNIC on the shared clock.
     _PORT(bool) descriptor_valid_in;
@@ -75,6 +85,7 @@ public:
     _PORT(logic<CPU_COUNT * 32>) to_network_keep_out;
     _PORT(logic<CPU_COUNT>) to_network_sop_out;
     _PORT(logic<CPU_COUNT>) to_network_eop_out;
+    _PORT(logic<CPU_COUNT * 8>) to_network_port_out;
     _PORT(logic<CPU_COUNT>) to_network_ready_in;
 
     // One external DDR AXI4 master per Tribe cluster.  CPU_MEMORY defines the
@@ -91,6 +102,8 @@ public:
 
 private:
     Axi4RegionMux<2, 32, 4, 256> iomem_mux[CPU_COUNT];
+    Axi4WriteArbiter<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
+        CPU::DATA_WIDTH> ddr_arbiter[CPU_COUNT];
 
     logic<CPU_COUNT> rx_read_valid_comb;
     logic<CPU_COUNT * HANDLE_BITS> rx_read_handle_comb;
@@ -109,6 +122,7 @@ private:
     logic<CPU_COUNT * 32> to_network_keep_comb;
     logic<CPU_COUNT> to_network_sop_comb;
     logic<CPU_COUNT> to_network_eop_comb;
+    logic<CPU_COUNT * 8> to_network_port_comb;
 
     logic<CPU_COUNT>& rx_read_valid_comb_func()
     {
@@ -255,6 +269,20 @@ private:
         network_tx_eop_out)
 #undef PROCESSING_STREAM_OUTPUT_FUNCTIONS
 
+    logic<CPU_COUNT * 8>& to_network_port_comb_func()
+    {
+        uint32_t index;
+        uint32_t bit;
+        to_network_port_comb = 0;
+        for (index = 0; index < CPU_COUNT; ++index) {
+            for (bit = 0; bit < 8; ++bit) {
+                to_network_port_comb[index * 8 + bit] =
+                    packet_dma[index].network_tx_port_out()[bit];
+            }
+        }
+        return to_network_port_comb;
+    }
+
     logic<CPU_COUNT>& from_system_ready_comb_func()
     {
         uint32_t index;
@@ -289,6 +317,7 @@ public:
         to_network_keep_out = _ASSIGN_COMB(to_network_keep_comb_func());
         to_network_sop_out = _ASSIGN_COMB(to_network_sop_comb_func());
         to_network_eop_out = _ASSIGN_COMB(to_network_eop_comb_func());
+        to_network_port_out = _ASSIGN_COMB(to_network_port_comb_func());
 
         for (index = 0; index < CPU_COUNT; ++index) {
             descriptor_fetcher[index].descriptor_valid_in =
@@ -298,7 +327,7 @@ public:
             descriptor_fetcher[index].descriptor_sop_in = descriptor_sop_in;
             descriptor_fetcher[index].descriptor_eop_in = descriptor_eop_in;
             descriptor_fetcher[index].packet_command_ready_in =
-                packet_dma[index].command_ready_out;
+                packet_dma[index].descriptor_command_ready_out;
             packet_dma[index].descriptor_command_valid_in =
                 descriptor_fetcher[index].packet_command_valid_out;
             packet_dma[index].descriptor_command_handle_in =
@@ -307,6 +336,10 @@ public:
                 descriptor_fetcher[index].packet_command_length_out;
             packet_dma[index].descriptor_command_system_in =
                 descriptor_fetcher[index].packet_command_system_out;
+            packet_dma[index].descriptor_command_cache_in =
+                descriptor_fetcher[index].packet_command_cache_out;
+            packet_dma[index].descriptor_command_destination_in =
+                descriptor_fetcher[index].packet_command_destination_out;
 
             // CPU uncached IOMEM is split into descriptor and DMA windows.
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(iomem_mux[index].slave_in,
@@ -331,6 +364,12 @@ public:
                 packet_dma[index].l2_dma);
             AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].l2_dma,
                 cpu[index].dma_in);
+            cpu[index].dma_line_valid_in = packet_dma[index].l2_line_valid_out;
+            cpu[index].dma_line_addr_in = packet_dma[index].l2_line_addr_out;
+            cpu[index].dma_line_data_in = packet_dma[index].l2_line_data_out;
+            cpu[index].dma_line_keep_in = packet_dma[index].l2_line_keep_out;
+            cpu[index].dma_line_eop_in = packet_dma[index].l2_line_eop_out;
+            packet_dma[index].l2_line_ready_in = cpu[index].dma_line_ready_out;
 
             packet_dma[index].rx_read_ready_in =
                 _ASSIGN_INDEXED((index), rx_read_ready_in()[index]);
@@ -366,11 +405,21 @@ public:
             packet_dma[index].network_tx_ready_in =
                 _ASSIGN_INDEXED((index), to_network_ready_in()[index]);
 
-            // Preserve every CPU-memory AXI request and response signal at the
-            // Processing boundary for attachment to external DDR controllers.
-            AXI4_MASTER_FROM_MASTER(ddr[index], cpu[index].memory);
-            AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory, ddr[index]);
-            cpu[index].reset_pc_in = _ASSIGN((u32)0);
+            // Merge ordinary L2 traffic with PacketDMA's write-through packet
+            // backing stream. Packet writes receive address-channel priority;
+            // an accepted AXI transaction remains owned through its response.
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].cpu,
+                cpu[index].memory);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(cpu[index].memory,
+                ddr_arbiter[index].cpu);
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].packet,
+                packet_dma[index].backing_dma);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].backing_dma,
+                ddr_arbiter[index].packet);
+            AXI4_MASTER_FROM_MASTER(ddr[index], ddr_arbiter[index].memory);
+            AXI4_MASTER_RESPONDER_FROM_MASTER(ddr_arbiter[index].memory,
+                ddr[index]);
+            cpu[index].reset_pc_in = _ASSIGN((u32)CPU_RESET_PC);
             cpu[index].boot_hartid_in = _ASSIGN_INDEXED((index),
                 (u32)(index * CPU::CORES));
             cpu[index].boot_dtb_addr_in = _ASSIGN((u32)0);
@@ -393,6 +442,8 @@ public:
                 __inst_name + "/packet_dma" + std::to_string(index);
             iomem_mux[index].__inst_name =
                 __inst_name + "/iomem_mux" + std::to_string(index);
+            ddr_arbiter[index].__inst_name =
+                __inst_name + "/ddr_arbiter" + std::to_string(index);
 #endif
             cpu[index]._assign();
             descriptor_fetcher[index]._assign();
@@ -419,10 +470,26 @@ public:
                 packet_dma[index].l2_dma);
             AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].l2_dma,
                 cpu[index].dma_in);
-            AXI4_MASTER_FROM_MASTER(ddr[index], cpu[index].memory);
-            AXI4_MASTER_RESPONDER_FROM_MASTER(cpu[index].memory, ddr[index]);
+            cpu[index].dma_line_valid_in = packet_dma[index].l2_line_valid_out;
+            cpu[index].dma_line_addr_in = packet_dma[index].l2_line_addr_out;
+            cpu[index].dma_line_data_in = packet_dma[index].l2_line_data_out;
+            cpu[index].dma_line_keep_in = packet_dma[index].l2_line_keep_out;
+            cpu[index].dma_line_eop_in = packet_dma[index].l2_line_eop_out;
+            packet_dma[index].l2_line_ready_in = cpu[index].dma_line_ready_out;
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].cpu,
+                cpu[index].memory);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(cpu[index].memory,
+                ddr_arbiter[index].cpu);
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].packet,
+                packet_dma[index].backing_dma);
+            AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].backing_dma,
+                ddr_arbiter[index].packet);
+            AXI4_MASTER_RESPONDER_FROM_MASTER(ddr_arbiter[index].memory,
+                ddr[index]);
+            ddr_arbiter[index]._assign();
+            AXI4_MASTER_FROM_MASTER(ddr[index], ddr_arbiter[index].memory);
             descriptor_fetcher[index].packet_command_ready_in =
-                packet_dma[index].command_ready_out;
+                packet_dma[index].descriptor_command_ready_out;
             packet_dma[index].descriptor_command_valid_in =
                 descriptor_fetcher[index].packet_command_valid_out;
             packet_dma[index].descriptor_command_handle_in =
@@ -431,6 +498,10 @@ public:
                 descriptor_fetcher[index].packet_command_length_out;
             packet_dma[index].descriptor_command_system_in =
                 descriptor_fetcher[index].packet_command_system_out;
+            packet_dma[index].descriptor_command_cache_in =
+                descriptor_fetcher[index].packet_command_cache_out;
+            packet_dma[index].descriptor_command_destination_in =
+                descriptor_fetcher[index].packet_command_destination_out;
         }
     }
 
@@ -442,6 +513,7 @@ public:
             descriptor_fetcher[index]._work(reset);
             packet_dma[index]._work(reset);
             iomem_mux[index]._work(reset);
+            ddr_arbiter[index]._work(reset);
         }
     }
 
@@ -467,6 +539,7 @@ public:
             descriptor_fetcher[index]._strobe();
             packet_dma[index]._strobe();
             iomem_mux[index]._strobe();
+            ddr_arbiter[index]._strobe();
         }
     }
 

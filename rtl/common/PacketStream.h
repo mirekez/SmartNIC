@@ -1,8 +1,7 @@
 #pragma once
 
-// Fixed-ratio, single-clock packet gearbox. SmartNIC only uses 64<->256;
-// expressing those four fixed lanes directly avoids synthesizing a general
-// byte-compacting barrel shifter.
+// Fixed-ratio, single-clock packet gearbox. SmartNIC uses 64/128->256 on RX
+// and 256->64 on TX; explicit fixed slices avoid a general barrel shifter.
 
 #include <cpphdl.h>
 
@@ -18,11 +17,13 @@ public:
     static constexpr size_t WIDE_BYTES = WIDE_WIDTH / 8;
     static constexpr size_t LANE_WIDTH = 64;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
-    static constexpr size_t LANES = WIDE_WIDTH / LANE_WIDTH;
+    static constexpr size_t LANES = SRC_WIDTH < DST_WIDTH
+        ? DST_WIDTH / SRC_WIDTH : SRC_WIDTH / DST_WIDTH;
 
     static_assert((SRC_WIDTH == LANE_WIDTH && DST_WIDTH == WIDE_WIDTH)
+            || (SRC_WIDTH == 2 * LANE_WIDTH && DST_WIDTH == WIDE_WIDTH)
             || (SRC_WIDTH == WIDE_WIDTH && DST_WIDTH == LANE_WIDTH),
-        "PacketStream supports the SmartNIC 64<->256 gearboxes");
+        "PacketStream supports the SmartNIC 64/128->256 and 256->64 gearboxes");
 
     _PORT(bool) valid_in;
     _PORT(logic<SRC_WIDTH>) data_in;
@@ -163,7 +164,15 @@ public:
                 eop_reg._next = false;
             }
             if (input_fire) {
-                if (lane == 0) {
+                if (SRC_WIDTH == 128 && lane == 0) {
+                    data.bits(127, 0) = data_in();
+                    keep.bits(15, 0) = keep_in();
+                }
+                else if (SRC_WIDTH == 128) {
+                    data.bits(255, 128) = data_in();
+                    keep.bits(31, 16) = keep_in();
+                }
+                else if (lane == 0) {
                     data.bits(63, 0) = data_in();
                     keep.bits(7, 0) = keep_in();
                 }
@@ -235,4 +244,5 @@ public:
 };
 
 template class PacketStream<64, 256>;
+template class PacketStream<128, 256>;
 template class PacketStream<256, 64>;

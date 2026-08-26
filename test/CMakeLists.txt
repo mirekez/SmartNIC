@@ -31,6 +31,21 @@ add_custom_command(
     VERBATIM)
 add_custom_target(capture_firmware DEPENDS "${CAPTURE_ELF}")
 
+set(L2_SWITCH_ELF "${CMAKE_CURRENT_BINARY_DIR}/l2_switch.elf")
+add_custom_command(
+    OUTPUT "${L2_SWITCH_ELF}"
+    COMMAND "${CAPTURE_RISCV_CC}"
+        ${CAPTURE_RISCV_CC_ARGS}
+        -march=rv32im_zicsr -mabi=ilp32
+        -nostdlib -Wl,--no-relax
+        "-Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/l2_switch.ld"
+        -Wl,--build-id=none
+        -o "${L2_SWITCH_ELF}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/l2_switch.S"
+    DEPENDS l2_switch.S l2_switch.ld
+    VERBATIM)
+add_custom_target(l2_switch_firmware DEPENDS "${L2_SWITCH_ELF}")
+
 file(GLOB CAPTURE_STDCXXEXP
     "${PROJECT_SOURCE_DIR}/cpphdl/.conda/lib/gcc/*/*/libstdc++exp.a")
 
@@ -79,6 +94,32 @@ endfunction()
 
 smartnic_add_capture_target(FALSE)
 smartnic_add_capture_target(TRUE)
+
+add_executable(l2_switch_test l2_switch.cpp)
+add_dependencies(l2_switch_test l2_switch_firmware)
+target_compile_definitions(l2_switch_test PRIVATE CPU_RESET_PC=0x00100000)
+target_include_directories(l2_switch_test PRIVATE
+    "${PROJECT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/cpphdl/include"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/spec"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/cache"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/devices")
+target_compile_options(l2_switch_test PRIVATE -std=c++26 -fno-strict-aliasing)
+cpphdl_add_host_opt_flags(l2_switch_test)
+cpphdl_link_stdcxxexp_if_available(l2_switch_test)
+if(CAPTURE_STDCXXEXP)
+    target_link_libraries(l2_switch_test PRIVATE "${CAPTURE_STDCXXEXP_LIBRARY}")
+endif()
+if(BUILD_TESTING)
+    add_test(NAME system_l2_switch
+        COMMAND "$<TARGET_FILE:l2_switch_test>" "${L2_SWITCH_ELF}")
+    set_tests_properties(system_l2_switch PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "system;switch;cpu;l2;ddr4;axi4"
+        TIMEOUT 3600)
+endif()
 add_custom_target(run_capture_2x10g_sustained
     COMMAND "$<TARGET_FILE:capture_2x10g_sustained_test>" "${CAPTURE_ELF}"
     DEPENDS capture_2x10g_sustained_test capture_firmware

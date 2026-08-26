@@ -89,6 +89,11 @@ class CpuTest
         dut.boot_dtb_addr_in = _ASSIGN((u32)0);
         dut.boot_priv_in = _ASSIGN((u<2>)3);
         dut.cache_invalidate_in = _ASSIGN(false);
+        dut.dma_line_valid_in = _ASSIGN(false);
+        dut.dma_line_addr_in = _ASSIGN((u32)0);
+        dut.dma_line_data_in = _ASSIGN((logic<256>)0);
+        dut.dma_line_keep_in = _ASSIGN((logic<32>)0);
+        dut.dma_line_eop_in = _ASSIGN(false);
         for (uint32_t core = 0; core < CPU::CORES; ++core) {
             dut.software_irq_in[core] = _ASSIGN(false);
             dut.timer_irq_in[core] = _ASSIGN(false);
@@ -122,6 +127,11 @@ class CpuTest
         dut.boot_dtb_addr_in = 0;
         dut.boot_priv_in = 3;
         dut.cache_invalidate_in = false;
+        dut.dma_line_valid_in = false;
+        dut.dma_line_addr_in = 0;
+        copy_to_verilator(dut.dma_line_data_in, logic<256>(0));
+        dut.dma_line_keep_in = 0;
+        dut.dma_line_eop_in = false;
         for (uint32_t core = 0; core < CPU::CORES; ++core) {
             dut.software_irq_in[core] = 0;
             dut.timer_irq_in[core] = 0;
@@ -339,7 +349,7 @@ static bool build_verilator()
         "Axi4SlowToFastCdc", "Axi4FastToSlowCdc", "L1MemFastToSlowCdc",
         "L2CacheRamBank", "L2Cache", "Tribe", "BranchPredictor", "InterruptController",
         "Decode", "Execute", "ExecuteMem", "CSR", "MMU_TLB",
-        "Writeback", "WritebackMem", "TribeTest"};
+        "Writeback", "WritebackMem", "TribeTest", "SmartNicTribeTest"};
     return VerilatorCompileInExactFolderFromGenerated(source.string(),
         "CPU_verilator", "CPU", generated, modules, includes);
 #endif

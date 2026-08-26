@@ -17,7 +17,8 @@ class SmartNicRAM : public Module
 #endif
 {
 public:
-    _PORT(u<clog2(DEPTH)>) addr_in;
+    _PORT(u<clog2(DEPTH)>) write_addr_in;
+    _PORT(u<clog2(DEPTH)>) read_addr_in;
     _PORT(logic<WIDTH>) data_in;
     _PORT(bool) wr_in;
     _PORT(bool) rd_in;
@@ -26,10 +27,9 @@ public:
 
 private:
     reg<logic<WIDTH>> q_out_reg;
-    // This RAM is always read and written as a complete word.  A singleton
-    // memory element emits a two-dimensional packed-word array, which Vivado
-    // can infer directly as block RAM instead of expanding a byte/word 3-D
-    // array into registers.
+    // This RAM is always read and written as a complete word. Independent
+    // addresses describe a simple dual-port BRAM, while the singleton memory
+    // element emits the two-dimensional packed-word array Vivado expects.
     // (* ram_style = "block" *)
     memory<logic<WIDTH>, 1, DEPTH> buffer;
 
@@ -41,10 +41,10 @@ public:
             return;
         }
         if (wr_in()) {
-            buffer[addr_in()] = data_in();
+            buffer[write_addr_in()] = data_in();
         }
         if (rd_in()) {
-            q_out_reg._next = buffer[addr_in()];
+            q_out_reg._next = buffer[read_addr_in()];
         }
     }
 

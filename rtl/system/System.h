@@ -312,6 +312,19 @@ public:
     {
         return master_dma.protocol_error_code();
     }
+    bool dma_command_valid() { return master_dma.command_valid_in(); }
+    uint32_t dma_command_address()
+    {
+        return (uint32_t)master_dma.command_address_in();
+    }
+    uint32_t dma_command_length()
+    {
+        return (uint32_t)master_dma.command_length_in();
+    }
+    bool dma_command_direction()
+    {
+        return master_dma.command_direction_in();
+    }
     bool rx_protocol_error(uint32_t queue)
     {
         return rx_queue[queue].protocol_error_out();

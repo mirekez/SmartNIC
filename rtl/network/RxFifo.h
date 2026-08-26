@@ -24,7 +24,11 @@ struct RxDescriptor
     u16 packet_length;
     u8 ingress_stream;
     u8 flags;
-    logic<192> reserved;
+    // Physical/logical network interface on which the frame arrived. It is
+    // separate from ingress_stream because a future balancer may remap the
+    // stream that owns RxRAM storage.
+    u8 source_port;
+    logic<184> reserved;
     PacketParserWord packet_word0;
     PacketParserWord packet_word1;
 } __PACKED;

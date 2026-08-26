@@ -557,6 +557,10 @@ class NetworkBasicTest
                 != (uint32_t)descriptor.ingress_stream) {
             fail("descriptor address/ingress-stream mismatch");
         }
+        if ((uint32_t)descriptor.source_port
+            != (uint32_t)descriptor.ingress_stream) {
+            fail("descriptor source-port mismatch");
+        }
         if (((uint32_t)descriptor.flags & RX_DESCRIPTOR_FLAG_RAW) != (raw ? 1u : 0u)) {
             fail("descriptor RAW flag mismatch");
         }

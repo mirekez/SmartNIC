@@ -17,7 +17,8 @@ using namespace cpphdl;
 
 template<size_t LANE_WIDTH = 64, size_t READ_PORTS = 1,
     size_t BANK_DEPTH = 4096, size_t RX_FIFO_DEPTH = 64,
-    size_t TX_FIFO_WORDS = 2048, bool ENABLE_RAW = true>
+    size_t TX_FIFO_WORDS = 2048, bool ENABLE_RAW = true,
+    size_t READ_WIDTH = LANE_WIDTH>
 class Network : public Module
 {
 public:
@@ -49,7 +50,7 @@ public:
     _PORT(logic<READ_PORTS * HANDLE_BITS>) read_handle_in;
     _PORT(logic<READ_PORTS * LOGICAL_ROW_BITS>) read_word_in;
     _PORT(logic<READ_PORTS>) read_ready_out;
-    _PORT(logic<READ_PORTS * LANE_WIDTH>) read_data_out;
+    _PORT(logic<READ_PORTS * READ_WIDTH>) read_data_out;
     _PORT(logic<READ_PORTS>) read_valid_out;
     _PORT(logic<READ_PORTS>) read_ready_in;
     _PORT(logic<READ_PORTS>) release_valid_in;
@@ -80,7 +81,7 @@ public:
 private:
     InputBalancer<LANE_WIDTH> balancer;
     PacketParser<LANE_WIDTH, ENABLE_RAW> parser[STREAMS];
-    RxRAM<LANE_WIDTH, READ_PORTS, BANK_DEPTH> rx_ram;
+    RxRAM<LANE_WIDTH, READ_PORTS, BANK_DEPTH, READ_WIDTH> rx_ram;
     RxFifo<RX_FIFO_DEPTH> rx_fifo;
     OutputMerger<LANE_WIDTH, TX_FIFO_WORDS, 12> output_merger;
 
@@ -261,6 +262,7 @@ private:
             word.descriptor.ingress_stream = stream;
             word.descriptor.flags = (bool)parser_raw_reg[stream]
                 ? RX_DESCRIPTOR_FLAG_RAW : 0;
+            word.descriptor.source_port = stream;
             word.descriptor.reserved = 0;
             word.descriptor.packet_word0.raw = parser_word0_reg[stream];
             word.descriptor.packet_word1.raw = parser_word1_reg[stream];

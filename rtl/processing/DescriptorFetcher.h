@@ -32,6 +32,8 @@ public:
         REG_CONTROL = 0x000,
         REG_STATUS = 0x004,
         REG_ACTION = 0x008,
+        REG_AUTO_SLOT_MASK = 0x00c,
+        REG_AUTO_BASE = 0x010,
         REG_DESCRIPTOR_BASE = 0x020,
         REG_PACKET_ADDRESS = 0x100,
         REG_PACKET_META = 0x104,
@@ -48,10 +50,13 @@ public:
         REG_DESTINATION_IP2 = 0x130,
         REG_DESTINATION_IP3 = 0x134,
         REG_PORTS = 0x138,
-        REG_PROTOCOL = 0x13c
+        REG_PROTOCOL = 0x13c,
+        // Logical MAC-side ingress port, independent of parsed L4 ports.
+        REG_SOURCE_PORT = 0x140
     };
 
     static constexpr uint32_t CONTROL_ENABLE = 1u << 0;
+    static constexpr uint32_t CONTROL_AUTO_L2 = 1u << 1;
     static constexpr uint32_t ACTION_NEXT = 1u << 0;
     static constexpr uint32_t ACTION_DMA_DISCARD = 1u << 1;
     static constexpr uint32_t ACTION_DMA_SYSTEM = 1u << 2;
@@ -75,12 +80,15 @@ public:
     _PORT(u<HANDLE_BITS>) packet_command_handle_out;
     _PORT(u<14>) packet_command_length_out;
     _PORT(bool) packet_command_system_out;
+    _PORT(bool) packet_command_cache_out;
+    _PORT(u32) packet_command_destination_out;
 
     Axi4If<AXI_ADDR_WIDTH, AXI_ID_WIDTH, AXI_DATA_WIDTH> mmio;
 
     _PORT(bool) descriptor_available_out;
     _PORT(u<COUNT_BITS>) descriptor_count_out;
     _PORT(bool) prefetch_enabled_out;
+    _PORT(bool) auto_l2_enabled_out;
     _PORT(bool) protocol_error_out;
 
 private:
@@ -95,11 +103,20 @@ private:
     reg<u<3>> assembly_word_reg;
     reg<u1> assembly_active_reg;
     reg<u1> enabled_reg;
+    reg<u1> auto_l2_reg;
+    // One half of the 1 MiB CPU DDR is a 256-entry, 2 KiB packet ring.
+    // Keeping base/mask programmable lets a larger board-level DDR map use
+    // the same RTL without changing the descriptor protocol.
+    reg<u<9>> auto_slot_mask_reg;
+    reg<u32> auto_base_reg;
+    reg<u32> auto_sequence_reg;
     reg<u1> protocol_error_reg;
     reg<u1> packet_command_valid_reg;
     reg<u<HANDLE_BITS>> packet_command_handle_reg;
     reg<u<14>> packet_command_length_reg;
     reg<u1> packet_command_system_reg;
+    reg<u1> packet_command_cache_reg;
+    reg<u32> packet_command_destination_reg;
 
     reg<u<AXI_ADDR_WIDTH>> write_addr_reg;
     reg<u<AXI_ID_WIDTH>> write_id_reg;
@@ -145,7 +162,8 @@ private:
     {
         uint32_t body_word;
         if (address == REG_CONTROL) {
-            return (bool)enabled_reg ? CONTROL_ENABLE : 0;
+            return ((bool)enabled_reg ? CONTROL_ENABLE : 0)
+                | ((bool)auto_l2_reg ? CONTROL_AUTO_L2 : 0);
         }
         if (address == REG_STATUS) {
             return ((uint32_t)count_reg != 0 ? STATUS_AVAILABLE : 0)
@@ -154,6 +172,9 @@ private:
                 | (packet_command_ready_in() ? STATUS_DMA_READY : 0)
                 | ((uint32_t)count_reg << 8);
         }
+        if (address == REG_AUTO_SLOT_MASK)
+            return (uint32_t)auto_slot_mask_reg;
+        if (address == REG_AUTO_BASE) return (uint32_t)auto_base_reg;
         if (address >= REG_DESCRIPTOR_BASE
             && address < REG_DESCRIPTOR_BASE + DESCRIPTOR_BITS / 8
             && (address & 3u) == 0) {
@@ -174,6 +195,7 @@ private:
         }
         if (address == REG_PORTS) return descriptor_bits32(608);
         if (address == REG_PROTOCOL) return descriptor_bits32(640);
+        if (address == REG_SOURCE_PORT) return descriptor_bits32(64) & 0xffu;
         return 0;
     }
 
@@ -219,11 +241,15 @@ public:
         descriptor_available_out = _ASSIGN((uint32_t)count_reg != 0);
         descriptor_count_out = _ASSIGN_REG(count_reg);
         prefetch_enabled_out = _ASSIGN_REG(enabled_reg);
+        auto_l2_enabled_out = _ASSIGN_REG(auto_l2_reg);
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
         packet_command_valid_out = _ASSIGN_REG(packet_command_valid_reg);
         packet_command_handle_out = _ASSIGN_REG(packet_command_handle_reg);
         packet_command_length_out = _ASSIGN_REG(packet_command_length_reg);
         packet_command_system_out = _ASSIGN_REG(packet_command_system_reg);
+        packet_command_cache_out = _ASSIGN_REG(packet_command_cache_reg);
+        packet_command_destination_out =
+            _ASSIGN((u32)packet_command_destination_reg);
 
         mmio.awready_out = _ASSIGN(!write_addr_valid_reg
             && !write_response_valid_reg);
@@ -267,6 +293,14 @@ public:
             value = write_value();
             if (address == REG_CONTROL) {
                 enabled_reg._next = (value & CONTROL_ENABLE) != 0;
+                auto_l2_reg._next = (value & CONTROL_AUTO_L2) != 0;
+            }
+            else if (address == REG_AUTO_SLOT_MASK) {
+                // A mask of 2^N-1 selects a naturally aligned DDR packet ring.
+                auto_slot_mask_reg._next = value & 511u;
+            }
+            else if (address == REG_AUTO_BASE) {
+                auto_base_reg._next = value & ~0x7ffu;
             }
             else if (address == REG_ACTION && (value & ACTION_NEXT) != 0) {
                 if ((value & (ACTION_DMA_DISCARD | ACTION_DMA_SYSTEM)) == 0) {
@@ -279,6 +313,8 @@ public:
                     packet_command_length_reg._next = descriptor_bits32(32);
                     packet_command_system_reg._next =
                         (value & ACTION_DMA_SYSTEM) != 0;
+                    packet_command_cache_reg._next = false;
+                    packet_command_destination_reg._next = 0;
                     packet_command_valid_reg._next = true;
                     pop = true;
                 }
@@ -317,6 +353,24 @@ public:
         }
         if (read_valid_reg && mmio.rready_in()) {
             read_valid_reg._next = false;
+        }
+
+        // Optional hardware prefetch keeps RxRAM retirement independent of
+        // uncached firmware MMIO latency. Each destination is both a physical
+        // DDR ring address and its coherent L2 address; PacketDMA writes the
+        // backing store while retaining the recent hot subset in shared L2.
+        if (auto_l2_reg && count != 0 && packet_command_ready_in()
+            && !packet_command_valid_reg && !pop) {
+            packet_command_handle_reg._next = descriptor_bits32(0);
+            packet_command_length_reg._next = descriptor_bits32(32);
+            packet_command_system_reg._next = false;
+            packet_command_cache_reg._next = true;
+            packet_command_destination_reg._next = auto_base_reg
+                + (((uint32_t)auto_sequence_reg
+                    & (uint32_t)auto_slot_mask_reg) << 11);
+            packet_command_valid_reg._next = true;
+            auto_sequence_reg._next = auto_sequence_reg + 1;
+            pop = true;
         }
 
         if (pop) {
@@ -382,11 +436,17 @@ public:
             assembly_word_reg.clr();
             assembly_active_reg.clr();
             enabled_reg.clr();
+            auto_l2_reg.clr();
+            auto_slot_mask_reg._next = 511;
+            auto_base_reg.clr();
+            auto_sequence_reg.clr();
             protocol_error_reg.clr();
             packet_command_valid_reg.clr();
             packet_command_handle_reg.clr();
             packet_command_length_reg.clr();
             packet_command_system_reg.clr();
+            packet_command_cache_reg.clr();
+            packet_command_destination_reg.clr();
             write_addr_reg.clr();
             write_id_reg.clr();
             write_addr_valid_reg.clr();
@@ -415,11 +475,17 @@ public:
         assembly_word_reg.strobe();
         assembly_active_reg.strobe();
         enabled_reg.strobe();
+        auto_l2_reg.strobe();
+        auto_slot_mask_reg.strobe();
+        auto_base_reg.strobe();
+        auto_sequence_reg.strobe();
         protocol_error_reg.strobe();
         packet_command_valid_reg.strobe();
         packet_command_handle_reg.strobe();
         packet_command_length_reg.strobe();
         packet_command_system_reg.strobe();
+        packet_command_cache_reg.strobe();
+        packet_command_destination_reg.strobe();
         write_addr_reg.strobe();
         write_id_reg.strobe();
         write_addr_valid_reg.strobe();

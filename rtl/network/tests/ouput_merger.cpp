@@ -236,11 +236,11 @@ class OutputMergerTest
     {
         std::array<size_t, STREAMS> packet_index{};
         std::array<size_t, STREAMS> word_index{};
-        std::map<uint32_t, std::vector<uint8_t>> expected;
-        std::vector<uint8_t> assembling;
-        bool in_frame = false;
-        bool saw_frame = false;
-        size_t idle_bytes = 0;
+        std::array<std::map<uint32_t, std::vector<uint8_t>>, STREAMS> expected;
+        std::array<std::vector<uint8_t>, STREAMS> assembling;
+        std::array<bool, STREAMS> in_frame{};
+        std::array<bool, STREAMS> saw_frame{};
+        std::array<size_t, STREAMS> idle_bytes{};
         size_t received = 0;
         size_t cycle = 0;
         size_t input_words = 0;
@@ -249,10 +249,12 @@ class OutputMergerTest
 
         for (size_t stream = 0; stream < STREAMS; ++stream) {
             for (const TxTestPacket& packet : schedules[stream]) {
-                expected.emplace(packet.id, packet.bytes);
+                expected[stream].emplace(packet.id, packet.bytes);
             }
         }
-        const size_t expected_packets = expected.size();
+        size_t expected_packets = 0;
+        for (const auto& per_port : expected)
+            expected_packets += per_port.size();
         input_valid = 0;
         input_data = 0;
         input_keep = 0;
@@ -319,72 +321,90 @@ class OutputMergerTest
                 }
             }
 
-            if (output_valid_value() && output_ready) {
-                ++output_words;
+            if (output_ready) {
+                const bool aggregate_valid = output_valid_value();
+                if (aggregate_valid) ++output_words;
                 logic<OUTPUT_BITS> data = output_data_value();
                 logic<OUTPUT_BYTES> keep = output_keep_value();
                 logic<OUTPUT_BYTES> sop = output_sop_value();
                 logic<OUTPUT_BYTES> eop = output_eop_value();
-                for (size_t byte = 0; byte < OUTPUT_BYTES; ++byte) {
-                    if (!(bool)keep[byte]) {
-                        if ((bool)sop[byte] || (bool)eop[byte]) {
-                            fail("boundary asserted on an idle byte");
+                for (size_t stream = 0; stream < STREAMS; ++stream) {
+                    for (size_t lane_byte = 0; lane_byte < LANE_BYTES;
+                        ++lane_byte) {
+                        const size_t byte = stream * LANE_BYTES + lane_byte;
+                        if (!aggregate_valid || !(bool)keep[byte]) {
+                            if ((bool)sop[byte] || (bool)eop[byte]) {
+                                fail("boundary asserted on idle port "
+                                    + std::to_string(stream));
+                                break;
+                            }
+                            if (in_frame[stream]) {
+                                fail("idle byte inserted inside port "
+                                    + std::to_string(stream) + " frame");
+                                break;
+                            }
+                            if (saw_frame[stream]) ++idle_bytes[stream];
+                            continue;
+                        }
+                        if ((bool)sop[byte]) {
+                            if (in_frame[stream]) {
+                                fail("nested SOP on port "
+                                    + std::to_string(stream));
+                                break;
+                            }
+                            if (saw_frame[stream] && idle_bytes[stream] < 12) {
+                                fail("port " + std::to_string(stream)
+                                    + " IPG shorter than 12 bytes");
+                                break;
+                            }
+                            // The lane cannot start a FIFO word in the middle
+                            // of a cycle.  Two complete idle cycles follow
+                            // EOP, in addition to 0..7 unused bytes in its
+                            // final word.
+                            if (saw_frame[stream] && exact_ipg
+                                && (idle_bytes[stream] < 16
+                                    || idle_bytes[stream] > 23)) {
+                                fail("prefilled port burst did not use its "
+                                    "minimum aligned IPG");
+                                break;
+                            }
+                            assembling[stream].clear();
+                            in_frame[stream] = true;
+                            idle_bytes[stream] = 0;
+                        }
+                        else if (!in_frame[stream]) {
+                            fail("output data without SOP on port "
+                                + std::to_string(stream));
                             break;
                         }
-                        if (in_frame) {
-                            fail("idle byte inserted inside a frame");
-                            break;
+                        assembling[stream].push_back((uint8_t)data.bits(
+                            byte * 8 + 7, byte * 8));
+                        if ((bool)eop[byte]) {
+                            if (!in_frame[stream]
+                                || assembling[stream].size() < 4) {
+                                fail("malformed EOP on port "
+                                    + std::to_string(stream));
+                                break;
+                            }
+                            uint32_t id = tx_packet_id(assembling[stream]);
+                            auto found = expected[stream].find(id);
+                            if (found == expected[stream].end()) {
+                                fail("misrouted, duplicate, or unknown packet "
+                                    + std::to_string(id) + " on port "
+                                    + std::to_string(stream));
+                                break;
+                            }
+                            if (assembling[stream] != found->second) {
+                                fail("PRBS packet mismatch for "
+                                    + std::to_string(id));
+                                break;
+                            }
+                            expected[stream].erase(found);
+                            ++received;
+                            in_frame[stream] = false;
+                            saw_frame[stream] = true;
+                            idle_bytes[stream] = 0;
                         }
-                        if (saw_frame) ++idle_bytes;
-                        continue;
-                    }
-                    if ((bool)sop[byte]) {
-                        if (in_frame) {
-                            fail("nested output SOP at aggregate byte "
-                                + std::to_string(byte)
-                                + ", partial frame bytes="
-                                + std::to_string(assembling.size()));
-                            break;
-                        }
-                        if (saw_frame && idle_bytes < 12) {
-                            fail("output IPG shorter than 12 bytes");
-                            break;
-                        }
-                        if (saw_frame && exact_ipg && idle_bytes != 12) {
-                            fail("prefilled burst did not use minimum IPG");
-                            break;
-                        }
-                        assembling.clear();
-                        in_frame = true;
-                        idle_bytes = 0;
-                    }
-                    else if (!in_frame) {
-                        fail("output data without SOP");
-                        break;
-                    }
-                    assembling.push_back((uint8_t)data.bits(
-                        byte * 8 + 7, byte * 8));
-                    if ((bool)eop[byte]) {
-                        if (!in_frame || assembling.size() < 4) {
-                            fail("malformed output EOP");
-                            break;
-                        }
-                        uint32_t id = tx_packet_id(assembling);
-                        auto found = expected.find(id);
-                        if (found == expected.end()) {
-                            fail("duplicate or unknown output packet");
-                            break;
-                        }
-                        if (assembling != found->second) {
-                            fail("PRBS packet mismatch for "
-                                + std::to_string(id));
-                            break;
-                        }
-                        expected.erase(found);
-                        ++received;
-                        in_frame = false;
-                        saw_frame = true;
-                        idle_bytes = 0;
                     }
                 }
             }
@@ -396,10 +416,12 @@ class OutputMergerTest
             fail("OutputMerger raised protocol_error_out; fifo mask="
                 + std::to_string((uint32_t)(uint64_t)fifo_error_value()));
         }
-        if (!expected.empty() || received != expected_packets) {
+        if (!expected[0].empty() || !expected[1].empty()
+            || received != expected_packets) {
             fail("OutputMerger did not return every packet");
         }
-        if (in_frame) fail("OutputMerger retained a partial output frame");
+        if (in_frame[0] || in_frame[1])
+            fail("OutputMerger retained a partial output frame");
         std::print("    {:<16} packets={:<3} input_words={:<5} output_words={:<4} cycles={:<6} {}\n",
             name, expected_packets, input_words, output_words, cycle,
             error ? "FAILED" : "PASSED");

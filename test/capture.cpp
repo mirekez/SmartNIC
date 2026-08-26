@@ -6,6 +6,9 @@
 #include "SmartNICTest.h"
 #include "../rtl/testing/GenEthStream.h"
 #include "../rtl/system/Controller.h"
+#if DEMO_VIDEO
+#include "../demo/Visualizer.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -15,6 +18,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <print>
 #include <string>
 #include <vector>
@@ -25,6 +29,30 @@ namespace
 #ifndef SUSTAINED_CAPTURE
 #define SUSTAINED_CAPTURE 0
 #endif
+#ifndef DEMO_VIDEO
+#define DEMO_VIDEO 0
+#endif
+#ifndef DEMO_CAPTURE_INTERVAL
+#define DEMO_CAPTURE_INTERVAL 100
+#endif
+#ifndef DEMO_VIDEO_DECIMATION
+#define DEMO_VIDEO_DECIMATION 64
+#endif
+#ifndef DEMO_BASE_FRAME_COUNT
+#define DEMO_BASE_FRAME_COUNT 100
+#endif
+#ifndef DEMO_TRAFFIC_REPEATS
+#define DEMO_TRAFFIC_REPEATS 2
+#endif
+#ifndef DEMO_FRAME_BYTES
+#define DEMO_FRAME_BYTES 0
+#endif
+#ifndef DEMO_IPG_BYTES
+#define DEMO_IPG_BYTES 12
+#endif
+#ifndef DEMO_NETWORK_INTERVAL
+#define DEMO_NETWORK_INTERVAL 10
+#endif
 
 // Sustained mode time-serializes each aggregate word into two clocks while
 // retaining each MAC word on its original physical channel.  Moving channel 1
@@ -34,15 +62,21 @@ namespace
 constexpr size_t TRAFFIC_DEPTH = SUSTAINED_CAPTURE ? 131072 : 8192;
 using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, TRAFFIC_DEPTH>;
 using Generator = GenEthStream<NET_LANE_WIDTH>;
+#if DEMO_VIDEO
+using Beat = Generator::Beat;
+using Visualizer = smartnic_demo::Visualizer<Dut, Beat>;
+using smartnic_demo::Canvas;
+#endif
 
 constexpr uint64_t HOST_PACKET_BASE = 0x00100000;
 constexpr uint32_t HOST_PACKET_STRIDE = 2048;
-constexpr uint32_t CAPTURE_INTERVAL = 100;
-constexpr uint32_t BASE_FRAME_COUNT = 100;
+constexpr uint32_t CAPTURE_INTERVAL = DEMO_CAPTURE_INTERVAL;
+constexpr uint32_t BASE_FRAME_COUNT = DEMO_BASE_FRAME_COUNT;
 // Five 100-frame passes exceed the 64 KiB packet store many times, proving
 // circular allocation reuse without overrunning the single-cluster firmware
 // consumer in cycle-accurate simulation.
-constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE ? 5 : 2;
+constexpr uint32_t TRAFFIC_REPEATS = SUSTAINED_CAPTURE
+    ? 5 : DEMO_TRAFFIC_REPEATS;
 constexpr uint32_t FRAME_COUNT = BASE_FRAME_COUNT * TRAFFIC_REPEATS;
 constexpr uint32_t CAPTURED_FRAME_COUNT = FRAME_COUNT / CAPTURE_INTERVAL;
 constexpr uint64_t MAX_CPU_TICKS = 40000000;
@@ -105,6 +139,15 @@ class CaptureTest
     bool wire_started = false;
     bool backpressure_reported = false;
     bool error = false;
+    std::array<uint64_t, NETWORK_PORTS> lane_active_cycles{};
+    std::array<uint64_t, NETWORK_PORTS> lane_payload_bytes{};
+#if DEMO_VIDEO
+    uint32_t video_decimation_phase = 0;
+    uint32_t video_host_consumer = 0;
+    std::vector<uint8_t> firmware_image;
+    std::vector<Beat> traffic_beats;
+    std::unique_ptr<Visualizer> visualizer;
+#endif
 
     static constexpr uint64_t CPU_CLOCK_HZ = PROCESSING_CLK_HZ;
 
@@ -113,6 +156,16 @@ class CaptureTest
         const uint64_t end = wire_stop_cycle != 0
             ? wire_stop_cycle : net_cycles;
         return wire_started ? end - wire_start_cycle : 0;
+    }
+
+    uint32_t l2_completed_packets()
+    {
+        uint32_t completed = 0;
+        for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
+            completed += (uint32_t)dut.processing.packet_dma[cluster]
+                .cache_completed_count_out();
+        }
+        return completed;
     }
 
     void fail(const std::string& message)
@@ -159,6 +212,19 @@ class CaptureTest
                     wire_started = true;
                     wire_start_cycle = net_cycles;
                 }
+                for (uint32_t lane = 0; lane < NETWORK_PORTS; ++lane) {
+                    bool active = false;
+                    for (uint32_t byte = 0;
+                        byte < NET_LANE_WIDTH / 8; ++byte) {
+                        const uint32_t flat = lane * (NET_LANE_WIDTH / 8)
+                            + byte;
+                        if (dut.traffic.keep_out()[flat]) {
+                            active = true;
+                            ++lane_payload_bytes[lane];
+                        }
+                    }
+                    if (active) ++lane_active_cycles[lane];
+                }
                 if (!dut.smartnic.net_rx_ready_out()
                     && !backpressure_reported) {
                     backpressure_reported = true;
@@ -181,6 +247,15 @@ class CaptureTest
             edges.system = true;
         }
 
+#if DEMO_VIDEO
+        if (visualizer) {
+            visualizer->observe_cpu_before(dut);
+            if (edges.net) visualizer->observe_net_before(dut);
+            if (edges.l2) visualizer->observe_l2_before(dut);
+            if (edges.system) visualizer->observe_system_before(dut);
+        }
+#endif
+
         // All 156.25 MHz domains share one edge. Evaluate every domain before
         // committing any registers, matching synchronous RTL semantics.
         dut._work_cpu_clk(reset);
@@ -198,6 +273,16 @@ class CaptureTest
                 wire_stop_cycle = net_cycles + 1;
             }
             ++net_cycles;
+#if DEMO_VIDEO
+            if (visualizer) {
+                if (video_decimation_phase == 0) {
+                    visualizer->frame(dut, ticks, video_host_consumer,
+                        edges.l2, edges.system);
+                }
+                video_decimation_phase = (video_decimation_phase + 1)
+                    % DEMO_VIDEO_DECIMATION;
+            }
+#endif
         }
         ++ticks;
         ++_system_clock;
@@ -252,11 +337,19 @@ class CaptureTest
                 return false;
             }
             const uint32_t address = segment.paddr ? segment.paddr : segment.vaddr;
+#if DEMO_VIDEO
+            if (firmware_image.size() < (size_t)address + segment.memsz) {
+                firmware_image.resize((size_t)address + segment.memsz, 0);
+            }
+#endif
             for (uint32_t cluster = 0; cluster < CPUS_USED; ++cluster) {
                 for (uint32_t byte = 0; byte < segment.memsz; ++byte) {
                     const uint8_t value = byte < segment.filesz
                         ? image[segment.offset + byte] : 0;
                     dut.load_cpu_byte(cluster, address + byte, value);
+#if DEMO_VIDEO
+                    firmware_image[address + byte] = value;
+#endif
                 }
             }
             loaded += segment.memsz;
@@ -326,18 +419,40 @@ class CaptureTest
     {
         static constexpr std::array<uint32_t, 8> functional_sizes = {
             64, 128, 256, 512, 1024, 1516, 768, 300};
+#if DEMO_VIDEO
+        static constexpr std::array<uint16_t, 32> patterns = {
+            0x000f, 0x00f0, 0x0f00, 0x00ff, 0x0f0f, 0x0ff0, 0x0fff, 0x000c,
+            0x00c0, 0x0c00, 0x00cc, 0x0c0c, 0x0cc0, 0x0ccc, 0x009f, 0x00f9,
+            0x090f, 0x0f09, 0x09f0, 0x0f90, 0x1099, 0x1909, 0x1990, 0x1066,
+            0x1606, 0x1660, 0x2066, 0x2606, 0x2660, 0x2048, 0x2480, 0x2804};
+#endif
         std::vector<std::vector<uint8_t>> frames;
         for (uint32_t frame_index = 0;
             frame_index < BASE_FRAME_COUNT; ++frame_index) {
-            const uint32_t size = SUSTAINED_CAPTURE ? 1516
-                : functional_sizes[frame_index % functional_sizes.size()];
+            const uint32_t size = DEMO_FRAME_BYTES != 0 ? DEMO_FRAME_BYTES
+                : (SUSTAINED_CAPTURE ? 1516
+                    : functional_sizes[frame_index % functional_sizes.size()]);
             std::vector<uint8_t> frame(size);
+#if DEMO_VIDEO
+            const uint16_t pattern = patterns[frame_index % patterns.size()];
+            for (uint32_t byte = 0; byte < frame.size(); byte += 2) {
+                frame[byte] = (uint8_t)pattern;
+                if (byte + 1 < frame.size()) frame[byte + 1] = pattern >> 8;
+            }
+#else
             for (uint32_t byte = 0; byte < frame.size(); ++byte) {
                 frame[byte] = (uint8_t)(frame_index * 29 + byte * 17 + 3);
             }
+#endif
+            const uint32_t port = frame_index & 1u;
+            const uint32_t station = (frame_index / 2u) % 10u;
+            const uint32_t destination_port = (frame_index & 2u)
+                ? (port ^ 1u) : port;
             const uint8_t header[14] = {
-                0x02, 0, 0, 0, 0, (uint8_t)frame_index,
-                0x02, 1, 2, 3, 4, (uint8_t)(0x80 + frame_index),
+                0x02, 0x20, 0, (uint8_t)destination_port, 0x40,
+                    (uint8_t)(0x10 + (station + 1) % 10),
+                0x02, 0x20, 0, (uint8_t)port, 0x40,
+                    (uint8_t)(0x10 + station),
                 0x08, 0x00};
             std::copy(std::begin(header), std::end(header), frame.begin());
             // Keep every packet in the loaded base image bytewise unique.
@@ -375,9 +490,13 @@ class CaptureTest
     bool load_traffic(const std::vector<std::vector<uint8_t>>& frames)
     {
         Generator generator;
+#if DEMO_VIDEO
+        traffic_beats.clear();
+#endif
         generator.clear();
         for (const auto& frame : frames) {
-            generator.push(frame, SUSTAINED_CAPTURE ? 8192 : 12);
+            generator.push(frame,
+                SUSTAINED_CAPTURE ? 8192 : DEMO_IPG_BYTES);
         }
         generator.finalize();
         const size_t load_words = generator.size()
@@ -392,6 +511,9 @@ class CaptureTest
                 return false;
             }
             const auto& beat = generator.front();
+#if DEMO_VIDEO
+            traffic_beats.push_back(beat);
+#endif
             const uint32_t words = SUSTAINED_CAPTURE ? 2 : 1;
             for (uint32_t word = 0; word < words; ++word) {
                 traffic_load_data = 0;
@@ -504,6 +626,14 @@ class CaptureTest
                   << ":" << dut.system.controller_protocol_error()
                   << ":" << dut.system.dma_protocol_error()
                   << "(" << dut.system.dma_protocol_error_code() << ")"
+                  << " dma_cmd{valid="
+                  << dut.system.dma_command_valid()
+                  << ",addr="
+                  << dut.system.dma_command_address()
+                  << ",len="
+                  << dut.system.dma_command_length()
+                  << ",dir="
+                  << dut.system.dma_command_direction() << '}'
                   << ":" << dut.system.rx_protocol_error(0)
                   << ":" << dut.system.tx_protocol_error(0)
                   << " traffic=" << dut.traffic.protocol_error_out()
@@ -562,7 +692,12 @@ class CaptureTest
     }
 
 public:
+#if DEMO_VIDEO
+    bool run(const std::filesystem::path& firmware,
+        const std::filesystem::path& output, uint8_t background)
+#else
     bool run(const std::filesystem::path& firmware)
+#endif
     {
         bind();
         if (!load_elf(firmware)) return false;
@@ -583,6 +718,10 @@ public:
         write32(Controller<>::REG_RX_PRODUCER, expected.size());
         write32(Controller<>::REG_CONTROL, Controller<>::CONTROL_ENABLE);
         if (!load_traffic(base_frames)) return false;
+#if DEMO_VIDEO
+        visualizer = std::make_unique<Visualizer>(output, frames,
+            traffic_beats, firmware_image, TRAFFIC_REPEATS, 120, background);
+#endif
 
         // The 2x10G profile has one processing cluster. Let its firmware
         // finish initialization before releasing a non-stallable sustained
@@ -598,12 +737,21 @@ public:
         uint64_t next_poll = ticks;
         uint64_t next_progress = ticks + PROGRESS_INTERVAL;
         report_progress(consumer);
-        while (ticks < MAX_CPU_TICKS && consumer != expected.size()
+        while (ticks < MAX_CPU_TICKS
+            && (consumer != expected.size()
+#if DEMO_VIDEO
+                || l2_completed_packets() != FRAME_COUNT)
+#else
+                )
+#endif
             && !error) {
             cycle();
             if (ticks >= next_poll) {
                 consumer = read32(Controller<>::REG_RX_CONSUMER);
-                next_poll = ticks + 20000;
+#if DEMO_VIDEO
+                video_host_consumer = consumer;
+#endif
+                next_poll = ticks + (DEMO_VIDEO ? 512 : 20000);
             }
             if (ticks >= next_progress) {
                 report_progress(consumer);
@@ -618,25 +766,75 @@ public:
             }
         }
         consumer = read32(Controller<>::REG_RX_CONSUMER);
+#if DEMO_VIDEO
+        video_host_consumer = consumer;
+        // Record one final settled frame after the last host completion.
+        visualizer->frame(dut, ticks, video_host_consumer, true, true);
+        if (!visualizer->mac_tx_ok()
+            || visualizer->mac_tx_packet_count()
+                != FRAME_COUNT / DEMO_NETWORK_INTERVAL) {
+            fail(std::format("MAC TX verification failed: {} of {} packets",
+                visualizer->mac_tx_packet_count(),
+                FRAME_COUNT / DEMO_NETWORK_INTERVAL));
+        }
+        if (visualizer->rx_fifo_frame_count() == 0
+            || visualizer->tx_fifo_frame_count() == 0) {
+            fail(std::format("video FIFO activity missing: RX frames={}, "
+                "TX frames={}", visualizer->rx_fifo_frame_count(),
+                visualizer->tx_fifo_frame_count()));
+        }
+#endif
         if (backpressure_reported) report_backpressure_state(consumer);
         if (consumer != expected.size()) {
             fail(std::format("capture timed out: {} of {} packets reached host",
                 consumer, expected.size()));
         }
+#if DEMO_VIDEO
+        if (l2_completed_packets() != FRAME_COUNT) {
+            fail(std::format("processing throughput failure: {} of {} packets "
+                "reached coherent L2", l2_completed_packets(), FRAME_COUNT));
+        }
+#endif
         if (!dut.traffic_done_out()) fail("traffic source did not drain");
         if ((uint32_t)dut.traffic_backpressure_cycles_out() != 0) {
             fail(std::format("wire-speed violation: {} network cycles backpressured",
                 (uint32_t)dut.traffic_backpressure_cycles_out()));
         }
+#if DEMO_VIDEO
+        const uint64_t elapsed = wire_elapsed_cycles();
+        for (uint32_t lane = 0; lane < NETWORK_PORTS; ++lane) {
+            const double load = elapsed == 0 ? 0.0
+                : 100.0 * lane_active_cycles[lane] / elapsed;
+            if (load < 79.0 || load > 81.0) {
+                fail(std::format(
+                    "channel {} load {:.2f}% is outside the 80% target",
+                    lane, load));
+            }
+        }
+#endif
         if (!error) verify_packets(frames, expected.size());
+#if DEMO_VIDEO
+        visualizer->finish();
+#endif
 
         std::print("2x10G capture: injected={} sampled={} beats={} net_cycles={} CPU ticks={} "
-            "backpressure={} result={}\n",
+            "l2_packets={} backpressure={} result={}"
+#if DEMO_VIDEO
+            " lane_load={:.2f}%/{:.2f}% video_frames={} video={}"
+#endif
+            "\n",
             frames.size(), expected.size(),
             (uint32_t)dut.traffic_emitted_beats_out(),
             wire_elapsed_cycles(), ticks,
+            l2_completed_packets(),
             (uint32_t)dut.traffic_backpressure_cycles_out(),
-            error ? "FAILED" : "PASSED");
+            error ? "FAILED" : "PASSED"
+#if DEMO_VIDEO
+            , 100.0 * lane_active_cycles[0] / wire_elapsed_cycles()
+            , 100.0 * lane_active_cycles[1] / wire_elapsed_cycles()
+            , visualizer->frame_count(), output.string()
+#endif
+            );
         return !error;
     }
 };
@@ -646,5 +844,31 @@ public:
 int main(int argc, char** argv)
 {
     const std::filesystem::path firmware = argc > 1 ? argv[1] : "capture.elf";
+#if DEMO_VIDEO
+    try {
+        const std::filesystem::path output = argc > 2
+            ? argv[2] : "smartnic_2x10g_capture.avi";
+        uint8_t background = Canvas::UI_OUTSIDE;
+        if (argc > 3) {
+            std::string color = argv[3];
+            if (!color.empty() && color.front() == '#') color.erase(0, 1);
+            size_t consumed = 0;
+            const unsigned long rgb = std::stoul(color, &consumed, 16);
+            if (color.size() != 6 || consumed != color.size()
+                || rgb > 0xfffffful) {
+                throw std::runtime_error(
+                    "background must be a six-digit #RRGGBB color");
+            }
+            background = Canvas::rgb332((uint8_t)(rgb >> 16),
+                (uint8_t)(rgb >> 8), (uint8_t)rgb);
+        }
+        return CaptureTest().run(firmware, output, background) ? 0 : 1;
+    }
+    catch (const std::exception& exception) {
+        std::cerr << "capture video exception: " << exception.what() << '\n';
+        return 1;
+    }
+#else
     return CaptureTest().run(firmware) ? 0 : 1;
+#endif
 }

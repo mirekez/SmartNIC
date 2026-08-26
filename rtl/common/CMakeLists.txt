@@ -1,0 +1,23 @@
+set(SMARTNIC_COMMON_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(SMARTNIC_AXI4_DDR4_SV
+    "${SMARTNIC_COMMON_GENERATED_DIR}/Axi4DDR4.sv")
+
+add_custom_command(
+    OUTPUT "${SMARTNIC_AXI4_DDR4_SV}"
+    BYPRODUCTS
+        "${SMARTNIC_COMMON_GENERATED_DIR}/Axi4DDR4State_pkg.sv"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${SMARTNIC_COMMON_GENERATED_DIR}"
+    COMMAND $<TARGET_FILE:cpphdl>
+        --generated-dir "${SMARTNIC_COMMON_GENERATED_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Axi4DDR4.h"
+        -I "${PROJECT_SOURCE_DIR}/cpphdl/include"
+        -I "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
+        -I "${CMAKE_CURRENT_SOURCE_DIR}"
+        -I "${PROJECT_SOURCE_DIR}"
+        ${CPPHDL_TOOLCHAIN_ARGS}
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Axi4DDR4.h"
+        "${CPPHDL_CONVERTER_DEPENDENCY}"
+    VERBATIM)
+
+add_custom_target(common_rtl DEPENDS "${SMARTNIC_AXI4_DDR4_SV}")

@@ -8,7 +8,8 @@
 #include "../rtl/SmartNIC.h"
 #include "../rtl/processing/Processing.h"
 #include "../rtl/system/System.h"
-#include "../cpphdl/tribe_cpu/common/Axi4Ram.h"
+#include "../rtl/common/Axi4DDR4.h"
+#include "../sim/DDR4.h"
 #include "TrafficGenerator.h"
 #include "Axi4Host.h"
 
@@ -36,8 +37,20 @@ public:
     System<SYSTEM_QUEUES, 256> system;
     TrafficGenerator<LANE_WIDTH, TRAFFIC_DEPTH> traffic;
     Axi4Host<HOST_MEMORY_BYTES> host;
-    Axi4Ram<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
-        CPU::DATA_WIDTH, CPU_RAM_WORDS> cpu_memory[CPU_COUNT];
+    // CPU_RAM_WORDS remains in the template for source compatibility. The
+    // DDR model defaults to 32 bits, but this throughput harness instantiates
+    // a 256-bit native port: a 32-bit x 312.5 MHz device cannot back a 20 Gb/s
+    // packet ring while also serving instruction/data cache misses.
+    // The generic DDR4 model still defaults to 1 MiB. This sustained harness
+    // uses 2 MiB so its lower half contains 512 complete 2 KiB packet slots;
+    // all 400 wire packets remain addressable while software deliberately
+    // demonstrates the slower CPU-decision/egress drain rate.
+    static constexpr size_t DDR_BYTES = 2 * 1024 * 1024;
+    static constexpr size_t DDR_WIDTH = 256;
+    Axi4DDR4<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
+        CPU::DATA_WIDTH, DDR_WIDTH> cpu_memory_adapter[CPU_COUNT];
+    DDR4<DDR_BYTES, DDR_WIDTH, CPU::EXTERNAL_ADDR_WIDTH>
+        cpu_memory[CPU_COUNT];
 
     // Traffic image loader and launch interface.
     _PORT(bool) traffic_load_valid_in;
@@ -73,6 +86,7 @@ private:
     logic<STREAMS * L2_BYTES> smartnic_tx_keep_comb;
     logic<STREAMS> smartnic_tx_sop_comb;
     logic<STREAMS> smartnic_tx_eop_comb;
+    logic<CPU_COUNT> processing_network_ready_comb;
     logic<SYSTEM_QUEUES> system_rx_valid_comb;
     logic<SYSTEM_QUEUES * L2_WIDTH> system_rx_data_comb;
     logic<SYSTEM_QUEUES * L2_BYTES> system_rx_keep_comb;
@@ -96,7 +110,9 @@ private:
         uint32_t index;
         smartnic_tx_valid_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            smartnic_tx_valid_comb[index] =
+            const uint32_t port = (uint32_t)processing.to_network_port_out()
+                .bits(index * 8 + 7, index * 8) % STREAMS;
+            smartnic_tx_valid_comb[port] =
                 processing.to_network_valid_out()[index];
         }
         return smartnic_tx_valid_comb;
@@ -108,8 +124,10 @@ private:
         uint32_t bit;
         smartnic_tx_data_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
+            const uint32_t port = (uint32_t)processing.to_network_port_out()
+                .bits(index * 8 + 7, index * 8) % STREAMS;
             for (bit = 0; bit < L2_WIDTH; ++bit) {
-                smartnic_tx_data_comb[index * L2_WIDTH + bit] =
+                smartnic_tx_data_comb[port * L2_WIDTH + bit] =
                     processing.to_network_data_out()[index * L2_WIDTH + bit];
             }
         }
@@ -122,8 +140,10 @@ private:
         uint32_t bit;
         smartnic_tx_keep_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
+            const uint32_t port = (uint32_t)processing.to_network_port_out()
+                .bits(index * 8 + 7, index * 8) % STREAMS;
             for (bit = 0; bit < L2_BYTES; ++bit) {
-                smartnic_tx_keep_comb[index * L2_BYTES + bit] =
+                smartnic_tx_keep_comb[port * L2_BYTES + bit] =
                     processing.to_network_keep_out()[index * L2_BYTES + bit];
             }
         }
@@ -135,7 +155,9 @@ private:
         uint32_t index;
         smartnic_tx_sop_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            smartnic_tx_sop_comb[index] =
+            const uint32_t port = (uint32_t)processing.to_network_port_out()
+                .bits(index * 8 + 7, index * 8) % STREAMS;
+            smartnic_tx_sop_comb[port] =
                 processing.to_network_sop_out()[index];
         }
         return smartnic_tx_sop_comb;
@@ -146,10 +168,25 @@ private:
         uint32_t index;
         smartnic_tx_eop_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            smartnic_tx_eop_comb[index] =
+            const uint32_t port = (uint32_t)processing.to_network_port_out()
+                .bits(index * 8 + 7, index * 8) % STREAMS;
+            smartnic_tx_eop_comb[port] =
                 processing.to_network_eop_out()[index];
         }
         return smartnic_tx_eop_comb;
+    }
+
+    logic<CPU_COUNT>& processing_network_ready_comb_func()
+    {
+        uint32_t index;
+        processing_network_ready_comb = 0;
+        for (index = 0; index < CPU_COUNT; ++index) {
+            const uint32_t port = (uint32_t)processing.to_network_port_out()
+                .bits(index * 8 + 7, index * 8) % STREAMS;
+            processing_network_ready_comb[index] =
+                smartnic.l2_tx_ready_out()[port];
+        }
+        return processing_network_ready_comb;
     }
 
     logic<SYSTEM_QUEUES>& system_rx_valid_comb_func()
@@ -293,8 +330,8 @@ private:
         smartnic.l2_tx_keep_in = _ASSIGN_COMB(smartnic_tx_keep_comb_func());
         smartnic.l2_tx_sop_in = _ASSIGN_COMB(smartnic_tx_sop_comb_func());
         smartnic.l2_tx_eop_in = _ASSIGN_COMB(smartnic_tx_eop_comb_func());
-        processing.to_network_ready_in = _ASSIGN(
-            (logic<CPU_COUNT>)smartnic.l2_tx_ready_out().bits(CPU_COUNT - 1, 0));
+        processing.to_network_ready_in =
+            _ASSIGN_COMB(processing_network_ready_comb_func());
 
         system.l2_rx_valid_in = _ASSIGN_COMB(system_rx_valid_comb_func());
         system.l2_rx_data_in = _ASSIGN_COMB(system_rx_data_comb_func());
@@ -332,11 +369,26 @@ private:
             host.dma_memory.axi_in);
 
         for (index = 0; index < CPU_COUNT; ++index) {
-            AXI4_TARGET_IF_DRIVER_FROM_MASTER(cpu_memory[index].axi_in,
+            AXI4_TARGET_IF_DRIVER_FROM_MASTER(cpu_memory_adapter[index].axi,
                 processing.ddr[index]);
             AXI4_MASTER_RESPONDER_FROM_TARGET(processing.ddr[index],
-                cpu_memory[index].axi_in);
-            cpu_memory[index].debugen_in = false;
+                cpu_memory_adapter[index].axi);
+            cpu_memory[index].valid_in =
+                cpu_memory_adapter[index].ddr_valid_out;
+            cpu_memory[index].write_in =
+                cpu_memory_adapter[index].ddr_write_out;
+            cpu_memory[index].address_in =
+                cpu_memory_adapter[index].ddr_address_out;
+            cpu_memory[index].writedata_in =
+                cpu_memory_adapter[index].ddr_writedata_out;
+            cpu_memory[index].byteenable_in =
+                cpu_memory_adapter[index].ddr_byteenable_out;
+            cpu_memory_adapter[index].ddr_ready_in =
+                cpu_memory[index].ready_out;
+            cpu_memory_adapter[index].ddr_readdatavalid_in =
+                cpu_memory[index].readdatavalid_out;
+            cpu_memory_adapter[index].ddr_readdata_in =
+                cpu_memory[index].readdata_out;
             processing.cache_invalidate_in[index] = _ASSIGN(false);
             for (core = 0; core < CPU::CORES; ++core) {
                 processing.software_irq_in[index * CPU::CORES + core] =
@@ -365,6 +417,9 @@ public:
         system._assign();
         host._assign();
         for (index = 0; index < CPU_COUNT; ++index) {
+            cpu_memory_adapter[index].__inst_name = __inst_name
+                + "/cpu_memory_adapter" + std::to_string(index);
+            cpu_memory_adapter[index]._assign();
             cpu_memory[index].__inst_name = __inst_name + "/cpu_memory"
                 + std::to_string(index);
             cpu_memory[index]._assign();
@@ -379,6 +434,7 @@ public:
         system._assign();
         host._assign();
         for (index = 0; index < CPU_COUNT; ++index) {
+            cpu_memory_adapter[index]._assign();
             cpu_memory[index]._assign();
         }
         bind_children();
@@ -402,15 +458,18 @@ public:
         // internal L2-to-primary CDC, so attached DDR controllers must sample
         // them on cpu_clk rather than l2_clk.
         for (index = 0; index < CPU_COUNT; ++index) {
+            cpu_memory_adapter[index]._work(reset);
             cpu_memory[index]._work(reset);
         }
     }
+
 
     void _strobe_cpu_clk()
     {
         uint32_t index;
         processing._strobe();
         for (index = 0; index < CPU_COUNT; ++index) {
+            cpu_memory_adapter[index]._strobe();
             cpu_memory[index]._strobe();
         }
     }
@@ -456,10 +515,14 @@ public:
 #ifndef SYNTHESIS
     void load_cpu_byte(size_t cluster, uint32_t address, uint8_t value)
     {
-        if (cluster >= CPU_COUNT
-            || address >= CPU_RAM_WORDS * CPU::DATA_WIDTH / 8) return;
-        cpu_memory[cluster].ram.buffer.data[address / (CPU::DATA_WIDTH / 8)]
-            [address % (CPU::DATA_WIDTH / 8)] = value;
+        if (cluster >= CPU_COUNT || address >= DDR_BYTES) return;
+        cpu_memory[cluster].load_byte(address, value);
+    }
+
+    uint8_t cpu_memory_byte(size_t cluster, uint32_t address) const
+    {
+        if (cluster >= CPU_COUNT || address >= DDR_BYTES) return 0;
+        return cpu_memory[cluster].read_byte(address);
     }
 
     uint8_t host_byte(uint64_t address) const

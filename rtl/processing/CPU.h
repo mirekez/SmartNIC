@@ -22,10 +22,79 @@
 #undef ENABLE_RV32IA
 #undef ENABLE_ISR
 #undef ENABLE_MMU_TLB
+// Current Tribe sources keep sfence_vma_comb() available without the MMU but
+// reference the MMU-only issue latch from that helper.  Alias it while parsing
+// Tribe locally so the deliberately minimal SmartNIC configuration remains
+// buildable without modifying the shared cpphdl checkout.  No SmartNIC
+// firmware issues SFENCE.VMA when address translation is disabled.
+#define sfence_vma_issued_reg icache_invalidate_issued_reg
 #include "../../cpphdl/tribe_cpu/TribeTestModule.h"
+#undef sfence_vma_issued_reg
 #include "../common/Axi4Master.h"
 
 using namespace cpphdl;
+
+// SmartNIC owns a reserved L2 packet window and publishes a packet only after
+// its EOP line is installed. Allocate consecutive lines at full L2 bandwidth,
+// then invalidate private caches once at the packet boundary. This preserves
+// coherency without serializing every 32-byte line on an invalidate mailbox.
+template<size_t CPU_CORES>
+class SmartNicTribeTest : public TribeTest<CPU_CORES>
+{
+    using Base = TribeTest<CPU_CORES>;
+
+public:
+    _PORT(bool) packet_line_valid_in;
+    _PORT(u32) packet_line_addr_in;
+    _PORT(logic<256>) packet_line_data_in;
+    _PORT(logic<32>) packet_line_keep_in;
+    _PORT(bool) packet_line_ready_out;
+
+    void _assign()
+    {
+        // Keep Tribe's generic per-line invalidation port idle. The direct
+        // allocator below is paired with the packet-EOP invalidation supplied
+        // through external_cache_invalidate_in by CPU::_assign().
+        Base::_assign();
+
+        Base::l2cache.dma_line_valid_in = packet_line_valid_in;
+        Base::l2cache.dma_line_addr_in = packet_line_addr_in;
+        Base::l2cache.dma_line_data_in = packet_line_data_in;
+        Base::l2cache.dma_line_keep_in = packet_line_keep_in;
+        packet_line_ready_out = Base::l2cache.dma_line_ready_out;
+    }
+
+    // Native simulation must commit the inherited Tribe state. In generated
+    // RTL the state is owned by clocked always blocks; emitting C++ register
+    // `strobe()` helpers as SystemVerilog task calls is both unnecessary and
+    // invalid for a derived module.
+    void _strobe()
+    {
+#ifndef SYNTHESIS
+        Base::_strobe();
+#endif
+    }
+
+    void _work_clk(bool reset)
+    {
+        Base::_work_clk(reset);
+    }
+
+    void _strobe_clk()
+    {
+        Base::_strobe_clk();
+    }
+
+    void _work_l2_clock(bool reset)
+    {
+        Base::_work_l2_clock(reset);
+    }
+
+    void _strobe_l2_clock()
+    {
+        Base::_strobe_l2_clock();
+    }
+};
 
 class CPU : public Module
 {
@@ -53,10 +122,18 @@ public:
     static_assert(MEMORY_BYTES + IO_BYTES == MAX_RAM_SIZE,
         "Tribe address layout must match CPU_MEMORY plus IOMEM");
 
-    TribeTest<CORES> tribe;
+    SmartNicTribeTest<CORES> tribe;
 
     // Coherent, write-allocating ingress used by the packet DMA.
     Axi4If<32, ID_WIDTH, DATA_WIDTH> dma_in;
+    // Full cache-line coherent ingress avoids one AXI response transaction per
+    // 32-byte network beat. Tribe performs the matching private-L1 invalidate.
+    _PORT(bool) dma_line_valid_in;
+    _PORT(u32) dma_line_addr_in;
+    _PORT(logic<DATA_WIDTH>) dma_line_data_in;
+    _PORT(logic<DATA_WIDTH / 8>) dma_line_keep_in;
+    _PORT(bool) dma_line_eop_in;
+    _PORT(bool) dma_line_ready_out;
     // Downstream ports.  IOMEM is uncached in Tribe's L2 region table.
     // Interface member names are neutral because their fields already carry
     // explicit master directions; a second `_out` suffix would be inverted by
@@ -81,6 +158,24 @@ private:
 
 public:
 
+#if DEMO_VIDEO
+    // Simulation-only cache activity exported to the video observer. Keeping
+    // this behind DEMO_VIDEO prevents visualization plumbing from entering RTL.
+    TribeCacheDebug demo_cache_debug(uint32_t core)
+    {
+        TribeCacheDebug debug = {};
+        debug.icache_read_valid = true;
+        debug.icache_read_addr = tribe.cores[core].imem_read_addr_out();
+        debug.icache_read_in = true;
+        debug.dcache_cpu_read = tribe.cores[core].dmem_read_out();
+        debug.dcache_cpu_write = tribe.cores[core].dmem_write_out();
+        debug.dcache_cpu_addr = tribe.cores[core].dmem_addr_out();
+        debug.dcache_cpu_wdata = tribe.cores[core].dmem_write_data_out();
+        debug.dcache_cpu_wmask = tribe.cores[core].dmem_write_mask_out();
+        return debug;
+    }
+#endif
+
     void _assign()
     {
         uint32_t core;
@@ -90,7 +185,8 @@ public:
         tribe.boot_hartid_in = boot_hartid_in;
         tribe.boot_dtb_addr_in = boot_dtb_addr_in;
         tribe.boot_priv_in = boot_priv_in;
-        tribe.external_cache_invalidate_in = cache_invalidate_in;
+        tribe.external_cache_invalidate_in = _ASSIGN(
+            cache_invalidate_in() || dma_line_eop_in());
         tribe.memory_base_in = _ASSIGN((uint32_t)0);
         tribe.memory_size_in = _ASSIGN((uint32_t)(MEMORY_BYTES + IO_BYTES));
         tribe.mem_region_size_in[0] = _ASSIGN((uint32_t)MEMORY_BYTES);
@@ -98,13 +194,17 @@ public:
         tribe.mem_region_size_in[2] = _ASSIGN((uint32_t)0);
         tribe.mem_region_size_in[3] = _ASSIGN((uint32_t)IO_BYTES);
         tribe.debugen_in = false;
-        // PacketDMA enters through coherent AXI port zero.  The optional
-        // whole-line injection sideband is unused by this wrapper and must be
-        // tied off so native simulation cannot sample unassigned ports.
+        // Tie the inherited generic Tribe DMA input off from the parent. The
+        // SmartNIC-specific packet-line port below drives L2 directly.
         tribe.dma_line_valid_in = _ASSIGN(false);
-        tribe.dma_line_addr_in = _ASSIGN((u<32>)0);
-        tribe.dma_line_data_in = _ASSIGN((logic<CACHE_LINE_SIZE * 8>)0);
-        tribe.dma_line_keep_in = _ASSIGN((logic<CACHE_LINE_SIZE>)0);
+        tribe.dma_line_addr_in = _ASSIGN((u32)0);
+        tribe.dma_line_data_in = _ASSIGN((logic<256>)0);
+        tribe.dma_line_keep_in = _ASSIGN((logic<32>)0);
+        tribe.packet_line_valid_in = dma_line_valid_in;
+        tribe.packet_line_addr_in = dma_line_addr_in;
+        tribe.packet_line_data_in = dma_line_data_in;
+        tribe.packet_line_keep_in = dma_line_keep_in;
+        dma_line_ready_out = tribe.packet_line_ready_out;
 
 #if defined(ENABLE_ZICSR) && defined(ENABLE_ISR)
         tribe.time_lo_in = _ASSIGN((uint32_t)0);
@@ -173,6 +273,7 @@ public:
         // after elaborating the child so function_ref copies are never empty
         // in native C++ simulation.
         AXI4_RESPONDER_FROM(dma_in, tribe.axi_in[0]);
+        dma_line_ready_out = tribe.packet_line_ready_out;
         AXI4_MASTER_FROM_TARGET_IF(memory, tribe.axi_out[0]);
         iomem.awvalid_out = tribe.axi_out[3].awvalid_in;
         iomem.awid_out = tribe.axi_out[3].awid_in;
@@ -188,9 +289,23 @@ public:
 
     // Tribe keeps its core/L1 and L2 clocks explicit.  Processing drives
     // _work at CPU_CLK_MULTIPLIER * L2_CLK_HZ and _work_l2_clock at L2_CLK_HZ.
-    void _work(bool reset) { tribe._work(reset); }
+    void _work(bool reset)
+    {
+#ifdef SYNTHESIS
+        tribe._work_clk(reset);
+#else
+        tribe._work(reset);
+#endif
+    }
     void _work_neg(bool reset) { tribe._work_neg(reset); }
     void _work_l2_clock(bool reset) { tribe._work_l2_clock(reset); }
-    void _strobe() { tribe._strobe(); }
+    void _strobe()
+    {
+#ifdef SYNTHESIS
+        tribe._strobe_clk();
+#else
+        tribe._strobe();
+#endif
+    }
     void _strobe_l2_clock() { tribe._strobe_l2_clock(); }
 };

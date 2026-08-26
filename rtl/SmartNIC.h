@@ -24,6 +24,9 @@ public:
     static constexpr size_t L2_WIDTH = 256;
     static constexpr size_t L2_BYTES = L2_WIDTH / 8;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
+    static constexpr size_t RX_READ_WIDTH = LANE_WIDTH * 2;
+    static constexpr size_t RX_READ_BYTES = RX_READ_WIDTH / 8;
+    static constexpr size_t RX_READ_WORDS = RX_READ_WIDTH / LANE_WIDTH;
     static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t NET_BYTES = STREAMS * LANE_BYTES;
     static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * 2;
@@ -87,8 +90,8 @@ public:
 
 private:
     Network<LANE_WIDTH, READ_PORTS, BANK_DEPTH, RX_FIFO_DEPTH,
-        TX_FIFO_WORDS, ENABLE_RAW> network;
-    PacketStream<LANE_WIDTH, L2_WIDTH> rx_stream[READ_PORTS];
+        TX_FIFO_WORDS, ENABLE_RAW, RX_READ_WIDTH> network;
+    PacketStream<RX_READ_WIDTH, L2_WIDTH> rx_stream[READ_PORTS];
     PacketStream<L2_WIDTH, LANE_WIDTH> tx_stream[STREAMS];
 
     // Net-domain RxRAM sequential read engines and response metadata queues.
@@ -395,21 +398,22 @@ private:
             && (uint32_t)meta_count_reg[number] == 0; \
         return read_command_pop_##number##_comb; \
     } \
-    logic<LANE_WIDTH> rx_input_data_##number##_comb; \
-    logic<LANE_WIDTH>& rx_input_data_##number##_comb_func() \
+    logic<RX_READ_WIDTH> rx_input_data_##number##_comb; \
+    logic<RX_READ_WIDTH>& rx_input_data_##number##_comb_func() \
     { \
         rx_input_data_##number##_comb = network.read_data_out().bits( \
-            number * LANE_WIDTH + LANE_WIDTH - 1, number * LANE_WIDTH); \
+            number * RX_READ_WIDTH + RX_READ_WIDTH - 1, \
+            number * RX_READ_WIDTH); \
         return rx_input_data_##number##_comb; \
     } \
-    logic<LANE_BYTES> rx_input_keep_##number##_comb; \
-    logic<LANE_BYTES>& rx_input_keep_##number##_comb_func() \
+    logic<RX_READ_BYTES> rx_input_keep_##number##_comb; \
+    logic<RX_READ_BYTES>& rx_input_keep_##number##_comb_func() \
     { \
         uint32_t byte; \
         uint32_t head; \
         rx_input_keep_##number##_comb = 0; \
         head = (uint32_t)meta_head_reg[number]; \
-        for (byte = 0; byte < LANE_BYTES; ++byte) { \
+        for (byte = 0; byte < RX_READ_BYTES; ++byte) { \
             rx_input_keep_##number##_comb[byte] = \
                 byte < (uint32_t)meta_bytes_reg[number][head]; \
         } \
@@ -600,22 +604,23 @@ public:
             }
             if (request_fire) {
                 remaining = (uint32_t)read_remaining_reg[port];
-                bytes = remaining > LANE_BYTES ? LANE_BYTES : remaining;
+                bytes = remaining > RX_READ_BYTES ? RX_READ_BYTES : remaining;
                 meta_bytes_reg[port][tail]._next = bytes;
                 meta_sop_reg[port][tail]._next =
                     (uint32_t)read_word_reg[port] == 0;
-                meta_eop_reg[port][tail]._next = remaining <= LANE_BYTES;
+                meta_eop_reg[port][tail]._next = remaining <= RX_READ_BYTES;
                 meta_handle_reg[port][tail]._next = read_handle_reg[port];
                 meta_length_reg[port][tail]._next = read_length_reg[port];
                 tail = (tail + 1) & (READ_META_DEPTH - 1);
                 ++count;
-                read_word_reg[port]._next = read_word_reg[port] + 1;
-                if (remaining <= LANE_BYTES) {
+                read_word_reg[port]._next =
+                    read_word_reg[port] + RX_READ_WORDS;
+                if (remaining <= RX_READ_BYTES) {
                     read_remaining_reg[port]._next = 0;
                     read_active_reg[port]._next = 0;
                 }
                 else {
-                    read_remaining_reg[port]._next = remaining - LANE_BYTES;
+                    read_remaining_reg[port]._next = remaining - RX_READ_BYTES;
                 }
             }
             meta_head_reg[port]._next = head;

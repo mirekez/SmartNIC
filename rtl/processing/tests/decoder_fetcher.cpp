@@ -309,6 +309,7 @@ class DescriptorFetcherTest
         descriptor.bits(47, 32) = 1514;
         descriptor.bits(55, 48) = 3;
         descriptor.bits(63, 56) = 0;
+        descriptor.bits(71, 64) = 3;
         descriptor.bits(303, 256) = logic<48>(0x001122334455ull);
         descriptor.bits(351, 304) = logic<48>(0x66778899aabbull);
         descriptor.bits(623, 608) = 0x1234;
@@ -356,6 +357,7 @@ public:
             || read32(Fetcher::REG_DESTINATION_MAC_HI) != 0x0011
             || read32(Fetcher::REG_SOURCE_MAC_LO) != 0x8899aabb
             || read32(Fetcher::REG_SOURCE_MAC_HI) != 0x6677
+            || read32(Fetcher::REG_SOURCE_PORT) != 3
             || read32(Fetcher::REG_PORTS) != 0xabcd1234
             || (read32(Fetcher::REG_PROTOCOL) & 0xffffff) != 0x010411) {
             fail("decoded descriptor field register mismatch");

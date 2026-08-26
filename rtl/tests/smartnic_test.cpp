@@ -309,43 +309,59 @@ static std::vector<NetworkBeat> pcs_to_network(const std::vector<XgmiiBeat>& bea
 static std::vector<XgmiiBeat> network_to_pcs(const std::vector<NetworkBeat>& beats,
     bool& ok)
 {
-    std::vector<XgmiiCharacter> characters;
-    bool in_frame = false;
-
+    // The Network side is two independent 64-bit MAC streams and may carry
+    // two frames concurrently. Reassemble each port independently before
+    // serializing complete frames into this PCS loopback model.
+    std::array<std::vector<uint8_t>, STREAMS> assembling;
+    std::array<bool, STREAMS> in_port_frame{};
+    std::vector<std::vector<uint8_t>> frames;
     for (const NetworkBeat& beat : beats) {
-        for (size_t byte = 0; byte < NET_BYTES; ++byte) {
-            bool keep = (bool)beat.keep[byte];
-            bool sop = (bool)beat.sop[byte];
-            bool eop = (bool)beat.eop[byte];
-            if (!keep) {
-                if (sop || eop || in_frame) ok = false;
-                characters.push_back({XGMII_IDLE, true});
-                continue;
-            }
-            if (sop) {
-                if (in_frame) ok = false;
-                align_start(characters);
-                characters.push_back({XGMII_START, true});
-                in_frame = true;
-            }
-            else if (!in_frame) {
-                ok = false;
-            }
-            characters.push_back({byte_at(beat.data, byte), false});
-            if (eop) {
-                if (!in_frame) ok = false;
-                characters.push_back({XGMII_TERM, true});
-                in_frame = false;
+        for (size_t port = 0; port < STREAMS; ++port) {
+            for (size_t lane_byte = 0; lane_byte < MAC_BYTES; ++lane_byte) {
+                const size_t byte = port * MAC_BYTES + lane_byte;
+                const bool keep = (bool)beat.keep[byte];
+                const bool sop = (bool)beat.sop[byte];
+                const bool eop = (bool)beat.eop[byte];
+                if (!keep) {
+                    if (sop || eop || in_port_frame[port]) ok = false;
+                    continue;
+                }
+                if (sop) {
+                    if (in_port_frame[port]) ok = false;
+                    assembling[port].clear();
+                    in_port_frame[port] = true;
+                }
+                else if (!in_port_frame[port]) {
+                    ok = false;
+                }
+                assembling[port].push_back(byte_at(beat.data, byte));
+                if (eop) {
+                    if (!in_port_frame[port]) ok = false;
+                    frames.push_back(std::move(assembling[port]));
+                    assembling[port].clear();
+                    in_port_frame[port] = false;
+                }
             }
         }
     }
-    if (in_frame) ok = false;
+    if (std::ranges::any_of(in_port_frame, [](bool value) { return value; }))
+        ok = false;
+
+    std::vector<XgmiiCharacter> characters;
+    append_idle(characters, 16);
+    for (const auto& frame : frames) {
+        align_start(characters);
+        characters.push_back({XGMII_START, true});
+        for (uint8_t byte : frame) characters.push_back({byte, false});
+        characters.push_back({XGMII_TERM, true});
+        append_idle(characters, 12);
+    }
     append_idle(characters, NET_BYTES + 16);
     characters.resize((characters.size() + NET_BYTES - 1) / NET_BYTES * NET_BYTES,
         {XGMII_IDLE, true});
 
     std::vector<XgmiiBeat> result(characters.size() / NET_BYTES);
-    in_frame = false;
+    bool in_frame = false;
     for (size_t beat = 0; beat < result.size(); ++beat) {
         result[beat].in_frame_before = in_frame;
         for (size_t byte = 0; byte < NET_BYTES; ++byte) {
@@ -936,16 +952,17 @@ class SmartNicPcsTest
         std::array<std::vector<size_t>, STREAMS> assigned;
         std::array<size_t, STREAMS> packet_index{};
         std::array<size_t, STREAMS> packet_offset{};
-        std::map<uint32_t, std::vector<uint8_t>> expected;
-        std::vector<uint8_t> assembling;
-        bool in_frame = false;
+        std::array<std::map<uint32_t, std::vector<uint8_t>>, STREAMS> expected;
+        std::array<std::vector<uint8_t>, STREAMS> assembling;
+        std::array<bool, STREAMS> in_frame{};
         size_t completed = 0;
         const size_t net_period = 5;
         const size_t l2_period = net_period;
 
         for (size_t index = 0; index < frames.size(); ++index) {
             assigned[index % STREAMS].push_back(index);
-            expected.emplace(frame_id(frames[index]), frames[index]);
+            expected[index % STREAMS].emplace(frame_id(frames[index]),
+                frames[index]);
         }
         reset();
         dut.net_tx_ready = true; // PCS tx_ready_out is permanently asserted.
@@ -995,28 +1012,38 @@ class SmartNicPcsTest
                     beat.sop = dut.net_tx_sop_out();
                     beat.eop = dut.net_tx_eop_out();
                     output.push_back(beat);
-                    for (size_t byte = 0; byte < NET_BYTES; ++byte) {
-                        if (!(bool)beat.keep[byte]) {
-                            if (in_frame) fail("Network inserted IDLE inside TX frame");
-                            continue;
-                        }
-                        if ((bool)beat.sop[byte]) {
-                            if (in_frame) fail("nested Network TX SOP");
-                            assembling.clear();
-                            in_frame = true;
-                        }
-                        if (!in_frame) fail("Network TX data without SOP");
-                        assembling.push_back(byte_at(beat.data, byte));
-                        if ((bool)beat.eop[byte]) {
-                            uint32_t id = frame_id(assembling);
-                            auto found = expected.find(id);
-                            if (found == expected.end() || found->second != assembling) {
-                                fail("Network TX frame mismatch before PCS");
+                    for (size_t stream = 0; stream < STREAMS; ++stream) {
+                        for (size_t lane_byte = 0; lane_byte < MAC_BYTES;
+                            ++lane_byte) {
+                            const size_t byte = stream * MAC_BYTES + lane_byte;
+                            if (!(bool)beat.keep[byte]) {
+                                if (in_frame[stream]) fail(
+                                    "Network inserted IDLE inside a TX port frame");
+                                continue;
                             }
-                            else expected.erase(found);
-                            assembling.clear();
-                            in_frame = false;
-                            ++completed;
+                            if ((bool)beat.sop[byte]) {
+                                if (in_frame[stream]) fail(
+                                    "nested Network TX SOP on one port");
+                                assembling[stream].clear();
+                                in_frame[stream] = true;
+                            }
+                            if (!in_frame[stream]) fail(
+                                "Network TX port data without SOP");
+                            assembling[stream].push_back(
+                                byte_at(beat.data, byte));
+                            if ((bool)beat.eop[byte]) {
+                                uint32_t id = frame_id(assembling[stream]);
+                                auto found = expected[stream].find(id);
+                                if (found == expected[stream].end()
+                                    || found->second != assembling[stream]) {
+                                    fail("Network TX frame mismatch or wrong port "
+                                        "before PCS");
+                                }
+                                else expected[stream].erase(found);
+                                assembling[stream].clear();
+                                in_frame[stream] = false;
+                                ++completed;
+                            }
                         }
                     }
                 }
@@ -1025,7 +1052,8 @@ class SmartNicPcsTest
             if (completed == frames.size()) break;
         }
 
-        if (completed != frames.size() || !expected.empty() || in_frame) {
+        if (completed != frames.size() || !expected[0].empty()
+            || !expected[1].empty() || in_frame[0] || in_frame[1]) {
             fail("TX phase did not drain every L2 frame");
         }
         if (dut.protocol_error_out()) fail("TX phase asserted protocol_error_out");

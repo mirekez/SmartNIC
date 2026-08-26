@@ -49,7 +49,7 @@ struct RxRAMScanEvent
 } __PACKED;
 
 template<size_t LANE_WIDTH = 64, size_t READ_PORTS = 1,
-    size_t BANK_DEPTH = 4096>
+    size_t BANK_DEPTH = 4096, size_t READ_WIDTH = LANE_WIDTH>
 class RxRAM : public Module
 {
 public:
@@ -57,6 +57,7 @@ public:
     static constexpr size_t SUBBANKS = 2;
     static constexpr size_t PHYSICAL_BANKS = STREAMS * SUBBANKS;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
+    static constexpr size_t READ_WORDS = READ_WIDTH / LANE_WIDTH;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
     static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * SUBBANKS;
@@ -70,6 +71,8 @@ public:
 
     static_assert(LANE_WIDTH == 64,
         "RxRAM supports 64-bit 10GbE MAC words");
+    static_assert(READ_WIDTH == LANE_WIDTH || READ_WIDTH == 2 * LANE_WIDTH,
+        "RxRAM read ports support one or two adjacent MAC words");
     static_assert(READ_PORTS > 0 && READ_PORTS <= STREAMS,
         "RxRAM requires one or two read ports");
     static_assert((BANK_DEPTH & (BANK_DEPTH - 1)) == 0,
@@ -99,7 +102,7 @@ public:
     _PORT(logic<READ_PORTS * HANDLE_BITS>) read_handle_in;
     _PORT(logic<READ_PORTS * LOGICAL_ROW_BITS>) read_word_in;
     _PORT(logic<READ_PORTS>) read_ready_out;
-    _PORT(logic<READ_PORTS * LANE_WIDTH>) read_data_out;
+    _PORT(logic<READ_PORTS * READ_WIDTH>) read_data_out;
     _PORT(logic<READ_PORTS>) read_valid_out;
     _PORT(logic<READ_PORTS>) read_ready_in;
 
@@ -148,7 +151,7 @@ private:
     reg<u1> read_pipe_valid_reg[READ_PORTS];
     reg<u<4>> read_pipe_bank_reg[READ_PORTS];
     reg<u1> read_response_valid_reg[READ_PORTS];
-    reg<logic<LANE_WIDTH>> read_response_data_reg[READ_PORTS];
+    reg<logic<READ_WIDTH>> read_response_data_reg[READ_PORTS];
     reg<u<READ_RR_BITS>> read_rr_reg[PHYSICAL_BANKS];
 
     // Keep the sticky, externally visible error register off the release and
@@ -162,13 +165,14 @@ private:
     logic<PHYSICAL_BANKS> bank_write_valid_comb;
     logic<PHYSICAL_BANKS * LANE_WIDTH> bank_write_data_comb;
     logic<PHYSICAL_BANKS * PHYSICAL_ROW_BITS> bank_addr_comb;
+    logic<PHYSICAL_BANKS * PHYSICAL_ROW_BITS> bank_read_addr_comb;
     logic<PHYSICAL_BANKS> bank_read_comb;
     logic<READ_PORTS> read_ready_comb;
     logic<STREAMS> input_ready_comb;
     logic<STREAMS> packet_valid_comb;
     logic<STREAMS * HANDLE_BITS> packet_handle_comb;
     logic<STREAMS * FRAME_LENGTH_BITS> packet_length_comb;
-    logic<READ_PORTS * LANE_WIDTH> read_data_comb;
+    logic<READ_PORTS * READ_WIDTH> read_data_comb;
     logic<READ_PORTS> read_valid_comb;
 
     static constexpr uint32_t MAX_PACKET_ROWS =
@@ -366,9 +370,9 @@ private:
         candidate = 0;
         response_free = false;
         pipe_free = false;
-        for (bank = 0; bank < PHYSICAL_BANKS; ++bank) {
+        for (bank = 0; bank < PHYSICAL_BANKS; bank += READ_WORDS) {
             found = false;
-            if (!(bool)bank_write_valid_comb_func()[bank]) {
+            {
                 for (offset = 0; offset < READ_PORTS; ++offset) {
                     candidate = ((uint32_t)read_rr_reg[bank] + offset)
                         % READ_PORTS;
@@ -378,8 +382,11 @@ private:
                         || response_free;
                     if (!found && pipe_free
                         && (bool)read_valid_in()[candidate]
-                        && request_physical_bank(read_handle_in(),
-                            read_word_in(), candidate) == bank) {
+                        && (READ_WORDS == 1
+                            ? request_physical_bank(read_handle_in(),
+                                read_word_in(), candidate) == bank
+                            : (request_physical_bank(read_handle_in(),
+                                read_word_in(), candidate) & ~1u) == bank)) {
                         read_ready_comb[candidate] = 1;
                         found = true;
                     }
@@ -401,6 +408,7 @@ private:
                 bank = request_physical_bank(read_handle_in(),
                     read_word_in(), port);
                 bank_read_comb[bank] = 1;
+                if (READ_WORDS == 2) bank_read_comb[bank ^ 1u] = 1;
             }
         }
         return bank_read_comb;
@@ -438,22 +446,40 @@ private:
                 }
             }
         }
+        return bank_addr_comb;
+    }
+
+    logic<PHYSICAL_BANKS * PHYSICAL_ROW_BITS>& bank_read_addr_comb_func()
+    {
+        uint32_t port;
+        uint32_t bank;
+        uint32_t bit;
+        uint32_t row;
+
+        bank_read_addr_comb = 0;
+        bank = 0;
+        row = 0;
         for (port = 0; port < READ_PORTS; ++port) {
             if ((bool)read_valid_in()[port]
                 && (bool)read_ready_comb_func()[port]) {
                 bank = request_physical_bank(read_handle_in(),
                     read_word_in(), port);
-                if (!(bool)bank_write_valid_comb_func()[bank]) {
-                    row = request_logical_row(read_handle_in(),
-                        read_word_in(), port) >> 1;
+                if (READ_WORDS == 2) bank &= ~1u;
+                row = request_logical_row(read_handle_in(),
+                    read_word_in(), port) >> 1;
+                for (bit = 0; bit < PHYSICAL_ROW_BITS; ++bit) {
+                    bank_read_addr_comb[bank * PHYSICAL_ROW_BITS + bit] =
+                        (row >> bit) & 1;
+                }
+                if (READ_WORDS == 2) {
                     for (bit = 0; bit < PHYSICAL_ROW_BITS; ++bit) {
-                        bank_addr_comb[bank * PHYSICAL_ROW_BITS + bit] =
+                        bank_read_addr_comb[(bank + 1) * PHYSICAL_ROW_BITS + bit] =
                             (row >> bit) & 1;
                     }
                 }
             }
         }
-        return bank_addr_comb;
+        return bank_read_addr_comb;
     }
 
     logic<STREAMS>& input_ready_comb_func()
@@ -528,14 +554,14 @@ private:
         return packet_length_comb;
     }
 
-    logic<READ_PORTS * LANE_WIDTH>& read_data_comb_func()
+    logic<READ_PORTS * READ_WIDTH>& read_data_comb_func()
     {
         uint32_t port;
         uint32_t bit;
         read_data_comb = 0;
         for (port = 0; port < READ_PORTS; ++port) {
-            for (bit = 0; bit < LANE_WIDTH; ++bit) {
-                read_data_comb[port * LANE_WIDTH + bit] =
+            for (bit = 0; bit < READ_WIDTH; ++bit) {
+                read_data_comb[port * READ_WIDTH + bit] =
                     read_response_data_reg[port][bit];
             }
         }
@@ -552,12 +578,21 @@ private:
         return read_valid_comb;
     }
 
-    logic<64> read_bank_data(uint32_t bank)
+    // Fixed maximum return width keeps one generated helper valid for both
+    // 64-bit unit-test ports and the SmartNIC's 128-bit processing port.
+    logic<128> read_bank_data(uint32_t bank)
     {
-        logic<64> value;
+        logic<128> value;
+        uint32_t first;
         value = 0;
+        first = READ_WORDS == 2 ? (bank & ~1u) : bank;
 #define RX_RAM_READ_BANK(number) \
-        if (bank == number) { value = banks[number].q_out(); }
+        if (first == number) { \
+            value.bits(LANE_WIDTH - 1, 0) = banks[number].q_out(); \
+        } \
+        if (READ_WORDS == 2 && first + 1 == number) { \
+            value.bits(2 * LANE_WIDTH - 1, LANE_WIDTH) = banks[number].q_out(); \
+        }
         RX_RAM_FOR_EACH_PHYSICAL_BANK(RX_RAM_READ_BANK)
 #undef RX_RAM_READ_BANK
         return value;
@@ -578,7 +613,9 @@ public:
     void _assign()
     {
 #define RX_RAM_BIND_BANK(number) \
-        banks[number].addr_in = _ASSIGN(u<PHYSICAL_ROW_BITS>(bank_addr_comb_func().bits( \
+        banks[number].write_addr_in = _ASSIGN(u<PHYSICAL_ROW_BITS>(bank_addr_comb_func().bits( \
+            number * PHYSICAL_ROW_BITS + PHYSICAL_ROW_BITS - 1, number * PHYSICAL_ROW_BITS))); \
+        banks[number].read_addr_in = _ASSIGN(u<PHYSICAL_ROW_BITS>(bank_read_addr_comb_func().bits( \
             number * PHYSICAL_ROW_BITS + PHYSICAL_ROW_BITS - 1, number * PHYSICAL_ROW_BITS))); \
         banks[number].data_in = _ASSIGN(bank_write_data_comb_func().bits( \
             number * LANE_WIDTH + LANE_WIDTH - 1, number * LANE_WIDTH)); \
