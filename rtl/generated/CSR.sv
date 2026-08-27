@@ -12,6 +12,8 @@ module CSR (
 ,   input wire l2_clock
 ,   input wire reset
 ,   input wire State state_in
+,   input wire commit_in
+,   input wire State read_state_in
 ,   input wire State trap_check_state_in
 ,   input wire State legality_state_in
 ,   output wire legality_out
@@ -21,8 +23,12 @@ module CSR (
 ,   input wire interrupt_valid_in
 ,   input wire[31:0] interrupt_cause_in
 ,   input wire interrupt_to_supervisor_in
+,   input wire redirect_interrupt_valid_in
+,   input wire[31:0] redirect_interrupt_cause_in
+,   input wire redirect_interrupt_to_supervisor_in
 ,   input wire[31:0] irq_pending_bits_in
 ,   input wire software_irq_set_in
+,   output wire write_pending_out
 ,   output wire[31:0] read_data_out
 ,   input wire[31:0] time_lo_in
 ,   input wire[31:0] time_hi_in
@@ -97,18 +103,13 @@ module CSR (
     reg[32-1:0] dscratch1_reg;
     reg[64-1:0] cycle_reg;
     reg[64-1:0] instret_reg;
-    reg[2-1:0] priv_reg;
-    reg commit_seen_valid_reg;
-    reg[32-1:0] commit_seen_pc_reg;
-    reg[12-1:0] commit_seen_csr_addr_reg;
-    reg[3-1:0] commit_seen_csr_op_reg;
-    reg[4-1:0] commit_seen_sys_op_reg;
-    reg[5-1:0] commit_seen_trap_op_reg;
-    reg[32-1:0] commit_seen_imm_reg;
+    reg[32-1:0] csr_write_select_reg;
+    reg[32-1:0] csr_write_value_reg;
     reg[32-1:0] csr_read_data_reg;
-    logic commit_seen_match_comb;
-;
+    reg[2-1:0] priv_reg;
     logic commit_new_comb;
+;
+    logic write_pending_comb;
 ;
     logic[31:0] software_pending_comb;
 ;
@@ -122,7 +123,9 @@ module CSR (
 ;
     logic legality_comb;
 ;
-    logic[31:0] read_data_comb;
+    logic[31:0] commit_read_data_comb;
+;
+    logic[31:0] execute_read_data_comb;
 ;
 
     // members
@@ -157,15 +160,10 @@ module CSR (
     logic[32-1:0] dscratch1_reg_tmp;
     logic[64-1:0] cycle_reg_tmp;
     logic[64-1:0] instret_reg_tmp;
-    logic[2-1:0] priv_reg_tmp;
-    logic commit_seen_valid_reg_tmp;
-    logic[32-1:0] commit_seen_pc_reg_tmp;
-    logic[12-1:0] commit_seen_csr_addr_reg_tmp;
-    logic[3-1:0] commit_seen_csr_op_reg_tmp;
-    logic[4-1:0] commit_seen_sys_op_reg_tmp;
-    logic[5-1:0] commit_seen_trap_op_reg_tmp;
-    logic[32-1:0] commit_seen_imm_reg_tmp;
+    logic[32-1:0] csr_write_select_reg_tmp;
+    logic[32-1:0] csr_write_value_reg_tmp;
     logic[32-1:0] csr_read_data_reg_tmp;
+    logic[2-1:0] priv_reg_tmp;
 
 
     function logic csr_state_writes (input State st);
@@ -251,8 +249,8 @@ module CSR (
         legality_comb=state_causes_illegal_trap(legality_state_in);
     end
 
-    always_comb begin : commit_seen_match_comb_func  // commit_seen_match_comb_func
-        commit_seen_match_comb=((((((commit_seen_valid_reg && state_in.valid) && (unsigned'(32'(commit_seen_pc_reg)) == state_in.pc)) && (unsigned'(32'(commit_seen_csr_addr_reg)) == state_in.csr_addr)) && (unsigned'(32'(commit_seen_csr_op_reg)) == state_in.csr_op)) && (unsigned'(32'(commit_seen_sys_op_reg)) == state_in.sys_op)) && (unsigned'(32'(commit_seen_trap_op_reg)) == state_in.trap_op)) && (unsigned'(32'(commit_seen_imm_reg)) == state_in.imm);
+    always_comb begin : write_pending_comb_func  // write_pending_comb_func
+        write_pending_comb=csr_write_select_reg != 'h0;
     end
 
     function logic[31:0] csr_read (input logic[31:0] addr);
@@ -403,9 +401,107 @@ module CSR (
         return 'h0;
     endfunction
 
-    always_comb begin : read_data_comb_func  // read_data_comb_func
-        read_data_comb=(commit_seen_match_comb && (state_in.csr_op != Csr_pkg::CNONE)) ? (unsigned'(32'(csr_read_data_reg))) : (csr_read(state_in.csr_addr));
+    always_comb begin : execute_read_data_comb_func  // execute_read_data_comb_func
+        logic matching_commit;
+        matching_commit=((((state_in.valid && read_state_in.valid) && (state_in.csr_op != Csr_pkg::CNONE)) && (read_state_in.csr_op != Csr_pkg::CNONE)) && (state_in.pc == read_state_in.pc)) && (state_in.csr_addr == read_state_in.csr_addr);
+        execute_read_data_comb=(matching_commit) ? (unsigned'(32'(csr_read_data_reg))) : (csr_read(read_state_in.csr_addr));
     end
+
+    function logic[31:0] redirect_trap_cause_code (input State state);
+        if (state.sys_op == Sys_pkg::ECALL) begin
+            if (priv_reg == PRIV_U) begin
+                return 'h8;
+            end
+            if (priv_reg == PRIV_S) begin
+                return 'h9;
+            end
+            return 'hB;
+        end
+        if (state.sys_op == Sys_pkg::EBREAK) begin
+            return 'h3;
+        end
+        case (state.trap_op)
+        Trap_pkg::TNONE: begin
+            return 'h2;
+        end
+        Trap_pkg::INST_MISALIGNED: begin
+            return 'h0;
+        end
+        Trap_pkg::ILLEGAL_INST: begin
+            return 'h2;
+        end
+        Trap_pkg::BREAKPOINT: begin
+            return 'h3;
+        end
+        Trap_pkg::LOAD_MISALIGNED: begin
+            return 'h4;
+        end
+        Trap_pkg::STORE_MISALIGNED: begin
+            return 'h6;
+        end
+        Trap_pkg::INST_PAGE_FAULT: begin
+            return 'hC;
+        end
+        Trap_pkg::LOAD_PAGE_FAULT: begin
+            return 'hD;
+        end
+        Trap_pkg::STORE_PAGE_FAULT: begin
+            return 'hF;
+        end
+        Trap_pkg::ECALL_U: begin
+            return 'h8;
+        end
+        Trap_pkg::ECALL_S: begin
+            return 'h9;
+        end
+        Trap_pkg::ECALL_M: begin
+            return 'hB;
+        end
+        default: begin
+            return 'h2;
+        end
+        endcase
+        return 'h2;
+    endfunction
+
+    function logic redirect_trap_to_supervisor (input logic[31:0] cause);
+        return (priv_reg != PRIV_M) && ((((medeleg_reg >>> cause)) & 'h1));
+    endfunction
+
+    always_comb begin : trap_vector_comb_func  // trap_vector_comb_func
+        logic[31:0] cause;
+        logic[31:0] tvec;
+        cause=redirect_trap_cause_code(redirect_state_in);
+        tvec=(redirect_trap_to_supervisor(cause)) ? (unsigned'(32'(stvec_reg))) : (unsigned'(32'(mtvec_reg)));
+        trap_vector_comb=tvec & ~'h3;
+    end
+
+    always_comb begin : epc_comb_func  // epc_comb_func
+        epc_comb=mepc_reg;
+        if (redirect_state_in.sys_op == Sys_pkg::SRET) begin
+            epc_comb=sepc_reg;
+        end
+    end
+
+    always_comb begin : illegal_trap_comb_func  // illegal_trap_comb_func
+        illegal_trap_comb=trap_check_state_in.csr_illegal;
+    end
+
+    always_comb begin : interrupt_enable_comb_func  // interrupt_enable_comb_func
+        interrupt_enable_comb=unsigned'(32'(mie_reg)) | unsigned'(32'(sie_reg));
+    end
+
+    always_comb begin : software_pending_comb_func  // software_pending_comb_func
+        software_pending_comb=unsigned'(32'(mip_reg)) | unsigned'(32'(sip_reg));
+    end
+
+    always_comb begin : commit_new_comb_func  // commit_new_comb_func
+        commit_new_comb=state_in.valid && commit_in;
+    end
+
+    function logic[31:0] sanitize_mstatus (input logic[31:0] value);
+        return value & MSTATUS_WRITABLE;
+    endfunction
 
     function logic[31:0] trap_cause_code (input State state);
         if (state.sys_op == Sys_pkg::ECALL) begin
@@ -468,41 +564,6 @@ module CSR (
         return (priv_reg != PRIV_M) && ((((medeleg_reg >>> cause)) & 'h1));
     endfunction
 
-    always_comb begin : trap_vector_comb_func  // trap_vector_comb_func
-        logic[31:0] cause;
-        logic[31:0] tvec;
-        cause=trap_cause_code(redirect_state_in);
-        tvec=(trap_to_supervisor(cause)) ? (unsigned'(32'(stvec_reg))) : (unsigned'(32'(mtvec_reg)));
-        trap_vector_comb=tvec & ~'h3;
-    end
-
-    always_comb begin : epc_comb_func  // epc_comb_func
-        epc_comb=mepc_reg;
-        if (redirect_state_in.sys_op == Sys_pkg::SRET) begin
-            epc_comb=sepc_reg;
-        end
-    end
-
-    always_comb begin : illegal_trap_comb_func  // illegal_trap_comb_func
-        illegal_trap_comb=trap_check_state_in.csr_illegal;
-    end
-
-    always_comb begin : interrupt_enable_comb_func  // interrupt_enable_comb_func
-        interrupt_enable_comb=unsigned'(32'(mie_reg)) | unsigned'(32'(sie_reg));
-    end
-
-    always_comb begin : software_pending_comb_func  // software_pending_comb_func
-        software_pending_comb=unsigned'(32'(mip_reg)) | unsigned'(32'(sip_reg));
-    end
-
-    always_comb begin : commit_new_comb_func  // commit_new_comb_func
-        commit_new_comb=state_in.valid && !commit_seen_match_comb;
-    end
-
-    function logic[31:0] sanitize_mstatus (input logic[31:0] value);
-        return value & MSTATUS_WRITABLE;
-    endfunction
-
     function logic[31:0] csr_write_value (input logic[31:0] old_value);
         logic[31:0] mask;
         mask = state_in.rs1_val;
@@ -529,110 +590,211 @@ module CSR (
         return commit_new_comb && csr_state_writes(state_in);
     endfunction
 
-    task csr_write (
-        input logic[31:0] addr
-,       input logic[31:0] value
-    );
-    begin: csr_write
+    function logic[31:0] csr_write_select (input logic[31:0] addr);
         case (addr)
         'h100: begin
+            return 'h1 <<< 'h0;
+        end
+        'h104: begin
+            return 'h1 <<< 'h1;
+        end
+        'h105: begin
+            return 'h1 <<< 'h2;
+        end
+        'h106: begin
+            return 'h1 <<< 'h3;
+        end
+        'h140: begin
+            return 'h1 <<< 'h4;
+        end
+        'h141: begin
+            return 'h1 <<< 'h5;
+        end
+        'h142: begin
+            return 'h1 <<< 'h6;
+        end
+        'h143: begin
+            return 'h1 <<< 'h7;
+        end
+        'h144: begin
+            return 'h1 <<< 'h8;
+        end
+        'h300: begin
+            return 'h1 <<< 'hA;
+        end
+        'h302: begin
+            return 'h1 <<< 'hB;
+        end
+        'h303: begin
+            return 'h1 <<< 'hC;
+        end
+        'h304: begin
+            return 'h1 <<< 'hD;
+        end
+        'h305: begin
+            return 'h1 <<< 'hE;
+        end
+        'h306: begin
+            return 'h1 <<< 'hF;
+        end
+        'h320: begin
+            return 'h1 <<< 'h10;
+        end
+        'h340: begin
+            return 'h1 <<< 'h11;
+        end
+        'h341: begin
+            return 'h1 <<< 'h12;
+        end
+        'h342: begin
+            return 'h1 <<< 'h13;
+        end
+        'h343: begin
+            return 'h1 <<< 'h14;
+        end
+        'h344: begin
+            return 'h1 <<< 'h15;
+        end
+        'h348: begin
+            return 'h1 <<< 'h16;
+        end
+        'h349: begin
+            return 'h1 <<< 'h17;
+        end
+        'hB00: begin
+            return 'h1 <<< 'h18;
+        end
+        'hB80: begin
+            return 'h1 <<< 'h19;
+        end
+        'hB02: begin
+            return 'h1 <<< 'h1A;
+        end
+        'hB82: begin
+            return 'h1 <<< 'h1B;
+        end
+        'h7B0: begin
+            return 'h1 <<< 'h1C;
+        end
+        'h7B1: begin
+            return 'h1 <<< 'h1D;
+        end
+        'h7B2: begin
+            return 'h1 <<< 'h1E;
+        end
+        'h7B3: begin
+            return 'h1 <<< 'h1F;
+        end
+        endcase
+        return 'h0;
+    endfunction
+
+    task csr_write_selected (
+        input logic[31:0] select
+,       input logic[31:0] value
+    );
+    begin: csr_write_selected
+        if (select & (('h1 <<< 'h0))) begin
             mstatus_reg_tmp = unsigned'(32'(((mstatus_reg & ~SSTATUS_MASK)) | ((value & SSTATUS_MASK))));
             sstatus_reg_tmp = unsigned'(32'(value & SSTATUS_MASK));
         end
-        'h104: begin
+        if (select & (('h1 <<< 'h1))) begin
             sie_reg_tmp = unsigned'(32'(value));
         end
-        'h105: begin
+        if (select & (('h1 <<< 'h2))) begin
             stvec_reg_tmp = unsigned'(32'(value));
         end
-        'h106: begin
+        if (select & (('h1 <<< 'h3))) begin
             scounteren_reg_tmp = unsigned'(32'(value));
         end
-        'h140: begin
+        if (select & (('h1 <<< 'h4))) begin
             sscratch_reg_tmp = unsigned'(32'(value));
         end
-        'h141: begin
+        if (select & (('h1 <<< 'h5))) begin
             sepc_reg_tmp = unsigned'(32'(value & ~'h1));
         end
-        'h142: begin
+        if (select & (('h1 <<< 'h6))) begin
             scause_reg_tmp = unsigned'(32'(value));
         end
-        'h143: begin
+        if (select & (('h1 <<< 'h7))) begin
             stval_reg_tmp = unsigned'(32'(value));
         end
-        'h144: begin
+        if (select & (('h1 <<< 'h8))) begin
             sip_reg_tmp = unsigned'(32'(value & XIP_SOFTWARE_WRITABLE_MASK));
         end
-        'h300: begin
+        if (select & (('h1 <<< 'hA))) begin
             mstatus_reg_tmp = unsigned'(32'(sanitize_mstatus(value)));
             sstatus_reg_tmp = unsigned'(32'(value & SSTATUS_MASK));
         end
-        'h302: begin
+        if (select & (('h1 <<< 'hB))) begin
             medeleg_reg_tmp = unsigned'(32'(value));
         end
-        'h303: begin
+        if (select & (('h1 <<< 'hC))) begin
             mideleg_reg_tmp = unsigned'(32'(value));
         end
-        'h304: begin
+        if (select & (('h1 <<< 'hD))) begin
             mie_reg_tmp = unsigned'(32'(value));
         end
-        'h305: begin
+        if (select & (('h1 <<< 'hE))) begin
             mtvec_reg_tmp = unsigned'(32'(value));
         end
-        'h306: begin
+        if (select & (('h1 <<< 'hF))) begin
             mcounteren_reg_tmp = unsigned'(32'(value));
         end
-        'h320: begin
+        if (select & (('h1 <<< 'h10))) begin
             mcountinhibit_reg_tmp = unsigned'(32'(value));
         end
-        'h340: begin
+        if (select & (('h1 <<< 'h11))) begin
             mscratch_reg_tmp = unsigned'(32'(value));
         end
-        'h341: begin
+        if (select & (('h1 <<< 'h12))) begin
             mepc_reg_tmp = unsigned'(32'(value & ~'h1));
         end
-        'h342: begin
+        if (select & (('h1 <<< 'h13))) begin
             mcause_reg_tmp = unsigned'(32'(value));
         end
-        'h343: begin
+        if (select & (('h1 <<< 'h14))) begin
             mtval_reg_tmp = unsigned'(32'(value));
         end
-        'h344: begin
+        if (select & (('h1 <<< 'h15))) begin
             mip_reg_tmp = unsigned'(32'(value & XIP_SOFTWARE_WRITABLE_MASK));
         end
-        'h348: begin
+        if (select & (('h1 <<< 'h16))) begin
             mscratchcsw_reg_tmp = unsigned'(32'(value));
         end
-        'h349: begin
+        if (select & (('h1 <<< 'h17))) begin
             mscratchcswl_reg_tmp = unsigned'(32'(value));
         end
-        'hB00: begin
+        if (select & (('h1 <<< 'h18))) begin
             cycle_reg_tmp = unsigned'(64'(((unsigned'(64'(unsigned'(32'((unsigned'(64'(cycle_reg)) >>> 'h20))))) <<< 'h20)) | value));
         end
-        'hB80: begin
+        if (select & (('h1 <<< 'h19))) begin
             cycle_reg_tmp = unsigned'(64'(((unsigned'(64'(value)) <<< 'h20)) | unsigned'(32'(cycle_reg))));
         end
-        'hB02: begin
+        if (select & (('h1 <<< 'h1A))) begin
             instret_reg_tmp = unsigned'(64'(((unsigned'(64'(unsigned'(32'((unsigned'(64'(instret_reg)) >>> 'h20))))) <<< 'h20)) | value));
         end
-        'hB82: begin
+        if (select & (('h1 <<< 'h1B))) begin
             instret_reg_tmp = unsigned'(64'(((unsigned'(64'(value)) <<< 'h20)) | unsigned'(32'(instret_reg))));
         end
-        'h7B0: begin
+        if (select & (('h1 <<< 'h1C))) begin
             dcsr_reg_tmp = unsigned'(32'(value));
         end
-        'h7B1: begin
+        if (select & (('h1 <<< 'h1D))) begin
             dpc_reg_tmp = unsigned'(32'(value & ~'h1));
         end
-        'h7B2: begin
+        if (select & (('h1 <<< 'h1E))) begin
             dscratch0_reg_tmp = unsigned'(32'(value));
         end
-        'h7B3: begin
+        if (select & (('h1 <<< 'h1F))) begin
             dscratch1_reg_tmp = unsigned'(32'(value));
         end
-        endcase
     end
     endtask
+
+    always_comb begin : commit_read_data_comb_func  // commit_read_data_comb_func
+        commit_read_data_comb=csr_read(state_in.csr_addr);
+    end
 
     task _work (input logic reset);
     begin: _work
@@ -648,28 +810,20 @@ module CSR (
         trace_csr_events=0;
         cycle_reg_tmp = unsigned'(64'((inhibit_cycle) ? (cycle_reg) : (unsigned'(64'(cycle_reg)) + 'h1)));
         instret_reg_tmp = unsigned'(64'(((inhibit_instret || !commit_new_comb)) ? (instret_reg) : (unsigned'(64'(instret_reg)) + 'h1)));
-        if (commit_new_comb) begin
-            commit_seen_valid_reg_tmp = unsigned'(1'(1));
-            commit_seen_pc_reg_tmp = unsigned'(32'(state_in.pc));
-            commit_seen_csr_addr_reg_tmp = state_in.csr_addr;
-            commit_seen_csr_op_reg_tmp = state_in.csr_op;
-            commit_seen_sys_op_reg_tmp = state_in.sys_op;
-            commit_seen_trap_op_reg_tmp = state_in.trap_op;
-            commit_seen_imm_reg_tmp = unsigned'(32'(state_in.imm));
-            if (state_in.csr_op != Csr_pkg::CNONE) begin
-                csr_read_data_reg_tmp = unsigned'(32'(csr_read(state_in.csr_addr)));
-            end
-        end
-        else begin
-            if (!state_in.valid) begin
-                commit_seen_valid_reg_tmp = unsigned'(1'(0));
-            end
+        csr_write_select_reg_tmp = unsigned'(32'h0);
+        csr_write_value_reg_tmp = csr_write_value_reg;
+        if (csr_write_select_reg != 'h0) begin
+            csr_write_selected(csr_write_select_reg, csr_write_value_reg);
         end
         if (csr_writes()) begin
             if (trace_csr_events && (((((state_in.csr_addr == 'h100) || (state_in.csr_addr == 'h140)) || (state_in.csr_addr == 'h141)) || (state_in.csr_addr == 'h180)))) begin
-                $write("trace-csr-write pc=%08x addr=%03x old=%08x new=%08x priv=%x\n", state_in.pc, unsigned'(32'(state_in.csr_addr)), read_data_comb, csr_write_value(read_data_comb), unsigned'(32'(priv_reg)));
+                $write("trace-csr-write pc=%08x addr=%03x old=%08x new=%08x priv=%x\n", state_in.pc, unsigned'(32'(state_in.csr_addr)), commit_read_data_comb, csr_write_value(commit_read_data_comb), unsigned'(32'(priv_reg)));
             end
-            csr_write(state_in.csr_addr, csr_write_value(read_data_comb));
+            csr_write_select_reg_tmp = unsigned'(32'(csr_write_select(state_in.csr_addr)));
+            csr_write_value_reg_tmp = unsigned'(32'(csr_write_value(commit_read_data_comb)));
+        end
+        if (commit_new_comb && (state_in.csr_op != Csr_pkg::CNONE)) begin
+            csr_read_data_reg_tmp = unsigned'(32'(commit_read_data_comb));
         end
         if (sync_trap()) begin
             cause=trap_cause_code(state_in);
@@ -753,13 +907,8 @@ module CSR (
             dscratch1_reg_tmp = '0;
             cycle_reg_tmp = '0;
             instret_reg_tmp = '0;
-            commit_seen_valid_reg_tmp = '0;
-            commit_seen_pc_reg_tmp = '0;
-            commit_seen_csr_addr_reg_tmp = '0;
-            commit_seen_csr_op_reg_tmp = '0;
-            commit_seen_sys_op_reg_tmp = '0;
-            commit_seen_trap_op_reg_tmp = '0;
-            commit_seen_imm_reg_tmp = '0;
+            csr_write_select_reg_tmp = '0;
+            csr_write_value_reg_tmp = '0;
             csr_read_data_reg_tmp = '0;
             priv_reg_tmp = reset_priv_in;
         end
@@ -804,15 +953,10 @@ module CSR (
         dscratch1_reg_tmp = dscratch1_reg;
         cycle_reg_tmp = cycle_reg;
         instret_reg_tmp = instret_reg;
-        priv_reg_tmp = priv_reg;
-        commit_seen_valid_reg_tmp = commit_seen_valid_reg;
-        commit_seen_pc_reg_tmp = commit_seen_pc_reg;
-        commit_seen_csr_addr_reg_tmp = commit_seen_csr_addr_reg;
-        commit_seen_csr_op_reg_tmp = commit_seen_csr_op_reg;
-        commit_seen_sys_op_reg_tmp = commit_seen_sys_op_reg;
-        commit_seen_trap_op_reg_tmp = commit_seen_trap_op_reg;
-        commit_seen_imm_reg_tmp = commit_seen_imm_reg;
+        csr_write_select_reg_tmp = csr_write_select_reg;
+        csr_write_value_reg_tmp = csr_write_value_reg;
         csr_read_data_reg_tmp = csr_read_data_reg;
+        priv_reg_tmp = priv_reg;
 
         _work(reset);
 
@@ -845,15 +989,10 @@ module CSR (
         dscratch1_reg <= dscratch1_reg_tmp;
         cycle_reg <= cycle_reg_tmp;
         instret_reg <= instret_reg_tmp;
-        priv_reg <= priv_reg_tmp;
-        commit_seen_valid_reg <= commit_seen_valid_reg_tmp;
-        commit_seen_pc_reg <= commit_seen_pc_reg_tmp;
-        commit_seen_csr_addr_reg <= commit_seen_csr_addr_reg_tmp;
-        commit_seen_csr_op_reg <= commit_seen_csr_op_reg_tmp;
-        commit_seen_sys_op_reg <= commit_seen_sys_op_reg_tmp;
-        commit_seen_trap_op_reg <= commit_seen_trap_op_reg_tmp;
-        commit_seen_imm_reg <= commit_seen_imm_reg_tmp;
+        csr_write_select_reg <= csr_write_select_reg_tmp;
+        csr_write_value_reg <= csr_write_value_reg_tmp;
         csr_read_data_reg <= csr_read_data_reg_tmp;
+        priv_reg <= priv_reg_tmp;
     end
 
     always_ff @(posedge l2_clock) begin
@@ -864,7 +1003,9 @@ module CSR (
 
     assign legality_out = legality_comb;
 
-    assign read_data_out = read_data_comb;
+    assign write_pending_out = write_pending_comb;
+
+    assign read_data_out = execute_read_data_comb;
 
     assign trap_vector_out = trap_vector_comb;
 

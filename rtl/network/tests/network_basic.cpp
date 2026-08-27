@@ -790,10 +790,13 @@ class NetworkBasicTest
         std::array<size_t, STREAMS> packet_index{};
         std::array<size_t, STREAMS> word_index{};
         std::map<uint32_t, std::vector<uint8_t>> expected;
-        std::vector<uint8_t> assembling;
-        bool in_frame = false;
-        bool saw_frame = false;
-        size_t idle_bytes = 0;
+        // The two 64-bit slices are independent Ethernet MAC lanes.  Track
+        // packet assembly and IPG separately: both lanes may legally carry an
+        // SOP in the same aggregate cycle.
+        std::array<std::vector<uint8_t>, STREAMS> assembling;
+        std::array<bool, STREAMS> in_frame{};
+        std::array<bool, STREAMS> saw_frame{};
+        std::array<size_t, STREAMS> idle_bytes{};
         size_t received = 0;
         size_t cycles = 0;
 
@@ -870,54 +873,64 @@ class NetworkBasicTest
                 }
             }
 
-            if (tx_output_valid_value() && tx_output_ready) {
+            if (tx_output_ready) {
+                const bool output_valid = tx_output_valid_value();
                 logic<INPUT_BITS> data = tx_output_data_value();
                 logic<INPUT_BYTES> keep = tx_output_keep_value();
                 logic<INPUT_BYTES> sop = tx_output_sop_value();
                 logic<INPUT_BYTES> eop = tx_output_eop_value();
-                for (size_t byte = 0; byte < INPUT_BYTES; ++byte) {
-                    if (!(bool)keep[byte]) {
-                        if (in_frame) {
-                            fail("Network TX inserted idle inside a packet");
+                for (size_t stream = 0; stream < STREAMS && !error; ++stream) {
+                    for (size_t lane_byte = 0; lane_byte < LANE_BYTES;
+                            ++lane_byte) {
+                        const size_t byte = stream * LANE_BYTES + lane_byte;
+                        if (!output_valid || !(bool)keep[byte]) {
+                            if (in_frame[stream]) {
+                                fail("Network TX inserted idle inside a packet");
+                                break;
+                            }
+                            if (saw_frame[stream]) ++idle_bytes[stream];
+                            continue;
+                        }
+                        if ((bool)sop[byte]) {
+                            if (in_frame[stream]
+                                || (saw_frame[stream]
+                                    && idle_bytes[stream] < 12)) {
+                                fail("Network TX violated the minimum IPG");
+                                break;
+                            }
+                            assembling[stream].clear();
+                            in_frame[stream] = true;
+                            idle_bytes[stream] = 0;
+                        }
+                        else if (!in_frame[stream]) {
+                            fail("Network TX data appeared without SOP");
                             break;
                         }
-                        if (saw_frame) ++idle_bytes;
-                        continue;
-                    }
-                    if ((bool)sop[byte]) {
-                        if (in_frame || (saw_frame && idle_bytes != 12)) {
-                            fail("Network TX did not use the minimum IPG");
-                            break;
+                        assembling[stream].push_back((uint8_t)data.bits(
+                            byte * 8 + 7, byte * 8));
+                        if ((bool)eop[byte]) {
+                            uint32_t id = tx_frame_id(assembling[stream]);
+                            auto found = expected.find(id);
+                            if (found == expected.end()
+                                || found->second != assembling[stream]) {
+                                fail("Network TX PRBS packet mismatch");
+                                break;
+                            }
+                            expected.erase(found);
+                            ++received;
+                            in_frame[stream] = false;
+                            saw_frame[stream] = true;
+                            idle_bytes[stream] = 0;
                         }
-                        assembling.clear();
-                        in_frame = true;
-                        idle_bytes = 0;
-                    }
-                    else if (!in_frame) {
-                        fail("Network TX data appeared without SOP");
-                        break;
-                    }
-                    assembling.push_back((uint8_t)data.bits(
-                        byte * 8 + 7, byte * 8));
-                    if ((bool)eop[byte]) {
-                        uint32_t id = tx_frame_id(assembling);
-                        auto found = expected.find(id);
-                        if (found == expected.end() || found->second != assembling) {
-                            fail("Network TX PRBS packet mismatch");
-                            break;
-                        }
-                        expected.erase(found);
-                        ++received;
-                        in_frame = false;
-                        saw_frame = true;
-                        idle_bytes = 0;
                     }
                 }
             }
             rising_edge(false);
             ++cycles;
         }
-        if (!expected.empty() || in_frame) {
+        if (!expected.empty()
+            || std::any_of(in_frame.begin(), in_frame.end(),
+                [](bool active) { return active; })) {
             fail("Network TX did not drain every complete packet");
         }
         if (protocol_error_value()) fail("Network TX raised protocol_error_out");

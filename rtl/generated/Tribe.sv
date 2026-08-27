@@ -20,11 +20,14 @@ import L1LookupComb_pkg::*;
 import L1RefillLinesComb_pkg::*;
 import L1CpuResponseComb_pkg::*;
 import L1CachePerf_pkg::*;
+import L1SelectedLineState_pkg::*;
 import L1RequestGeometryComb_pkg::*;
 import L1MemDriver_pkg::*;
 import L1RequestState_pkg::*;
 import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
+import L1LookupState_pkg::*;
+import TribeSbiDecodeState_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
 
@@ -82,6 +85,7 @@ module Tribe (
     // regs and combs
     reg icache_invalidate_issued_reg;
     reg sbi_arg_wait_reg;
+    TribeSbiDecodeState sbi_decode_reg;
     TribeSbiDebug debug_sbi_comb;
 ;
     reg[32-1:0] pc;
@@ -89,7 +93,18 @@ module Tribe (
     reg fetch_buffer_valid_reg;
     reg[32-1:0] fetch_instr_reg;
     reg[32-1:0] fetch_pc_reg;
-    reg[32-1:0] alu_result_reg;
+    reg icache_flush_reg;
+    (* extract_reset = "no" *)
+    State decode_state_reg;
+    reg[32-1:0] decode_fallthrough_reg;
+    reg load_result_pending_reg;
+    reg load_retire_ready_reg;
+    (* extract_reset = "no" *)
+    State csr_commit_state_reg;
+    reg csr_commit_fire_reg;
+    reg csr_commit_serialized_reg;
+    (* extract_reset = "no" *)
+    logic[32-1:0] alu_result_reg;
     (* extract_reset = "no" *)
     State[2-1:0] state_reg;
     reg[2-1:0][32-1:0] predicted_next_reg;
@@ -118,6 +133,12 @@ module Tribe (
 ;
     logic[31:0] l2_data_addr_comb;
 ;
+    logic csr_commit_serializing_comb;
+;
+    logic csr_commit_wait_comb;
+;
+    logic fence_i_registered_store_pending_comb;
+;
     logic memory_wait_comb;
 ;
     logic icache_response_match_comb;
@@ -139,6 +160,12 @@ module Tribe (
     logic[31:0] fetch_addr_comb;
 ;
     logic sbi_legacy_ecall_comb;
+    logic sbi_decode_active_comb;
+;
+    logic sbi_decode_wait_comb;
+;
+    logic sbi_decode_handled_comb;
+;
     logic register_write_commit_comb;
 ;
     logic sbi_arg_hazard_comb;
@@ -151,13 +178,33 @@ module Tribe (
     logic sbi_handled_comb;
     logic[31:0] sbi_timer_lo_comb;
     logic[31:0] sbi_timer_hi_comb;
+    logic sbi_registered_noop_comb;
+;
+    logic sbi_registered_base_comb;
+;
+    logic sbi_registered_set_timer_comb;
+;
+    logic sbi_registered_writes_a1_comb;
+;
+    logic sbi_registered_handled_comb;
+;
+    logic[31:0] sbi_registered_ret_value_comb;
+;
     logic sbi_ecall_debug_comb;
     logic[31:0] sbi_a7_debug_comb;
     logic[31:0] sbi_a6_debug_comb;
     logic[31:0] sbi_a0_debug_comb;
+    logic sbi_set_timer_output_comb;
+;
+    logic[31:0] sbi_timer_lo_output_comb;
+;
+    logic[31:0] sbi_timer_hi_output_comb;
+;
     logic interrupt_capture_comb;
 ;
     logic interrupt_accept_comb;
+;
+    logic memory_stage_transport_wait_comb;
 ;
     logic interrupt_retire_wait_comb;
 ;
@@ -197,6 +244,7 @@ module Tribe (
     wire State exe__state_in;
     wire State exe__multicycle_state_in;
     wire[31:0] exe__alu_result_out;
+    wire[31:0] exe__mem_addr_out;
     wire[31:0] exe__debug_alu_a_out;
     wire[31:0] exe__debug_alu_b_out;
     wire exe__branch_taken_out;
@@ -209,6 +257,7 @@ module Tribe (
 ,       .state_in(exe__state_in)
 ,       .multicycle_state_in(exe__multicycle_state_in)
 ,       .alu_result_out(exe__alu_result_out)
+,       .mem_addr_out(exe__mem_addr_out)
 ,       .debug_alu_a_out(exe__debug_alu_a_out)
 ,       .debug_alu_b_out(exe__debug_alu_b_out)
 ,       .branch_taken_out(exe__branch_taken_out)
@@ -288,7 +337,7 @@ module Tribe (
     wire[31:0] wb_mem__dcache_write_data_in;
     wire[7:0] wb_mem__dcache_write_mask_in;
     wire wb_mem__store_forward_enable_in;
-    wire wb_mem__hold_in;
+    wire wb_mem__retire_in;
     wire wb_mem__load_ready_out;
     wire[31:0] wb_mem__load_raw_out;
     wire[31:0] wb_mem__load_result_out;
@@ -316,7 +365,7 @@ module Tribe (
 ,       .dcache_write_data_in(wb_mem__dcache_write_data_in)
 ,       .dcache_write_mask_in(wb_mem__dcache_write_mask_in)
 ,       .store_forward_enable_in(wb_mem__store_forward_enable_in)
-,       .hold_in(wb_mem__hold_in)
+,       .retire_in(wb_mem__retire_in)
 ,       .load_ready_out(wb_mem__load_ready_out)
 ,       .load_raw_out(wb_mem__load_raw_out)
 ,       .load_result_out(wb_mem__load_result_out)
@@ -329,6 +378,8 @@ module Tribe (
 ,       .debug_held_load_valid_out(wb_mem__debug_held_load_valid_out)
     );
     wire State csr__state_in;
+    wire csr__commit_in;
+    wire State csr__read_state_in;
     wire State csr__trap_check_state_in;
     wire State csr__legality_state_in;
     wire csr__legality_out;
@@ -338,8 +389,12 @@ module Tribe (
     wire csr__interrupt_valid_in;
     wire[31:0] csr__interrupt_cause_in;
     wire csr__interrupt_to_supervisor_in;
+    wire csr__redirect_interrupt_valid_in;
+    wire[31:0] csr__redirect_interrupt_cause_in;
+    wire csr__redirect_interrupt_to_supervisor_in;
     wire[31:0] csr__irq_pending_bits_in;
     wire csr__software_irq_set_in;
+    wire csr__write_pending_out;
     wire[31:0] csr__read_data_out;
     wire[31:0] csr__time_lo_in;
     wire[31:0] csr__time_hi_in;
@@ -366,6 +421,8 @@ module Tribe (
 ,       .l2_clock(l2_clock)
 ,       .reset(reset)
 ,       .state_in(csr__state_in)
+,       .commit_in(csr__commit_in)
+,       .read_state_in(csr__read_state_in)
 ,       .trap_check_state_in(csr__trap_check_state_in)
 ,       .legality_state_in(csr__legality_state_in)
 ,       .legality_out(csr__legality_out)
@@ -375,8 +432,12 @@ module Tribe (
 ,       .interrupt_valid_in(csr__interrupt_valid_in)
 ,       .interrupt_cause_in(csr__interrupt_cause_in)
 ,       .interrupt_to_supervisor_in(csr__interrupt_to_supervisor_in)
+,       .redirect_interrupt_valid_in(csr__redirect_interrupt_valid_in)
+,       .redirect_interrupt_cause_in(csr__redirect_interrupt_cause_in)
+,       .redirect_interrupt_to_supervisor_in(csr__redirect_interrupt_to_supervisor_in)
 ,       .irq_pending_bits_in(csr__irq_pending_bits_in)
 ,       .software_irq_set_in(csr__software_irq_set_in)
+,       .write_pending_out(csr__write_pending_out)
 ,       .read_data_out(csr__read_data_out)
 ,       .time_lo_in(csr__time_lo_in)
 ,       .time_hi_in(csr__time_hi_in)
@@ -604,11 +665,20 @@ module Tribe (
     // tmp variables
     logic icache_invalidate_issued_reg_tmp;
     logic sbi_arg_wait_reg_tmp;
+    TribeSbiDecodeState sbi_decode_reg_tmp;
     logic[32-1:0] pc_tmp;
     logic valid_tmp;
     logic fetch_buffer_valid_reg_tmp;
     logic[32-1:0] fetch_instr_reg_tmp;
     logic[32-1:0] fetch_pc_reg_tmp;
+    logic icache_flush_reg_tmp;
+    State decode_state_reg_tmp;
+    logic[32-1:0] decode_fallthrough_reg_tmp;
+    logic load_result_pending_reg_tmp;
+    logic load_retire_ready_reg_tmp;
+    State csr_commit_state_reg_tmp;
+    logic csr_commit_fire_reg_tmp;
+    logic csr_commit_serialized_reg_tmp;
     logic[32-1:0] alu_result_reg_tmp;
     State[2-1:0] state_reg_tmp;
     logic[2-1:0][32-1:0] predicted_next_reg_tmp;
@@ -627,91 +697,51 @@ module Tribe (
     logic[32-1:0] sbi_ret_a1_reg_tmp;
 
 
-    function logic[31:0] sbi_arg_value (input logic[7:0] reg_id);
-        if (reg_id == 'hA) begin
-            return regs__x10_out;
-        end
-        if (reg_id == 'hB) begin
-            return regs__x11_out;
-        end
-        if (reg_id == 'h10) begin
-            return regs__x16_out;
-        end
-        if (reg_id == 'h11) begin
-            return regs__x17_out;
-        end
-        return 'h0;
-    endfunction
-
     always_comb begin : sbi_legacy_ecall_comb_func  // sbi_legacy_ecall_comb_func
         sbi_legacy_ecall_comb=(state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::ECALL)) && (csr__priv_out == unsigned'(2'(unsigned'(2'h1))));
     end
 
-    always_comb begin : sbi_set_timer_comb_func  // sbi_set_timer_comb_func
-        logic[31:0] ext;
-        ext=sbi_arg_value('h11);
-        sbi_set_timer_comb=sbi_legacy_ecall_comb && (((ext == 'h0) || (((ext == SBI_EXT_TIME) && (sbi_arg_value('h10) == 'h0)))));
+    always_comb begin : sbi_decode_active_comb_func  // sbi_decode_active_comb_func
+        sbi_decode_active_comb=sbi_decode_reg.valid && sbi_legacy_ecall_comb;
     end
 
-    always_comb begin : sbi_timer_lo_comb_func  // sbi_timer_lo_comb_func
-        sbi_timer_lo_comb=sbi_arg_value('hA);
+    always_comb begin : sbi_set_timer_output_comb_func  // sbi_set_timer_output_comb_func
+        sbi_set_timer_output_comb=sbi_decode_active_comb && sbi_decode_reg.set_timer;
     end
 
-    always_comb begin : sbi_timer_hi_comb_func  // sbi_timer_hi_comb_func
-        sbi_timer_hi_comb=sbi_arg_value('hB);
+    always_comb begin : sbi_timer_lo_output_comb_func  // sbi_timer_lo_output_comb_func
+        sbi_timer_lo_output_comb=sbi_decode_reg.a0;
+    end
+
+    always_comb begin : sbi_timer_hi_output_comb_func  // sbi_timer_hi_output_comb_func
+        sbi_timer_hi_output_comb=sbi_decode_reg.a1;
     end
 
     always_comb begin : sbi_ecall_debug_comb_func  // sbi_ecall_debug_comb_func
         sbi_ecall_debug_comb=state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::ECALL);
     end
 
-    always_comb begin : sbi_a7_debug_comb_func  // sbi_a7_debug_comb_func
-        sbi_a7_debug_comb=sbi_arg_value('h11);
-    end
-
-    always_comb begin : sbi_a6_debug_comb_func  // sbi_a6_debug_comb_func
-        sbi_a6_debug_comb=sbi_arg_value('h10);
-    end
-
-    always_comb begin : sbi_a0_debug_comb_func  // sbi_a0_debug_comb_func
-        sbi_a0_debug_comb=sbi_arg_value('hA);
-    end
-
-    always_comb begin : sbi_base_comb_func  // sbi_base_comb_func
-        sbi_base_comb=sbi_legacy_ecall_comb && (sbi_arg_value('h11) == SBI_EXT_BASE);
-    end
-
-    always_comb begin : sbi_noop_comb_func  // sbi_noop_comb_func
-        logic[31:0] ext;
-        ext=sbi_arg_value('h11);
-        sbi_noop_comb=sbi_legacy_ecall_comb && ((((ext == 'h5) || (ext == 'h6)) || (ext == 'h7)));
-    end
-
-    always_comb begin : sbi_handled_comb_func  // sbi_handled_comb_func
-        sbi_handled_comb=(sbi_set_timer_comb || sbi_noop_comb) || sbi_base_comb;
+    always_comb begin : sbi_decode_handled_comb_func  // sbi_decode_handled_comb_func
+        sbi_decode_handled_comb=sbi_decode_active_comb && sbi_decode_reg.handled;
     end
 
     always_comb begin : debug_sbi_comb_func  // debug_sbi_comb_func
         debug_sbi_comb.ecall=sbi_ecall_debug_comb;
-        debug_sbi_comb.a7=sbi_a7_debug_comb;
-        debug_sbi_comb.a6=sbi_a6_debug_comb;
-        debug_sbi_comb.a0=sbi_a0_debug_comb;
-        debug_sbi_comb.base=sbi_base_comb;
-        debug_sbi_comb.noop=sbi_noop_comb;
-        debug_sbi_comb.handled=sbi_handled_comb;
-    end
-
-    always_comb begin : fetch_valid_comb_func  // fetch_valid_comb_func
-        fetch_valid_comb=(valid && fetch_buffer_valid_reg) && (unsigned'(32'(fetch_pc_reg)) == unsigned'(32'(pc)));
+        debug_sbi_comb.a7=sbi_decode_reg.a7;
+        debug_sbi_comb.a6=sbi_decode_reg.a6;
+        debug_sbi_comb.a0=sbi_decode_reg.a0;
+        debug_sbi_comb.base=sbi_decode_active_comb && sbi_decode_reg.base;
+        debug_sbi_comb.noop=sbi_decode_active_comb && sbi_decode_reg.noop;
+        debug_sbi_comb.handled=sbi_decode_handled_comb;
     end
 
     always_comb begin : hazard_stall_comb_func  // hazard_stall_comb_func
         hazard_stall_comb=0;
-        if (((fetch_valid_comb && state_reg['h0].valid) && (state_reg['h0].wb_op == Wb_pkg::MEM)) && (state_reg['h0].rd != 'h0)) begin
-            if (state_reg['h0].rd == dec__state_out.rs1) begin
+        if (((decode_state_reg.valid && state_reg['h0].valid) && (((state_reg['h0].wb_op == Wb_pkg::MEM) || (state_reg['h0].wb_op == Wb_pkg::ALU)))) && (state_reg['h0].rd != 'h0)) begin
+            if (state_reg['h0].rd == decode_state_reg.rs1) begin
                 hazard_stall_comb=1;
             end
-            if (state_reg['h0].rd == dec__state_out.rs2) begin
+            if (state_reg['h0].rd == decode_state_reg.rs2) begin
                 hazard_stall_comb=1;
             end
         end
@@ -724,12 +754,8 @@ module Tribe (
         exe_state_comb = state_reg['h0];
     end
 
-    always_comb begin : branch_actual_next_comb_func  // branch_actual_next_comb_func
-        branch_actual_next_comb=(exe__branch_taken_out) ? (exe__branch_target_out) : (unsigned'(32'(fallthrough_reg['h0])));
-    end
-
     always_comb begin : branch_mispredict_comb_func  // branch_mispredict_comb_func
-        branch_mispredict_comb=(state_reg['h0].valid && (exe_state_comb.br_op != Br_pkg::BNONE)) && (branch_actual_next_comb != unsigned'(32'(predicted_next_reg['h0])));
+        branch_mispredict_comb=(state_reg['h0].valid && (exe_state_comb.br_op != Br_pkg::BNONE)) && exe__branch_taken_out;
     end
 
     always_comb begin : branch_stall_comb_func  // branch_stall_comb_func
@@ -745,16 +771,20 @@ module Tribe (
         perf_comb.dcache = dcache__perf_out;
     end
 
-    always_comb begin : interrupt_retire_wait_comb_func  // interrupt_retire_wait_comb_func
-        logic data_mem_access;
-        logic dmmu_faulted_access;
-        data_mem_access=state_reg['h1].valid && ((((exe_mem__mem_read_out || exe_mem__mem_write_out) || (state_reg['h1].mem_op == Mem_pkg::STORE)) || (state_reg['h1].wb_op == Wb_pkg::MEM)));
-        dmmu_faulted_access=0;
-        interrupt_retire_wait_comb=(((((data_mem_access && !dmmu_faulted_access) && exe_mem__mem_split_busy_out)) || ((((data_mem_access && !dmmu_faulted_access) && dcache__mem_out__read_out) && d_mem_out__wait_in))) || ((((data_mem_access && !dmmu_faulted_access) && ((exe_mem__mem_write_out || (state_reg['h1].mem_op == Mem_pkg::STORE)))) && d_mem_out__wait_in))) || ((((state_reg['h1].valid && (state_reg['h1].wb_op == Wb_pkg::MEM)) && !dmmu_faulted_access) && !wb_mem__load_ready_out));
+    always_comb begin : fetch_valid_comb_func  // fetch_valid_comb_func
+        fetch_valid_comb=(valid && fetch_buffer_valid_reg) && (unsigned'(32'(fetch_pc_reg)) == unsigned'(32'(pc)));
+    end
+
+    always_comb begin : csr_commit_serializing_comb_func  // csr_commit_serializing_comb_func
+        csr_commit_serializing_comb=csr_commit_state_reg.valid && ((((csr_commit_state_reg.csr_op != Csr_pkg::CNONE) || (csr_commit_state_reg.sys_op != Sys_pkg::SNONE)) || (csr_commit_state_reg.trap_op != Trap_pkg::TNONE)));
+    end
+
+    always_comb begin : csr_commit_wait_comb_func  // csr_commit_wait_comb_func
+        csr_commit_wait_comb=csr__write_pending_out || ((csr_commit_serializing_comb && !csr_commit_serialized_reg));
     end
 
     always_comb begin : register_write_commit_comb_func  // register_write_commit_comb_func
-        register_write_commit_comb=(wb__regs_write_out && !interrupt_retire_wait_comb) && (((state_reg['h1].wb_op != Wb_pkg::MEM) || wb_mem__load_ready_out));
+        register_write_commit_comb=wb__regs_write_out && (((state_reg['h1].wb_op != Wb_pkg::MEM) || load_retire_ready_reg));
     end
 
     always_comb begin : sbi_arg_hazard_comb_func  // sbi_arg_hazard_comb_func
@@ -765,6 +795,14 @@ module Tribe (
         sbi_arg_hazard_comb=((sbi_legacy_ecall_comb && !sbi_arg_wait_reg) && register_write_commit_comb) && writes_argument;
     end
 
+    always_comb begin : sbi_decode_wait_comb_func  // sbi_decode_wait_comb_func
+        sbi_decode_wait_comb=sbi_legacy_ecall_comb && !sbi_decode_reg.valid;
+    end
+
+    always_comb begin : fence_i_registered_store_pending_comb_func  // fence_i_registered_store_pending_comb_func
+        fence_i_registered_store_pending_comb=((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::FENCEI)) && state_reg['h1].valid) && ((exe_mem__mem_write_out || (state_reg['h1].mem_op == Mem_pkg::STORE)));
+    end
+
     always_comb begin : memory_wait_comb_func  // memory_wait_comb_func
         logic data_mem_access;
         logic next_data_mem_access;
@@ -772,28 +810,7 @@ module Tribe (
         data_mem_access=state_reg['h1].valid && ((((exe_mem__mem_read_out || exe_mem__mem_write_out) || (state_reg['h1].mem_op == Mem_pkg::STORE)) || (state_reg['h1].wb_op == Wb_pkg::MEM)));
         next_data_mem_access=state_reg['h0].valid && (((state_reg['h0].mem_op == Mem_pkg::LOAD) || (state_reg['h0].mem_op == Mem_pkg::STORE)));
         dmmu_faulted_access=0;
-        memory_wait_comb=(((((((sbi_arg_hazard_comb || exe__multicycle_wait_out) || ((next_data_mem_access && dcache__busy_out))) || (((data_mem_access && !dmmu_faulted_access) && dcache__busy_out))) || (((data_mem_access && !dmmu_faulted_access) && exe_mem__mem_split_busy_out))) || ((((data_mem_access && !dmmu_faulted_access) && dcache__mem_out__read_out) && d_mem_out__wait_in))) || ((((data_mem_access && !dmmu_faulted_access) && ((exe_mem__mem_write_out || (state_reg['h1].mem_op == Mem_pkg::STORE)))) && d_mem_out__wait_in))) || (((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::FENCE)) && (((dcache__busy_out || d_mem_out__wait_in) || i_mem_out__wait_in))))) || ((((state_reg['h1].valid && (state_reg['h1].wb_op == Wb_pkg::MEM)) && !dmmu_faulted_access) && !wb_mem__load_ready_out));
-    end
-
-    always_comb begin : csr_state_comb_func  // csr_state_comb_func
-        csr_state_comb = exe_state_comb;
-        if (sbi_handled_comb) begin
-            csr_state_comb.sys_op=Sys_pkg::SNONE;
-            csr_state_comb.trap_op=Trap_pkg::TNONE;
-            csr_state_comb.csr_op=Csr_pkg::CNONE;
-        end
-        if (csr__illegal_trap_out) begin
-            csr_state_comb = state_reg['h0];
-            csr_state_comb.sys_op=Sys_pkg::TRAP;
-            csr_state_comb.trap_op=Trap_pkg::ILLEGAL_INST;
-            csr_state_comb.csr_op=Csr_pkg::CNONE;
-            csr_state_comb.mem_op=Mem_pkg::MNONE;
-            csr_state_comb.wb_op=Wb_pkg::WNONE;
-            csr_state_comb.br_op=Br_pkg::JR;
-        end
-        if (interrupt_retire_wait_comb) begin
-            csr_state_comb.valid=0;
-        end
+        memory_wait_comb=((((((((((csr_commit_wait_comb || sbi_arg_hazard_comb) || sbi_decode_wait_comb) || exe__multicycle_wait_out) || ((next_data_mem_access && dcache__busy_out))) || (((data_mem_access && !dmmu_faulted_access) && dcache__busy_out))) || (((data_mem_access && !dmmu_faulted_access) && exe_mem__mem_split_busy_out))) || ((((data_mem_access && !dmmu_faulted_access) && dcache__mem_out__read_out) && d_mem_out__wait_in))) || ((((data_mem_access && !dmmu_faulted_access) && ((exe_mem__mem_write_out || (state_reg['h1].mem_op == Mem_pkg::STORE)))) && d_mem_out__wait_in))) || (((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::FENCE)) && (((dcache__busy_out || d_mem_out__wait_in) || i_mem_out__wait_in))))) || (((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::FENCEI)) && (((fence_i_registered_store_pending_comb || !icache_invalidate_issued_reg) || icache__busy_out))))) || ((((state_reg['h1].valid && (state_reg['h1].wb_op == Wb_pkg::MEM)) && !dmmu_faulted_access) && !load_retire_ready_reg));
     end
 
     always_comb begin : decode_branch_target_comb_func  // decode_branch_target_comb_func
@@ -815,8 +832,22 @@ module Tribe (
         decode_fallthrough_comb=fetch_pc_reg + (((((dec__instr_in & 'h3)) == 'h3)) ? ('h4) : ('h2));
     end
 
+    always_comb begin : memory_stage_transport_wait_comb_func  // memory_stage_transport_wait_comb_func
+        logic data_mem_access;
+        logic dmmu_faulted_access;
+        data_mem_access=state_reg['h1].valid && ((((exe_mem__mem_read_out || exe_mem__mem_write_out) || (state_reg['h1].mem_op == Mem_pkg::STORE)) || (state_reg['h1].wb_op == Wb_pkg::MEM)));
+        dmmu_faulted_access=0;
+        memory_stage_transport_wait_comb=((((data_mem_access && !dmmu_faulted_access) && exe_mem__mem_split_busy_out)) || ((((data_mem_access && !dmmu_faulted_access) && dcache__mem_out__read_out) && d_mem_out__wait_in))) || ((((data_mem_access && !dmmu_faulted_access) && ((exe_mem__mem_write_out || (state_reg['h1].mem_op == Mem_pkg::STORE)))) && d_mem_out__wait_in));
+    end
+
+    always_comb begin : interrupt_retire_wait_comb_func  // interrupt_retire_wait_comb_func
+        logic dmmu_faulted_access;
+        dmmu_faulted_access=0;
+        interrupt_retire_wait_comb=memory_stage_transport_wait_comb || ((((state_reg['h1].valid && (state_reg['h1].wb_op == Wb_pkg::MEM)) && !dmmu_faulted_access) && !load_retire_ready_reg));
+    end
+
     always_comb begin : icache_invalidate_comb_func  // icache_invalidate_comb_func
-        icache_invalidate_comb=(((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::FENCEI)) && !memory_wait_comb) && !icache_invalidate_issued_reg);
+        icache_invalidate_comb=((((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::FENCEI)) && !interrupt_retire_wait_comb) && !fence_i_registered_store_pending_comb) && !icache_invalidate_issued_reg);
     end
 
     always_comb begin : l2_data_addr_comb_func  // l2_data_addr_comb_func
@@ -827,12 +858,12 @@ module Tribe (
         assign dec__pc_in = pc;
         assign dec__instr_in = fetch_instr_reg;
         assign dec__instr_valid_in = fetch_valid_comb;
-        assign dec__regs_data0_in = (dec__rs1_out == 'h0) ? ('h0) : (regs__read_data0_out);
-        assign dec__regs_data1_in = (dec__rs2_out == 'h0) ? ('h0) : (regs__read_data1_out);
+        assign dec__regs_data0_in = unsigned'(32'('h0));
+        assign dec__regs_data1_in = unsigned'(32'('h0));
         assign exe__state_in = exe_state_comb;
         assign exe__multicycle_state_in = state_reg['h0];
         assign exe_mem__state_in = exe_state_comb;
-        assign exe_mem__alu_result_in = exe__alu_result_out;
+        assign exe_mem__alu_result_in = exe__mem_addr_out;
         assign exe_mem__transaction_owner_valid_in = state_reg['h1].valid;
         assign exe_mem__hold_in = memory_wait_comb;
         assign wb_mem__state_in = state_reg['h1];
@@ -841,8 +872,10 @@ module Tribe (
         assign wb_mem__split_load_low_addr_in = exe_mem__split_load_low_out;
         assign wb_mem__split_load_high_addr_in = exe_mem__split_load_high_out;
         assign wb_mem__store_forward_enable_in = unsigned'(32'(wb_mem__alu_result_in)) < (((memory_base_in + mem_region_size_in['h0]) + mem_region_size_in['h1]) + mem_region_size_in['h2]);
-        assign wb_mem__hold_in = memory_wait_comb;
-        assign csr__state_in = csr_state_comb;
+        assign wb_mem__retire_in = load_retire_ready_reg;
+        assign csr__state_in = csr_commit_state_reg;
+        assign csr__commit_in = csr_commit_fire_reg;
+        assign csr__read_state_in = state_reg['h0];
         assign csr__trap_check_state_in = state_reg['h0];
         assign csr__legality_state_in = dec__state_out;
         assign csr__redirect_state_in = state_reg['h0];
@@ -853,6 +886,9 @@ module Tribe (
         assign csr__interrupt_valid_in = 0;
         assign csr__interrupt_cause_in = unsigned'(32'('h0));
         assign csr__interrupt_to_supervisor_in = 0;
+        assign csr__redirect_interrupt_valid_in = 0;
+        assign csr__redirect_interrupt_cause_in = unsigned'(32'('h0));
+        assign csr__redirect_interrupt_to_supervisor_in = 0;
         assign csr__irq_pending_bits_in = unsigned'(32'('h0));
         assign wb__state_in = state_reg['h1];
         assign wb__mem_data_in = wb_mem__load_raw_out;
@@ -860,8 +896,8 @@ module Tribe (
         assign wb__mem_addr_in = alu_result_reg;
         assign wb__mem_split_in = 0;
         assign wb__alu_result_in = alu_result_reg;
-        assign regs__read_addr0_in = unsigned'(8'(dec__rs1_out));
-        assign regs__read_addr1_in = unsigned'(8'(dec__rs2_out));
+        assign regs__read_addr0_in = unsigned'(8'(decode_state_reg.rs1));
+        assign regs__read_addr1_in = unsigned'(8'(decode_state_reg.rs2));
         assign regs__write_in = register_write_commit_comb;
         assign regs__write_addr_in = wb__regs_wr_id_out;
         assign regs__write_data_in = wb__regs_data_out;
@@ -906,7 +942,7 @@ module Tribe (
         assign icache__write_data_in = unsigned'(32'('h0));
         assign icache__write_mask_in = unsigned'(8'('h0));
         assign icache__stall_in = 0;
-        assign icache__flush_in = branch_mispredict_comb;
+        assign icache__flush_in = icache_flush_reg;
         assign icache__invalidate_in = icache_invalidate_comb;
         assign icache__cache_disable_in = 0;
         assign icache__debugen_in=debugen_in;
@@ -954,8 +990,44 @@ module Tribe (
         decode_indirect_branch_valid_comb=((fetch_valid_comb && dec__state_out.valid) && (((dec__state_out.br_op == Br_pkg::JALR) || (dec__state_out.br_op == Br_pkg::JR)))) && !stall_comb;
     end
 
+    always_comb begin : branch_actual_next_comb_func  // branch_actual_next_comb_func
+        branch_actual_next_comb=(exe__branch_taken_out) ? (exe__branch_target_out) : (unsigned'(32'(fallthrough_reg['h0])));
+    end
+
     always_comb begin : fetch_addr_comb_func  // fetch_addr_comb_func
         fetch_addr_comb=pc;
+    end
+
+    function logic[31:0] sbi_arg_value (input logic[7:0] reg_id);
+        if (reg_id == 'hA) begin
+            return regs__x10_out;
+        end
+        if (reg_id == 'hB) begin
+            return regs__x11_out;
+        end
+        if (reg_id == 'h10) begin
+            return regs__x16_out;
+        end
+        if (reg_id == 'h11) begin
+            return regs__x17_out;
+        end
+        return 'h0;
+    endfunction
+
+    always_comb begin : sbi_noop_comb_func  // sbi_noop_comb_func
+        logic[31:0] ext;
+        ext=sbi_arg_value('h11);
+        sbi_noop_comb=sbi_legacy_ecall_comb && ((((ext == 'h5) || (ext == 'h6)) || (ext == 'h7)));
+    end
+
+    always_comb begin : sbi_base_comb_func  // sbi_base_comb_func
+        sbi_base_comb=sbi_legacy_ecall_comb && (sbi_arg_value('h11) == SBI_EXT_BASE);
+    end
+
+    always_comb begin : sbi_set_timer_comb_func  // sbi_set_timer_comb_func
+        logic[31:0] ext;
+        ext=sbi_arg_value('h11);
+        sbi_set_timer_comb=sbi_legacy_ecall_comb && (((ext == 'h0) || (((ext == SBI_EXT_TIME) && (sbi_arg_value('h10) == 'h0)))));
     end
 
     always_comb begin : sbi_ret_value_comb_func  // sbi_ret_value_comb_func
@@ -995,6 +1067,78 @@ module Tribe (
         sbi_writes_a1_comb=sbi_base_comb || sbi_set_timer_comb;
     end
 
+    always_comb begin : sbi_handled_comb_func  // sbi_handled_comb_func
+        sbi_handled_comb=(sbi_set_timer_comb || sbi_noop_comb) || sbi_base_comb;
+    end
+
+    always_comb begin : sbi_timer_lo_comb_func  // sbi_timer_lo_comb_func
+        sbi_timer_lo_comb=sbi_arg_value('hA);
+    end
+
+    always_comb begin : sbi_timer_hi_comb_func  // sbi_timer_hi_comb_func
+        sbi_timer_hi_comb=sbi_arg_value('hB);
+    end
+
+    always_comb begin : sbi_registered_noop_comb_func  // sbi_registered_noop_comb_func
+        logic[31:0] ext;
+        ext=sbi_decode_reg.a7;
+        sbi_registered_noop_comb=((ext == 'h5) || (ext == 'h6)) || (ext == 'h7);
+    end
+
+    always_comb begin : sbi_registered_base_comb_func  // sbi_registered_base_comb_func
+        sbi_registered_base_comb=sbi_decode_reg.a7 == SBI_EXT_BASE;
+    end
+
+    always_comb begin : sbi_registered_set_timer_comb_func  // sbi_registered_set_timer_comb_func
+        sbi_registered_set_timer_comb=(sbi_decode_reg.a7 == 'h0) || (((sbi_decode_reg.a7 == SBI_EXT_TIME) && (sbi_decode_reg.a6 == 'h0)));
+    end
+
+    always_comb begin : sbi_registered_writes_a1_comb_func  // sbi_registered_writes_a1_comb_func
+        sbi_registered_writes_a1_comb=sbi_registered_base_comb || sbi_registered_set_timer_comb;
+    end
+
+    always_comb begin : sbi_registered_handled_comb_func  // sbi_registered_handled_comb_func
+        sbi_registered_handled_comb=(sbi_registered_set_timer_comb || sbi_registered_noop_comb) || sbi_registered_base_comb;
+    end
+
+    always_comb begin : sbi_registered_ret_value_comb_func  // sbi_registered_ret_value_comb_func
+        logic[31:0] value;
+        value='h0;
+        if (sbi_decode_reg.a7 == SBI_EXT_BASE) begin
+            if (sbi_decode_reg.a6 == 'h0) begin
+                value='h2;
+            end
+            else begin
+                if (sbi_decode_reg.a6 == 'h1) begin
+                    value='h0;
+                end
+                else begin
+                    if (sbi_decode_reg.a6 == 'h2) begin
+                        value='h1;
+                    end
+                    else begin
+                        if (sbi_decode_reg.a6 == 'h3) begin
+                            value=((((sbi_decode_reg.a0 == SBI_EXT_BASE) || (sbi_decode_reg.a0 == SBI_EXT_TIME)) || (sbi_decode_reg.a0 == SBI_EXT_RFENCE))) ? ('h1) : ('h0);
+                        end
+                    end
+                end
+            end
+        end
+        sbi_registered_ret_value_comb=value;
+    end
+
+    always_comb begin : sbi_a7_debug_comb_func  // sbi_a7_debug_comb_func
+        sbi_a7_debug_comb=sbi_arg_value('h11);
+    end
+
+    always_comb begin : sbi_a6_debug_comb_func  // sbi_a6_debug_comb_func
+        sbi_a6_debug_comb=sbi_arg_value('h10);
+    end
+
+    always_comb begin : sbi_a0_debug_comb_func  // sbi_a0_debug_comb_func
+        sbi_a0_debug_comb=sbi_arg_value('hA);
+    end
+
     always_comb begin : interrupt_capture_comb_func  // interrupt_capture_comb_func
         interrupt_capture_comb=0;
     end
@@ -1006,23 +1150,44 @@ module Tribe (
     always_comb begin : interrupt_entry_wait_comb_func  // interrupt_entry_wait_comb_func
         logic registered_store_pending;
         registered_store_pending=state_reg['h1].valid && ((exe_mem__mem_write_out || (state_reg['h1].mem_op == Mem_pkg::STORE)));
-        interrupt_entry_wait_comb=interrupt_retire_wait_comb || registered_store_pending;
+        interrupt_entry_wait_comb=(interrupt_retire_wait_comb || registered_store_pending) || csr_commit_wait_comb;
+    end
+
+    always_comb begin : csr_state_comb_func  // csr_state_comb_func
+        csr_state_comb = exe_state_comb;
+        if (sbi_decode_wait_comb || sbi_decode_handled_comb) begin
+            csr_state_comb.sys_op=Sys_pkg::SNONE;
+            csr_state_comb.trap_op=Trap_pkg::TNONE;
+            csr_state_comb.csr_op=Csr_pkg::CNONE;
+        end
+        if (csr__illegal_trap_out) begin
+            csr_state_comb = state_reg['h0];
+            csr_state_comb.sys_op=Sys_pkg::TRAP;
+            csr_state_comb.trap_op=Trap_pkg::ILLEGAL_INST;
+            csr_state_comb.csr_op=Csr_pkg::CNONE;
+            csr_state_comb.mem_op=Mem_pkg::MNONE;
+            csr_state_comb.wb_op=Wb_pkg::WNONE;
+            csr_state_comb.br_op=Br_pkg::JR;
+        end
+        if (interrupt_retire_wait_comb) begin
+            csr_state_comb.valid=0;
+        end
     end
 
     always_comb begin : sfence_vma_comb_func  // sfence_vma_comb_func
-        sfence_vma_comb=((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::SFENCE_VMA)) && !memory_wait_comb);
+        sfence_vma_comb=(((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::SFENCE_VMA)) && !interrupt_retire_wait_comb) && !icache_invalidate_issued_reg);
     end
 
     task forward ();
     begin: forward
         if ((state_reg['h1].valid && (state_reg['h1].wb_op == Wb_pkg::ALU)) && (state_reg['h1].rd != 'h0)) begin
-            if (dec__state_out.rs1 == state_reg['h1].rd) begin
+            if (decode_state_reg.rs1 == state_reg['h1].rd) begin
                 state_reg_tmp['h0].rs1_val=alu_result_reg;
                 if (debugen_in) begin
                     $write("forwarding %.08x from ALU to RS1\n", unsigned'(32'(alu_result_reg)));
                 end
             end
-            if (dec__state_out.rs2 == state_reg['h1].rd) begin
+            if (decode_state_reg.rs2 == state_reg['h1].rd) begin
                 state_reg_tmp['h0].rs2_val=alu_result_reg;
                 if (debugen_in) begin
                     $write("forwarding %.08x from ALU to RS2\n", unsigned'(32'(alu_result_reg)));
@@ -1030,13 +1195,13 @@ module Tribe (
             end
         end
         if (wb_mem__load_ready_out && (state_reg['h1].rd != 'h0)) begin
-            if (dec__state_out.rs1 == state_reg['h1].rd) begin
+            if (decode_state_reg.rs1 == state_reg['h1].rd) begin
                 state_reg_tmp['h0].rs1_val=wb_mem__load_result_out;
                 if (debugen_in) begin
                     $write("forwarding %.08x from MEM to RS1\n", unsigned'(32'(wb_mem__load_result_out)));
                 end
             end
-            if (dec__state_out.rs2 == state_reg['h1].rd) begin
+            if (decode_state_reg.rs2 == state_reg['h1].rd) begin
                 state_reg_tmp['h0].rs2_val=wb_mem__load_result_out;
                 if (debugen_in) begin
                     $write("forwarding %.08x from MEM to RS2\n", unsigned'(32'(wb_mem__load_result_out)));
@@ -1045,42 +1210,28 @@ module Tribe (
         end
         if ((state_reg['h1].valid && (((state_reg['h1].wb_op == Wb_pkg::PC2) || (state_reg['h1].wb_op == Wb_pkg::PC4)))) && (state_reg['h1].rd != 'h0)) begin
             logic[31:0] link_value; link_value = state_reg['h1].pc + (((state_reg['h1].wb_op == Wb_pkg::PC2)) ? ('h2) : ('h4));
-            if (dec__state_out.rs1 == state_reg['h1].rd) begin
+            if (decode_state_reg.rs1 == state_reg['h1].rd) begin
                 state_reg_tmp['h0].rs1_val=link_value;
                 if (debugen_in) begin
                     $write("forwarding %.08x from LINK to RS1\n", link_value);
                 end
             end
-            if (dec__state_out.rs2 == state_reg['h1].rd) begin
+            if (decode_state_reg.rs2 == state_reg['h1].rd) begin
                 state_reg_tmp['h0].rs2_val=link_value;
                 if (debugen_in) begin
                     $write("forwarding %.08x from LINK to RS2\n", link_value);
                 end
             end
         end
-        if ((state_reg['h0].valid && (state_reg['h0].wb_op == Wb_pkg::ALU)) && (state_reg['h0].rd != 'h0)) begin
-            if (dec__state_out.rs1 == state_reg['h0].rd) begin
-                state_reg_tmp['h0].rs1_val=exe__alu_result_out;
-                if (debugen_in) begin
-                    $write("forwarding %.08x from ALU to RS1\n", unsigned'(32'(exe__alu_result_out)));
-                end
-            end
-            if (dec__state_out.rs2 == state_reg['h0].rd) begin
-                state_reg_tmp['h0].rs2_val=exe__alu_result_out;
-                if (debugen_in) begin
-                    $write("forwarding %.08x from ALU to RS2\n", unsigned'(32'(exe__alu_result_out)));
-                end
-            end
-        end
         if ((state_reg['h0].valid && (((state_reg['h0].wb_op == Wb_pkg::PC2) || (state_reg['h0].wb_op == Wb_pkg::PC4)))) && (state_reg['h0].rd != 'h0)) begin
             logic[31:0] link_value; link_value = state_reg['h0].pc + (((state_reg['h0].wb_op == Wb_pkg::PC2)) ? ('h2) : ('h4));
-            if (dec__state_out.rs1 == state_reg['h0].rd) begin
+            if (decode_state_reg.rs1 == state_reg['h0].rd) begin
                 state_reg_tmp['h0].rs1_val=link_value;
                 if (debugen_in) begin
                     $write("forwarding %.08x from LINK to RS1\n", link_value);
                 end
             end
-            if (dec__state_out.rs2 == state_reg['h0].rd) begin
+            if (decode_state_reg.rs2 == state_reg['h0].rd) begin
                 state_reg_tmp['h0].rs2_val=link_value;
                 if (debugen_in) begin
                     $write("forwarding %.08x from LINK to RS2\n", link_value);
@@ -2053,6 +2204,44 @@ module Tribe (
         fetch_buffer_valid_reg_tmp = fetch_buffer_valid_reg;
         fetch_instr_reg_tmp = fetch_instr_reg;
         fetch_pc_reg_tmp = fetch_pc_reg;
+        decode_state_reg_tmp = decode_state_reg;
+        decode_fallthrough_reg_tmp = decode_fallthrough_reg;
+        icache_flush_reg_tmp = unsigned'(1'(branch_mispredict_comb));
+        load_result_pending_reg_tmp = load_result_pending_reg;
+        load_retire_ready_reg_tmp = load_retire_ready_reg;
+        if (!memory_wait_comb) begin
+            load_result_pending_reg_tmp = unsigned'(1'(0));
+            load_retire_ready_reg_tmp = unsigned'(1'(0));
+        end
+        else begin
+            if (state_reg['h1].valid && (state_reg['h1].wb_op == Wb_pkg::MEM)) begin
+                if (wb_mem__load_ready_out) begin
+                    load_result_pending_reg_tmp = unsigned'(1'(1));
+                end
+                if (((load_result_pending_reg || wb_mem__load_ready_out)) && !memory_stage_transport_wait_comb) begin
+                    load_retire_ready_reg_tmp = unsigned'(1'(1));
+                end
+            end
+        end
+        csr_commit_state_reg_tmp = csr_commit_state_reg;
+        csr_commit_fire_reg_tmp = unsigned'(1'(0));
+        csr_commit_serialized_reg_tmp = csr_commit_serialized_reg;
+        if (csr_commit_wait_comb) begin
+            csr_commit_serialized_reg_tmp = unsigned'(1'(1));
+        end
+        else begin
+            if (csr_commit_serializing_comb && csr_commit_serialized_reg) begin
+                csr_commit_state_reg_tmp.valid=0;
+                csr_commit_serialized_reg_tmp = unsigned'(1'(0));
+            end
+            else begin
+                if (!memory_wait_comb || !csr_commit_state_reg.valid) begin
+                    csr_commit_state_reg_tmp = csr_state_comb;
+                    csr_commit_fire_reg_tmp = unsigned'(1'(csr_state_comb.valid));
+                    csr_commit_serialized_reg_tmp = unsigned'(1'(0));
+                end
+            end
+        end
         if (!valid || ((fetch_buffer_valid_reg && (unsigned'(32'(fetch_pc_reg)) != unsigned'(32'(pc)))))) begin
             fetch_buffer_valid_reg_tmp = unsigned'(1'(0));
         end
@@ -2063,6 +2252,34 @@ module Tribe (
         end
         sbi_ret_a1_valid_reg_tmp = unsigned'(1'(0));
         sbi_ret_a1_reg_tmp = sbi_ret_a1_reg;
+        sbi_decode_reg_tmp = sbi_decode_reg;
+        if (!sbi_legacy_ecall_comb) begin
+            sbi_decode_reg_tmp.args_valid = unsigned'(1'(0));
+            sbi_decode_reg_tmp.valid = unsigned'(1'(0));
+        end
+        else begin
+            if ((!sbi_decode_reg.args_valid && !sbi_arg_hazard_comb) && !interrupt_retire_wait_comb) begin
+                sbi_decode_reg_tmp.args_valid = unsigned'(1'(1));
+                sbi_decode_reg_tmp.a0 = unsigned'(32'(sbi_arg_value('hA)));
+                sbi_decode_reg_tmp.a1 = unsigned'(32'(sbi_arg_value('hB)));
+                sbi_decode_reg_tmp.a6 = unsigned'(32'(sbi_arg_value('h10)));
+                sbi_decode_reg_tmp.a7 = unsigned'(32'(sbi_arg_value('h11)));
+            end
+            else begin
+                if (!sbi_decode_reg.valid) begin
+                    sbi_decode_reg_tmp.valid = unsigned'(1'(1));
+                    sbi_decode_reg_tmp.handled = unsigned'(1'(sbi_registered_handled_comb));
+                    sbi_decode_reg_tmp.set_timer = unsigned'(1'(sbi_registered_set_timer_comb));
+                    sbi_decode_reg_tmp.base = unsigned'(1'(sbi_registered_base_comb));
+                    sbi_decode_reg_tmp.noop = unsigned'(1'(sbi_registered_noop_comb));
+                    sbi_decode_reg_tmp.writes_a1 = unsigned'(1'(sbi_registered_writes_a1_comb));
+                    sbi_decode_reg_tmp.ret_a1 = unsigned'(32'(sbi_registered_ret_value_comb));
+                    sbi_decode_reg_tmp.send_ipi = unsigned'(1'(0));
+                    sbi_decode_reg_tmp.remote_fence_i = unsigned'(1'(0));
+                    sbi_decode_reg_tmp.remote_sfence_vma = unsigned'(1'(0));
+                end
+            end
+        end
         if (!state_reg['h0].valid || (state_reg['h0].sys_op != Sys_pkg::ECALL)) begin
             sbi_arg_wait_reg_tmp = unsigned'(1'(0));
         end
@@ -2093,6 +2310,7 @@ module Tribe (
             state_reg_tmp['h0].valid=0;
             state_reg_tmp['h1] = 0;
             state_reg_tmp['h1].valid=0;
+            decode_state_reg_tmp.valid=0;
             predicted_next_reg_tmp = '0;
             fallthrough_reg_tmp = '0;
             predicted_taken_reg_tmp = '0;
@@ -2102,13 +2320,14 @@ module Tribe (
             interrupt_entry_guard_reg_tmp = unsigned'(1'(0));
         end
         else begin
-            if (sbi_handled_comb) begin
+            if (sbi_decode_handled_comb && !memory_wait_comb) begin
                 interrupt_entry_guard_reg_tmp = unsigned'(1'(0));
                 pc_tmp = pc;
                 valid_tmp = unsigned'(1'(0));
                 state_reg_tmp['h0] = 0;
                 state_reg_tmp['h0].valid=0;
                 state_reg_tmp['h1] = state_reg['h0];
+                decode_state_reg_tmp.valid=0;
                 state_reg_tmp['h1].sys_op=Sys_pkg::SNONE;
                 state_reg_tmp['h1].trap_op=Trap_pkg::TNONE;
                 state_reg_tmp['h1].csr_op=Csr_pkg::CNONE;
@@ -2124,8 +2343,10 @@ module Tribe (
                 fallthrough_reg_tmp = '0;
                 predicted_taken_reg_tmp = '0;
                 alu_result_reg_tmp = unsigned'(32'h0);
-                sbi_ret_a1_valid_reg_tmp = unsigned'(1'(sbi_writes_a1_comb));
-                sbi_ret_a1_reg_tmp = unsigned'(32'(sbi_ret_value_comb));
+                sbi_ret_a1_valid_reg_tmp = sbi_decode_reg.writes_a1;
+                sbi_ret_a1_reg_tmp = sbi_decode_reg.ret_a1;
+                sbi_decode_reg_tmp.args_valid = unsigned'(1'(0));
+                sbi_decode_reg_tmp.valid = unsigned'(1'(0));
                 debug_branch_target_reg_tmp = pc;
                 debug_branch_taken_reg_tmp = unsigned'(1'(0));
             end
@@ -2135,6 +2356,9 @@ module Tribe (
                     interrupt_entry_guard_reg_tmp = unsigned'(1'(0));
                     valid_tmp = valid;
                     state_reg_tmp = state_reg;
+                    if (fence_i_registered_store_pending_comb && !interrupt_retire_wait_comb) begin
+                        state_reg_tmp['h1].valid=0;
+                    end
                     predicted_next_reg_tmp = predicted_next_reg;
                     fallthrough_reg_tmp = fallthrough_reg;
                     predicted_taken_reg_tmp = predicted_taken_reg;
@@ -2157,12 +2381,13 @@ module Tribe (
                         pc_tmp = unsigned'(32'(decode_fallthrough_comb));
                     end
                     if (branch_mispredict_comb) begin
-                        pc_tmp = unsigned'(32'(branch_actual_next_comb));
+                        pc_tmp = unsigned'(32'(exe__branch_target_out));
                     end
-                    valid_tmp = unsigned'(1'(!decode_indirect_branch_valid_comb));
+                    valid_tmp = unsigned'(1'(!(decode_indirect_branch_valid_comb || ((decode_state_reg.valid && (((decode_state_reg.br_op == Br_pkg::JALR) || (decode_state_reg.br_op == Br_pkg::JR))))))));
                     if (branch_mispredict_comb) begin
                         state_reg_tmp['h0] = 0;
                         state_reg_tmp['h0].valid=0;
+                        decode_state_reg_tmp.valid=0;
                         predicted_next_reg_tmp['h0] = pc;
                         fallthrough_reg_tmp['h0] = pc;
                         predicted_taken_reg_tmp['h0] = unsigned'(1'(0));
@@ -2176,12 +2401,17 @@ module Tribe (
                             predicted_taken_reg_tmp['h0] = unsigned'(1'(0));
                         end
                         else begin
-                            if (fetch_valid_comb) begin
-                                state_reg_tmp['h0] = dec__state_out;
-                                state_reg_tmp['h0].csr_illegal=csr__legality_out;
-                                state_reg_tmp['h0].valid=(dec__instr_valid_in && !branch_stall_comb) && !branch_flush_comb;
-                                predicted_next_reg_tmp['h0] = unsigned'(32'(decode_fallthrough_comb));
-                                fallthrough_reg_tmp['h0] = unsigned'(32'(decode_fallthrough_comb));
+                            if (decode_state_reg.valid) begin
+                                state_reg_tmp['h0] = decode_state_reg;
+                                if (decode_state_reg.rs1 != 'h0) begin
+                                    state_reg_tmp['h0].rs1_val=regs__read_data0_out;
+                                end
+                                if (decode_state_reg.rs2 != 'h0) begin
+                                    state_reg_tmp['h0].rs2_val=regs__read_data1_out;
+                                end
+                                state_reg_tmp['h0].valid=1;
+                                predicted_next_reg_tmp['h0] = decode_fallthrough_reg;
+                                fallthrough_reg_tmp['h0] = decode_fallthrough_reg;
                                 predicted_taken_reg_tmp['h0] = unsigned'(1'(0));
                                 forward();
                             end
@@ -2191,6 +2421,15 @@ module Tribe (
                                 predicted_next_reg_tmp['h0] = pc;
                                 fallthrough_reg_tmp['h0] = pc;
                                 predicted_taken_reg_tmp['h0] = unsigned'(1'(0));
+                            end
+                            if (fetch_valid_comb) begin
+                                decode_state_reg_tmp = dec__state_out;
+                                decode_state_reg_tmp.csr_illegal=csr__legality_out;
+                                decode_state_reg_tmp.valid=dec__instr_valid_in;
+                                decode_fallthrough_reg_tmp = unsigned'(32'(decode_fallthrough_comb));
+                            end
+                            else begin
+                                decode_state_reg_tmp.valid=0;
                             end
                         end
                     end
@@ -2204,8 +2443,14 @@ module Tribe (
                 end
             end
         end
-        if ((state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::FENCEI)) && !memory_wait_comb) begin
-            icache_invalidate_issued_reg_tmp = unsigned'(1'(1));
+        if (icache_invalidate_comb) begin
+            if (state_reg['h0].valid && (state_reg['h0].sys_op == Sys_pkg::FENCEI)) begin
+                icache_invalidate_issued_reg_tmp = unsigned'(1'(1));
+                pc_tmp = unsigned'(32'(unsigned'(32'(state_reg['h0].pc)) + 'h4));
+            end
+            valid_tmp = unsigned'(1'(0));
+            fetch_buffer_valid_reg_tmp = unsigned'(1'(0));
+            decode_state_reg_tmp.valid=0;
         end
         else begin
             if (!state_reg['h0].valid || (state_reg['h0].sys_op != Sys_pkg::FENCEI)) begin
@@ -2220,6 +2465,14 @@ module Tribe (
             fetch_buffer_valid_reg_tmp = '0;
             fetch_instr_reg_tmp = '0;
             fetch_pc_reg_tmp = '0;
+            icache_flush_reg_tmp = '0;
+            decode_state_reg_tmp = '0;
+            decode_fallthrough_reg_tmp = '0;
+            load_result_pending_reg_tmp = '0;
+            load_retire_ready_reg_tmp = '0;
+            csr_commit_state_reg_tmp = '0;
+            csr_commit_fire_reg_tmp = '0;
+            csr_commit_serialized_reg_tmp = '0;
             predicted_next_reg_tmp = '0;
             fallthrough_reg_tmp = '0;
             predicted_taken_reg_tmp = '0;
@@ -2229,6 +2482,7 @@ module Tribe (
             sbi_ret_a1_reg_tmp = '0;
             icache_invalidate_issued_reg_tmp = '0;
             sbi_arg_wait_reg_tmp = '0;
+            sbi_decode_reg_tmp = '0;
         end
     end
     endtask
@@ -2246,11 +2500,20 @@ module Tribe (
     always_ff @(posedge clk) begin
         icache_invalidate_issued_reg_tmp = icache_invalidate_issued_reg;
         sbi_arg_wait_reg_tmp = sbi_arg_wait_reg;
+        sbi_decode_reg_tmp = sbi_decode_reg;
         pc_tmp = pc;
         valid_tmp = valid;
         fetch_buffer_valid_reg_tmp = fetch_buffer_valid_reg;
         fetch_instr_reg_tmp = fetch_instr_reg;
         fetch_pc_reg_tmp = fetch_pc_reg;
+        icache_flush_reg_tmp = icache_flush_reg;
+        decode_state_reg_tmp = decode_state_reg;
+        decode_fallthrough_reg_tmp = decode_fallthrough_reg;
+        load_result_pending_reg_tmp = load_result_pending_reg;
+        load_retire_ready_reg_tmp = load_retire_ready_reg;
+        csr_commit_state_reg_tmp = csr_commit_state_reg;
+        csr_commit_fire_reg_tmp = csr_commit_fire_reg;
+        csr_commit_serialized_reg_tmp = csr_commit_serialized_reg;
         alu_result_reg_tmp = alu_result_reg;
         state_reg_tmp = state_reg;
         predicted_next_reg_tmp = predicted_next_reg;
@@ -2272,11 +2535,20 @@ module Tribe (
 
         icache_invalidate_issued_reg <= icache_invalidate_issued_reg_tmp;
         sbi_arg_wait_reg <= sbi_arg_wait_reg_tmp;
+        sbi_decode_reg <= sbi_decode_reg_tmp;
         pc <= pc_tmp;
         valid <= valid_tmp;
         fetch_buffer_valid_reg <= fetch_buffer_valid_reg_tmp;
         fetch_instr_reg <= fetch_instr_reg_tmp;
         fetch_pc_reg <= fetch_pc_reg_tmp;
+        icache_flush_reg <= icache_flush_reg_tmp;
+        decode_state_reg <= decode_state_reg_tmp;
+        decode_fallthrough_reg <= decode_fallthrough_reg_tmp;
+        load_result_pending_reg <= load_result_pending_reg_tmp;
+        load_retire_ready_reg <= load_retire_ready_reg_tmp;
+        csr_commit_state_reg <= csr_commit_state_reg_tmp;
+        csr_commit_fire_reg <= csr_commit_fire_reg_tmp;
+        csr_commit_serialized_reg <= csr_commit_serialized_reg_tmp;
         alu_result_reg <= alu_result_reg_tmp;
         state_reg <= state_reg_tmp;
         predicted_next_reg <= predicted_next_reg_tmp;
@@ -2307,11 +2579,11 @@ module Tribe (
 
     end
 
-    assign sbi_set_timer_out = sbi_set_timer_comb;
+    assign sbi_set_timer_out = sbi_set_timer_output_comb;
 
-    assign sbi_timer_lo_out = sbi_timer_lo_comb;
+    assign sbi_timer_lo_out = sbi_timer_lo_output_comb;
 
-    assign sbi_timer_hi_out = sbi_timer_hi_comb;
+    assign sbi_timer_hi_out = sbi_timer_hi_output_comb;
 
     assign debug_sbi_out = debug_sbi_comb;
 

@@ -9,6 +9,7 @@ module RxRAM #(
     parameter LANE_WIDTH = 'h40
 ,   parameter READ_PORTS = 'h1
 ,   parameter BANK_DEPTH = 'h1000
+,   parameter READ_WIDTH = LANE_WIDTH
  )
  (
     input wire net_clk
@@ -28,7 +29,7 @@ module RxRAM #(
 ,   input wire[READ_PORTS*HANDLE_BITS-1:0] read_handle_in
 ,   input wire[READ_PORTS*LOGICAL_ROW_BITS-1:0] read_word_in
 ,   output wire[READ_PORTS-1:0] read_ready_out
-,   output wire[READ_PORTS*LANE_WIDTH-1:0] read_data_out
+,   output wire[READ_PORTS*READ_WIDTH-1:0] read_data_out
 ,   output wire[READ_PORTS-1:0] read_valid_out
 ,   input wire[READ_PORTS-1:0] read_ready_in
 ,   input wire[READ_PORTS-1:0] release_valid_in
@@ -41,6 +42,7 @@ module RxRAM #(
     localparam  SUBBANKS = 64'h2;
     localparam  PHYSICAL_BANKS = 64'h4;
     localparam  LANE_BYTES = LANE_WIDTH/'h8;
+    localparam  READ_WORDS = READ_WIDTH/LANE_WIDTH;
     localparam  INPUT_BITS = STREAMS*LANE_WIDTH;
     localparam  INPUT_BYTES = STREAMS*LANE_BYTES;
     localparam  LOGICAL_ROWS = BANK_DEPTH*SUBBANKS;
@@ -85,7 +87,7 @@ module RxRAM #(
     reg read_pipe_valid_reg[READ_PORTS];
     reg[4-1:0] read_pipe_bank_reg[READ_PORTS];
     reg read_response_valid_reg[READ_PORTS];
-    reg[LANE_WIDTH-1:0] read_response_data_reg[READ_PORTS];
+    reg[READ_WIDTH-1:0] read_response_data_reg[READ_PORTS];
     reg[READ_RR_BITS-1:0] read_rr_reg[4];
     reg release_error_reg[2];
     reg ingress_error_reg[2];
@@ -94,18 +96,20 @@ module RxRAM #(
     logic[4-1:0] bank_write_valid_comb;
     logic[PHYSICAL_BANKS*LANE_WIDTH-1:0] bank_write_data_comb;
     logic[PHYSICAL_BANKS*PHYSICAL_ROW_BITS-1:0] bank_addr_comb;
+    logic[PHYSICAL_BANKS*PHYSICAL_ROW_BITS-1:0] bank_read_addr_comb;
     logic[4-1:0] bank_read_comb;
     logic[READ_PORTS-1:0] read_ready_comb;
     logic[2-1:0] input_ready_comb;
     logic[2-1:0] packet_valid_comb;
     logic[STREAMS*HANDLE_BITS-1:0] packet_handle_comb;
     logic[28-1:0] packet_length_comb;
-    logic[READ_PORTS*LANE_WIDTH-1:0] read_data_comb;
+    logic[READ_PORTS*READ_WIDTH-1:0] read_data_comb;
     logic[READ_PORTS-1:0] read_valid_comb;
 
     // members
     genvar __i;
-    wire[$clog2(BANK_DEPTH)-1:0] banks__addr_in[4];
+    wire[$clog2(BANK_DEPTH)-1:0] banks__write_addr_in[4];
+    wire[$clog2(BANK_DEPTH)-1:0] banks__read_addr_in[4];
     wire[LANE_WIDTH-1:0] banks__data_in[4];
     wire banks__wr_in[4];
     wire banks__rd_in[4];
@@ -120,7 +124,8 @@ module RxRAM #(
             .net_clk(net_clk)
         ,           .l2_clk(l2_clk)
         ,           .reset(reset)
-        ,           .addr_in(banks__addr_in[__i])
+        ,           .write_addr_in(banks__write_addr_in[__i])
+        ,           .read_addr_in(banks__read_addr_in[__i])
         ,           .data_in(banks__data_in[__i])
         ,           .wr_in(banks__wr_in[__i])
         ,           .rd_in(banks__rd_in[__i])
@@ -161,17 +166,13 @@ module RxRAM #(
     logic read_pipe_valid_reg_tmp[READ_PORTS];
     logic[4-1:0] read_pipe_bank_reg_tmp[READ_PORTS];
     logic read_response_valid_reg_tmp[READ_PORTS];
-    logic[LANE_WIDTH-1:0] read_response_data_reg_tmp[READ_PORTS];
+    logic[READ_WIDTH-1:0] read_response_data_reg_tmp[READ_PORTS];
     logic[READ_RR_BITS-1:0] read_rr_reg_tmp[4];
     logic release_error_reg_tmp[2];
     logic ingress_error_reg_tmp[2];
     logic protocol_error_reg_tmp;
     logic storage_full_reg_tmp;
 
-
-    function logic[15:0] released_rows (input logic[15:0] length);
-        return unsigned'(16'((((((length + 'hF)) >>> 'h4)) <<< 'h1)));
-    endfunction
 
     function logic[31:0] request_handle (
         input logic[16-1:0] handles
@@ -205,6 +206,275 @@ module RxRAM #(
         handle=request_handle(handles, port);
         logical=request_logical_row(handles, words, port);
         return (((handle & 'h7))*'h2) + ((logical & 'h1));
+    endfunction
+
+    function RxRAMWritePair write_pair_for_stream (input logic[31:0] stream);
+        RxRAMWritePair pair;
+        pair = 0;
+        pair.data0 = write_data0_reg[stream];
+        pair.data1 = write_data1_reg[stream];
+        pair.row0 = write_row0_reg[stream];
+        pair.row1 = write_row1_reg[stream];
+        pair.valid0 = write_valid0_reg[stream];
+        pair.valid1 = write_valid1_reg[stream];
+        return pair;
+    endfunction
+
+    always_comb begin : bank_write_valid_comb_func  // bank_write_valid_comb_func
+        logic[31:0] stream;
+        logic[31:0] physical0;
+        logic[31:0] physical1;
+        RxRAMWritePair pair;
+        bank_write_valid_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            pair = write_pair_for_stream(stream);
+            physical0=(stream*'h2) + ((unsigned'(32'(pair.row0)) & 'h1));
+            physical1=(stream*'h2) + ((unsigned'(32'(pair.row1)) & 'h1));
+            if (pair.valid0) begin
+                bank_write_valid_comb[physical0] = 'h1;
+            end
+            if (pair.valid1) begin
+                bank_write_valid_comb[physical1] = 'h1;
+            end
+        end
+    end
+
+    always_comb begin : bank_write_data_comb_func  // bank_write_data_comb_func
+        logic[31:0] stream;
+        logic[31:0] _bit;
+        logic[31:0] physical0;
+        logic[31:0] physical1;
+        RxRAMWritePair pair;
+        bank_write_data_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            pair = write_pair_for_stream(stream);
+            physical0=(stream*'h2) + ((unsigned'(32'(pair.row0)) & 'h1));
+            physical1=(stream*'h2) + ((unsigned'(32'(pair.row1)) & 'h1));
+            if (pair.valid0) begin
+                for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
+                    bank_write_data_comb[(physical0*LANE_WIDTH) + _bit] = pair.data0[_bit];
+                end
+            end
+            if (pair.valid1) begin
+                for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
+                    bank_write_data_comb[(physical1*LANE_WIDTH) + _bit] = pair.data1[_bit];
+                end
+            end
+        end
+    end
+
+    always_comb begin : read_ready_comb_func  // read_ready_comb_func
+        logic[31:0] bank;
+        logic[31:0] offset;
+        logic[31:0] port;
+        logic[31:0] candidate;
+        logic response_free;
+        logic pipe_free;
+        logic found;
+        read_ready_comb = 'h0;
+        candidate='h0;
+        response_free=0;
+        pipe_free=0;
+        for (bank='h0;bank < PHYSICAL_BANKS;bank+=READ_WORDS) begin
+            found=0;
+            for (offset='h0;offset < READ_PORTS;offset=offset+1) begin
+                candidate=((unsigned'(32'(read_rr_reg[bank])) + offset)) % READ_PORTS;
+                response_free=!read_response_valid_reg[candidate] || read_ready_in[candidate];
+                pipe_free=!read_pipe_valid_reg[candidate] || response_free;
+                if (((!found && pipe_free) && read_valid_in[candidate]) && (((READ_WORDS == 'h1)) ? ((request_physical_bank(read_handle_in, read_word_in, candidate) == bank)) : ((((request_physical_bank(read_handle_in, read_word_in, candidate) & ~'h1)) == bank)))) begin
+                    read_ready_comb[candidate] = 'h1;
+                    found=1;
+                end
+            end
+        end
+    end
+
+    always_comb begin : bank_read_comb_func  // bank_read_comb_func
+        logic[31:0] port;
+        logic[31:0] bank;
+        bank_read_comb = 'h0;
+        bank='h0;
+        for (port='h0;port < READ_PORTS;port=port+1) begin
+            if (read_valid_in[port] && read_ready_comb[port]) begin
+                bank=request_physical_bank(read_handle_in, read_word_in, port);
+                bank_read_comb[bank] = 'h1;
+                if (READ_WORDS == 'h2) begin
+                    bank_read_comb[bank ^ 'h1] = 'h1;
+                end
+            end
+        end
+    end
+
+    always_comb begin : bank_addr_comb_func  // bank_addr_comb_func
+        logic[31:0] stream;
+        logic[31:0] port;
+        logic[31:0] bank;
+        logic[31:0] _bit;
+        logic[31:0] physical0;
+        logic[31:0] physical1;
+        logic[31:0] row;
+        RxRAMWritePair pair;
+        bank_addr_comb = 'h0;
+        bank='h0;
+        row='h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            pair = write_pair_for_stream(stream);
+            physical0=(stream*'h2) + ((unsigned'(32'(pair.row0)) & 'h1));
+            physical1=(stream*'h2) + ((unsigned'(32'(pair.row1)) & 'h1));
+            if (pair.valid0) begin
+                row=unsigned'(32'(pair.row0)) >>> 'h1;
+                for (_bit='h0;_bit < PHYSICAL_ROW_BITS;_bit=_bit+1) begin
+                    bank_addr_comb[(physical0*PHYSICAL_ROW_BITS) + _bit] = ((row >>> _bit)) & 'h1;
+                end
+            end
+            if (pair.valid1) begin
+                row=unsigned'(32'(pair.row1)) >>> 'h1;
+                for (_bit='h0;_bit < PHYSICAL_ROW_BITS;_bit=_bit+1) begin
+                    bank_addr_comb[(physical1*PHYSICAL_ROW_BITS) + _bit] = ((row >>> _bit)) & 'h1;
+                end
+            end
+        end
+    end
+
+    always_comb begin : bank_read_addr_comb_func  // bank_read_addr_comb_func
+        logic[31:0] port;
+        logic[31:0] bank;
+        logic[31:0] _bit;
+        logic[31:0] row;
+        bank_read_addr_comb = 'h0;
+        bank='h0;
+        row='h0;
+        for (port='h0;port < READ_PORTS;port=port+1) begin
+            if (read_valid_in[port] && read_ready_comb[port]) begin
+                bank=request_physical_bank(read_handle_in, read_word_in, port);
+                if (READ_WORDS == 'h2) begin
+                    bank&=~'h1;
+                end
+                row=request_logical_row(read_handle_in, read_word_in, port) >>> 'h1;
+                for (_bit='h0;_bit < PHYSICAL_ROW_BITS;_bit=_bit+1) begin
+                    bank_read_addr_comb[(bank*PHYSICAL_ROW_BITS) + _bit] = ((row >>> _bit)) & 'h1;
+                end
+                if (READ_WORDS == 'h2) begin
+                    for (_bit='h0;_bit < PHYSICAL_ROW_BITS;_bit=_bit+1) begin
+                        bank_read_addr_comb[(((bank + 'h1))*PHYSICAL_ROW_BITS) + _bit] = ((row >>> _bit)) & 'h1;
+                    end
+                end
+            end
+        end
+    end
+
+    always_comb begin : input_ready_comb_func  // input_ready_comb_func
+        logic[31:0] stream;
+        logic[31:0] count;
+        logic[31:0] occupied;
+        input_ready_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            count=unsigned'(32'(completion_count_reg[stream]));
+            if ((count != 'h0) && packet_ready_in[stream]) begin
+                --count;
+            end
+            occupied=unsigned'(32'(used_rows_reg[stream])) + unsigned'(32'(allocated_rows_reg[stream]));
+            input_ready_comb[stream] = (count < COMPLETION_FIFO_WORDS) && ((scan_in_frame_reg[stream] || occupied<=(LOGICAL_ROWS - MAX_PACKET_ROWS)));
+        end
+    end
+
+    always_comb begin : packet_valid_comb_func  // packet_valid_comb_func
+        logic[31:0] stream;
+        packet_valid_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            packet_valid_comb[stream] = unsigned'(32'(completion_count_reg[stream])) != 'h0;
+        end
+    end
+
+    always_comb begin : packet_handle_comb_func  // packet_handle_comb_func
+        logic[31:0] stream;
+        logic[31:0] _bit;
+        logic[31:0] head;
+        packet_handle_comb = 'h0;
+        head='h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            if (unsigned'(32'(completion_count_reg[stream])) != 'h0) begin
+                head=unsigned'(32'(completion_head_reg[stream]));
+                for (_bit='h0;_bit < HANDLE_BITS;_bit=_bit+1) begin
+                    packet_handle_comb[(stream*HANDLE_BITS) + _bit] = completion_handle_reg[stream][head][_bit];
+                end
+            end
+        end
+    end
+
+    always_comb begin : packet_length_comb_func  // packet_length_comb_func
+        logic[31:0] stream;
+        logic[31:0] _bit;
+        logic[31:0] head;
+        packet_length_comb = 'h0;
+        head='h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            if (unsigned'(32'(completion_count_reg[stream])) != 'h0) begin
+                head=unsigned'(32'(completion_head_reg[stream]));
+                for (_bit='h0;_bit < FRAME_LENGTH_BITS;_bit=_bit+1) begin
+                    packet_length_comb[(stream*FRAME_LENGTH_BITS) + _bit] = completion_length_reg[stream][head][_bit];
+                end
+            end
+        end
+    end
+
+    always_comb begin : read_data_comb_func  // read_data_comb_func
+        logic[31:0] port;
+        logic[31:0] _bit;
+        read_data_comb = 'h0;
+        for (port='h0;port < READ_PORTS;port=port+1) begin
+            for (_bit='h0;_bit < READ_WIDTH;_bit=_bit+1) begin
+                read_data_comb[(port*READ_WIDTH) + _bit] = read_response_data_reg[port][_bit];
+            end
+        end
+    end
+
+    always_comb begin : read_valid_comb_func  // read_valid_comb_func
+        logic[31:0] port;
+        read_valid_comb = 'h0;
+        for (port='h0;port < READ_PORTS;port=port+1) begin
+            read_valid_comb[port] = read_response_valid_reg[port];
+        end
+    end
+
+    generate  // _assign
+        assign banks__write_addr_in['h0] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_addr_comb['h0*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
+        assign banks__read_addr_in['h0] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_read_addr_comb['h0*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
+        assign banks__data_in['h0] = bank_write_data_comb['h0*LANE_WIDTH +:(('h0*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h0*LANE_WIDTH + 1];
+        assign banks__wr_in['h0] = bank_write_valid_comb['h0];
+        assign banks__rd_in['h0] = bank_read_comb['h0];
+        assign banks__id_in['h0]='h0;
+        assign banks__write_addr_in['h1] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_addr_comb['h1*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
+        assign banks__read_addr_in['h1] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_read_addr_comb['h1*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
+        assign banks__data_in['h1] = bank_write_data_comb['h1*LANE_WIDTH +:(('h1*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h1*LANE_WIDTH + 1];
+        assign banks__wr_in['h1] = bank_write_valid_comb['h1];
+        assign banks__rd_in['h1] = bank_read_comb['h1];
+        assign banks__id_in['h1]='h1;
+        assign banks__write_addr_in['h2] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_addr_comb['h2*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
+        assign banks__read_addr_in['h2] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_read_addr_comb['h2*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
+        assign banks__data_in['h2] = bank_write_data_comb['h2*LANE_WIDTH +:(('h2*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h2*LANE_WIDTH + 1];
+        assign banks__wr_in['h2] = bank_write_valid_comb['h2];
+        assign banks__rd_in['h2] = bank_read_comb['h2];
+        assign banks__id_in['h2]='h2;
+        assign banks__write_addr_in['h3] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_addr_comb['h3*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
+        assign banks__read_addr_in['h3] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_read_addr_comb['h3*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
+        assign banks__data_in['h3] = bank_write_data_comb['h3*LANE_WIDTH +:(('h3*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h3*LANE_WIDTH + 1];
+        assign banks__wr_in['h3] = bank_write_valid_comb['h3];
+        assign banks__rd_in['h3] = bank_read_comb['h3];
+        assign banks__id_in['h3]='h3;
+        assign ready_out = input_ready_comb;
+        assign packet_valid_out = packet_valid_comb;
+        assign packet_handle_out = packet_handle_comb;
+        assign packet_length_out = packet_length_comb;
+        assign read_ready_out = read_ready_comb;
+        assign read_data_out = read_data_comb;
+        assign read_valid_out = read_valid_comb;
+        assign protocol_error_out = protocol_error_reg;
+        assign storage_full_out = storage_full_reg;
+    endgenerate
+
+    function logic[15:0] released_rows (input logic[15:0] length);
+        return unsigned'(16'((((((length + 'hF)) >>> 'h4)) <<< 'h1)));
     endfunction
 
     function RxRAMScanEvent scan_input_for_stream (input logic[31:0] stream);
@@ -293,267 +563,37 @@ module RxRAM #(
         return _event;
     endfunction
 
-    function RxRAMWritePair write_pair_for_stream (input logic[31:0] stream);
-        RxRAMWritePair pair;
-        pair = 0;
-        pair.data0 = write_data0_reg[stream];
-        pair.data1 = write_data1_reg[stream];
-        pair.row0 = write_row0_reg[stream];
-        pair.row1 = write_row1_reg[stream];
-        pair.valid0 = write_valid0_reg[stream];
-        pair.valid1 = write_valid1_reg[stream];
-        return pair;
-    endfunction
-
-    always_comb begin : bank_write_valid_comb_func  // bank_write_valid_comb_func
-        logic[31:0] stream;
-        logic[31:0] physical0;
-        logic[31:0] physical1;
-        RxRAMWritePair pair;
-        bank_write_valid_comb = 'h0;
-        for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            pair = write_pair_for_stream(stream);
-            physical0=(stream*'h2) + ((unsigned'(32'(pair.row0)) & 'h1));
-            physical1=(stream*'h2) + ((unsigned'(32'(pair.row1)) & 'h1));
-            if (pair.valid0) begin
-                bank_write_valid_comb[physical0] = 'h1;
-            end
-            if (pair.valid1) begin
-                bank_write_valid_comb[physical1] = 'h1;
-            end
-        end
-    end
-
-    always_comb begin : bank_write_data_comb_func  // bank_write_data_comb_func
-        logic[31:0] stream;
-        logic[31:0] _bit;
-        logic[31:0] physical0;
-        logic[31:0] physical1;
-        RxRAMWritePair pair;
-        bank_write_data_comb = 'h0;
-        for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            pair = write_pair_for_stream(stream);
-            physical0=(stream*'h2) + ((unsigned'(32'(pair.row0)) & 'h1));
-            physical1=(stream*'h2) + ((unsigned'(32'(pair.row1)) & 'h1));
-            if (pair.valid0) begin
-                for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-                    bank_write_data_comb[(physical0*LANE_WIDTH) + _bit] = pair.data0[_bit];
-                end
-            end
-            if (pair.valid1) begin
-                for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-                    bank_write_data_comb[(physical1*LANE_WIDTH) + _bit] = pair.data1[_bit];
-                end
-            end
-        end
-    end
-
-    always_comb begin : read_ready_comb_func  // read_ready_comb_func
-        logic[31:0] bank;
-        logic[31:0] offset;
-        logic[31:0] port;
-        logic[31:0] candidate;
-        logic response_free;
-        logic pipe_free;
-        logic found;
-        read_ready_comb = 'h0;
-        candidate='h0;
-        response_free=0;
-        pipe_free=0;
-        for (bank='h0;bank < PHYSICAL_BANKS;bank=bank+1) begin
-            found=0;
-            if (!bank_write_valid_comb[bank]) begin
-                for (offset='h0;offset < READ_PORTS;offset=offset+1) begin
-                    candidate=((unsigned'(32'(read_rr_reg[bank])) + offset)) % READ_PORTS;
-                    response_free=!read_response_valid_reg[candidate] || read_ready_in[candidate];
-                    pipe_free=!read_pipe_valid_reg[candidate] || response_free;
-                    if (((!found && pipe_free) && read_valid_in[candidate]) && (request_physical_bank(read_handle_in, read_word_in, candidate) == bank)) begin
-                        read_ready_comb[candidate] = 'h1;
-                        found=1;
-                    end
-                end
-            end
-        end
-    end
-
-    always_comb begin : bank_read_comb_func  // bank_read_comb_func
-        logic[31:0] port;
-        logic[31:0] bank;
-        bank_read_comb = 'h0;
-        bank='h0;
-        for (port='h0;port < READ_PORTS;port=port+1) begin
-            if (read_valid_in[port] && read_ready_comb[port]) begin
-                bank=request_physical_bank(read_handle_in, read_word_in, port);
-                bank_read_comb[bank] = 'h1;
-            end
-        end
-    end
-
-    always_comb begin : bank_addr_comb_func  // bank_addr_comb_func
-        logic[31:0] stream;
-        logic[31:0] port;
-        logic[31:0] bank;
-        logic[31:0] _bit;
-        logic[31:0] physical0;
-        logic[31:0] physical1;
-        logic[31:0] row;
-        RxRAMWritePair pair;
-        bank_addr_comb = 'h0;
-        bank='h0;
-        row='h0;
-        for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            pair = write_pair_for_stream(stream);
-            physical0=(stream*'h2) + ((unsigned'(32'(pair.row0)) & 'h1));
-            physical1=(stream*'h2) + ((unsigned'(32'(pair.row1)) & 'h1));
-            if (pair.valid0) begin
-                row=unsigned'(32'(pair.row0)) >>> 'h1;
-                for (_bit='h0;_bit < PHYSICAL_ROW_BITS;_bit=_bit+1) begin
-                    bank_addr_comb[(physical0*PHYSICAL_ROW_BITS) + _bit] = ((row >>> _bit)) & 'h1;
-                end
-            end
-            if (pair.valid1) begin
-                row=unsigned'(32'(pair.row1)) >>> 'h1;
-                for (_bit='h0;_bit < PHYSICAL_ROW_BITS;_bit=_bit+1) begin
-                    bank_addr_comb[(physical1*PHYSICAL_ROW_BITS) + _bit] = ((row >>> _bit)) & 'h1;
-                end
-            end
-        end
-        for (port='h0;port < READ_PORTS;port=port+1) begin
-            if (read_valid_in[port] && read_ready_comb[port]) begin
-                bank=request_physical_bank(read_handle_in, read_word_in, port);
-                if (!bank_write_valid_comb[bank]) begin
-                    row=request_logical_row(read_handle_in, read_word_in, port) >>> 'h1;
-                    for (_bit='h0;_bit < PHYSICAL_ROW_BITS;_bit=_bit+1) begin
-                        bank_addr_comb[(bank*PHYSICAL_ROW_BITS) + _bit] = ((row >>> _bit)) & 'h1;
-                    end
-                end
-            end
-        end
-    end
-
-    always_comb begin : input_ready_comb_func  // input_ready_comb_func
-        logic[31:0] stream;
-        logic[31:0] count;
-        logic[31:0] occupied;
-        input_ready_comb = 'h0;
-        for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            count=unsigned'(32'(completion_count_reg[stream]));
-            if ((count != 'h0) && packet_ready_in[stream]) begin
-                --count;
-            end
-            occupied=unsigned'(32'(used_rows_reg[stream])) + unsigned'(32'(allocated_rows_reg[stream]));
-            input_ready_comb[stream] = (count < COMPLETION_FIFO_WORDS) && ((scan_in_frame_reg[stream] || occupied<=(LOGICAL_ROWS - MAX_PACKET_ROWS)));
-        end
-    end
-
-    always_comb begin : packet_valid_comb_func  // packet_valid_comb_func
-        logic[31:0] stream;
-        packet_valid_comb = 'h0;
-        for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            packet_valid_comb[stream] = unsigned'(32'(completion_count_reg[stream])) != 'h0;
-        end
-    end
-
-    always_comb begin : packet_handle_comb_func  // packet_handle_comb_func
-        logic[31:0] stream;
-        logic[31:0] _bit;
-        logic[31:0] head;
-        packet_handle_comb = 'h0;
-        head='h0;
-        for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            if (unsigned'(32'(completion_count_reg[stream])) != 'h0) begin
-                head=unsigned'(32'(completion_head_reg[stream]));
-                for (_bit='h0;_bit < HANDLE_BITS;_bit=_bit+1) begin
-                    packet_handle_comb[(stream*HANDLE_BITS) + _bit] = completion_handle_reg[stream][head][_bit];
-                end
-            end
-        end
-    end
-
-    always_comb begin : packet_length_comb_func  // packet_length_comb_func
-        logic[31:0] stream;
-        logic[31:0] _bit;
-        logic[31:0] head;
-        packet_length_comb = 'h0;
-        head='h0;
-        for (stream='h0;stream < STREAMS;stream=stream+1) begin
-            if (unsigned'(32'(completion_count_reg[stream])) != 'h0) begin
-                head=unsigned'(32'(completion_head_reg[stream]));
-                for (_bit='h0;_bit < FRAME_LENGTH_BITS;_bit=_bit+1) begin
-                    packet_length_comb[(stream*FRAME_LENGTH_BITS) + _bit] = completion_length_reg[stream][head][_bit];
-                end
-            end
-        end
-    end
-
-    always_comb begin : read_data_comb_func  // read_data_comb_func
-        logic[31:0] port;
-        logic[31:0] _bit;
-        read_data_comb = 'h0;
-        for (port='h0;port < READ_PORTS;port=port+1) begin
-            for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-                read_data_comb[(port*LANE_WIDTH) + _bit] = read_response_data_reg[port][_bit];
-            end
-        end
-    end
-
-    always_comb begin : read_valid_comb_func  // read_valid_comb_func
-        logic[31:0] port;
-        read_valid_comb = 'h0;
-        for (port='h0;port < READ_PORTS;port=port+1) begin
-            read_valid_comb[port] = read_response_valid_reg[port];
-        end
-    end
-
-    function logic[64-1:0] read_bank_data (input logic[31:0] bank);
-        logic[64-1:0] value;
+    function logic[128-1:0] read_bank_data (input logic[31:0] bank);
+        logic[128-1:0] value;
+        logic[31:0] first;
         value = 'h0;
-        if (bank == 'h0) begin
-            value = banks__q_out['h0];
+        first=(READ_WORDS == 'h2) ? ((bank & ~'h1)) : (bank);
+        if (first == 'h0) begin
+            value['h0 +:LANE_WIDTH - 'h1 - 'h0 + 1] = banks__q_out['h0];
         end
-        if (bank == 'h1) begin
-            value = banks__q_out['h1];
+        if ((READ_WORDS == 'h2) && ((first + 'h1) == 'h0)) begin
+            value[LANE_WIDTH +:('h2*LANE_WIDTH) - 'h1 - LANE_WIDTH + 1] = banks__q_out['h0];
         end
-        if (bank == 'h2) begin
-            value = banks__q_out['h2];
+        if (first == 'h1) begin
+            value['h0 +:LANE_WIDTH - 'h1 - 'h0 + 1] = banks__q_out['h1];
         end
-        if (bank == 'h3) begin
-            value = banks__q_out['h3];
+        if ((READ_WORDS == 'h2) && ((first + 'h1) == 'h1)) begin
+            value[LANE_WIDTH +:('h2*LANE_WIDTH) - 'h1 - LANE_WIDTH + 1] = banks__q_out['h1];
+        end
+        if (first == 'h2) begin
+            value['h0 +:LANE_WIDTH - 'h1 - 'h0 + 1] = banks__q_out['h2];
+        end
+        if ((READ_WORDS == 'h2) && ((first + 'h1) == 'h2)) begin
+            value[LANE_WIDTH +:('h2*LANE_WIDTH) - 'h1 - LANE_WIDTH + 1] = banks__q_out['h2];
+        end
+        if (first == 'h3) begin
+            value['h0 +:LANE_WIDTH - 'h1 - 'h0 + 1] = banks__q_out['h3];
+        end
+        if ((READ_WORDS == 'h2) && ((first + 'h1) == 'h3)) begin
+            value[LANE_WIDTH +:('h2*LANE_WIDTH) - 'h1 - LANE_WIDTH + 1] = banks__q_out['h3];
         end
         return value;
     endfunction
-
-    generate  // _assign
-        assign banks__addr_in['h0] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_addr_comb['h0*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
-        assign banks__data_in['h0] = bank_write_data_comb['h0*LANE_WIDTH +:(('h0*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h0*LANE_WIDTH + 1];
-        assign banks__wr_in['h0] = bank_write_valid_comb['h0];
-        assign banks__rd_in['h0] = bank_read_comb['h0];
-        assign banks__id_in['h0]='h0;
-        assign banks__addr_in['h1] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_addr_comb['h1*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
-        assign banks__data_in['h1] = bank_write_data_comb['h1*LANE_WIDTH +:(('h1*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h1*LANE_WIDTH + 1];
-        assign banks__wr_in['h1] = bank_write_valid_comb['h1];
-        assign banks__rd_in['h1] = bank_read_comb['h1];
-        assign banks__id_in['h1]='h1;
-        assign banks__addr_in['h2] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_addr_comb['h2*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
-        assign banks__data_in['h2] = bank_write_data_comb['h2*LANE_WIDTH +:(('h2*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h2*LANE_WIDTH + 1];
-        assign banks__wr_in['h2] = bank_write_valid_comb['h2];
-        assign banks__rd_in['h2] = bank_read_comb['h2];
-        assign banks__id_in['h2]='h2;
-        assign banks__addr_in['h3] = unsigned'(PHYSICAL_ROW_BITS'(unsigned'(PHYSICAL_ROW_BITS'(bank_addr_comb['h3*PHYSICAL_ROW_BITS +:(0 + PHYSICAL_ROW_BITS) - 'h1 - 0 + 1]))));
-        assign banks__data_in['h3] = bank_write_data_comb['h3*LANE_WIDTH +:(('h3*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h3*LANE_WIDTH + 1];
-        assign banks__wr_in['h3] = bank_write_valid_comb['h3];
-        assign banks__rd_in['h3] = bank_read_comb['h3];
-        assign banks__id_in['h3]='h3;
-        assign ready_out = input_ready_comb;
-        assign packet_valid_out = packet_valid_comb;
-        assign packet_handle_out = packet_handle_comb;
-        assign packet_length_out = packet_length_comb;
-        assign read_ready_out = read_ready_comb;
-        assign read_data_out = read_data_comb;
-        assign read_valid_out = read_valid_comb;
-        assign protocol_error_out = protocol_error_reg;
-        assign storage_full_out = storage_full_reg;
-    endgenerate
 
     task _work_net_clk (input logic reset);
     begin: _work_net_clk

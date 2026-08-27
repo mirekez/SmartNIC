@@ -20,11 +20,14 @@ import L1LookupComb_pkg::*;
 import L1RefillLinesComb_pkg::*;
 import L1CpuResponseComb_pkg::*;
 import L1CachePerf_pkg::*;
+import L1SelectedLineState_pkg::*;
 import L1RequestGeometryComb_pkg::*;
 import L1MemDriver_pkg::*;
 import L1RequestState_pkg::*;
 import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
+import L1LookupState_pkg::*;
+import TribeSbiDecodeState_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
 import Axi4WriteAddressReady_pkg::*;
@@ -55,11 +58,19 @@ import CacheResponse_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 import DescriptorFetcher_Register_pkg::*;
-import PacketDMA_Command_pkg::*;
-import PacketDMA_Register_pkg::*;
+import PacketDMA16_14_64_Command_pkg::*;
+import PacketDMA16_14_64_BackingBeat_pkg::*;
+import PacketDMA16_14_64_Register_pkg::*;
 import PacketDmaState_pkg::*;
 import PacketDmaError_pkg::*;
 import PacketDmaOperation_pkg::*;
+import PacketDmaPrefetchState_pkg::*;
+import PacketDMA16_14_64_BackingState_pkg::*;
+import PacketDMA_Command_pkg::*;
+import PacketDMA_BackingBeat_pkg::*;
+import PacketDMA_Register_pkg::*;
+import PacketDMA_BackingState_pkg::*;
+import Axi4WriteArbiterState_pkg::*;
 import CPU_pkg::*;
 
 
@@ -105,6 +116,7 @@ module Processing #(
 ,   output wire[CPU_COUNT*'h20-1:0] to_network_keep_out
 ,   output wire[CPU_COUNT-1:0] to_network_sop_out
 ,   output wire[CPU_COUNT-1:0] to_network_eop_out
+,   output wire[CPU_COUNT*'h8-1:0] to_network_port_out
 ,   input wire[CPU_COUNT-1:0] to_network_ready_in
 ,   output wire ddr__awvalid_out[CPU_COUNT]
 ,   input wire ddr__awready_in[CPU_COUNT]
@@ -159,6 +171,7 @@ module Processing #(
     logic[CPU_COUNT*'h20-1:0] to_network_keep_comb;
     logic[CPU_COUNT-1:0] to_network_sop_comb;
     logic[CPU_COUNT-1:0] to_network_eop_comb;
+    logic[CPU_COUNT*'h8-1:0] to_network_port_comb;
 
     // members
     genvar __i;
@@ -183,6 +196,12 @@ module Processing #(
     wire[256-1:0] cpu__dma_in__rdata_out[CPU_COUNT];
     wire cpu__dma_in__rlast_out[CPU_COUNT];
     wire[4-1:0] cpu__dma_in__rid_out[CPU_COUNT];
+    wire cpu__dma_line_valid_in[CPU_COUNT];
+    wire[32-1:0] cpu__dma_line_addr_in[CPU_COUNT];
+    wire[256-1:0] cpu__dma_line_data_in[CPU_COUNT];
+    wire[32-1:0] cpu__dma_line_keep_in[CPU_COUNT];
+    wire cpu__dma_line_eop_in[CPU_COUNT];
+    wire cpu__dma_line_ready_out[CPU_COUNT];
     wire cpu__memory__awvalid_out[CPU_COUNT];
     wire cpu__memory__awready_in[CPU_COUNT];
     wire[31-1:0] cpu__memory__awaddr_out[CPU_COUNT];
@@ -260,6 +279,12 @@ module Processing #(
         ,           .dma_in__rdata_out(cpu__dma_in__rdata_out[__i])
         ,           .dma_in__rlast_out(cpu__dma_in__rlast_out[__i])
         ,           .dma_in__rid_out(cpu__dma_in__rid_out[__i])
+        ,           .dma_line_valid_in(cpu__dma_line_valid_in[__i])
+        ,           .dma_line_addr_in(cpu__dma_line_addr_in[__i])
+        ,           .dma_line_data_in(cpu__dma_line_data_in[__i])
+        ,           .dma_line_keep_in(cpu__dma_line_keep_in[__i])
+        ,           .dma_line_eop_in(cpu__dma_line_eop_in[__i])
+        ,           .dma_line_ready_out(cpu__dma_line_ready_out[__i])
         ,           .memory__awvalid_out(cpu__memory__awvalid_out[__i])
         ,           .memory__awready_in(cpu__memory__awready_in[__i])
         ,           .memory__awaddr_out(cpu__memory__awaddr_out[__i])
@@ -324,6 +349,8 @@ module Processing #(
     wire[HANDLE_BITS-1:0] descriptor_fetcher__packet_command_handle_out[CPU_COUNT];
     wire[14-1:0] descriptor_fetcher__packet_command_length_out[CPU_COUNT];
     wire descriptor_fetcher__packet_command_system_out[CPU_COUNT];
+    wire descriptor_fetcher__packet_command_cache_out[CPU_COUNT];
+    wire[32-1:0] descriptor_fetcher__packet_command_destination_out[CPU_COUNT];
     wire descriptor_fetcher__mmio__awvalid_in[CPU_COUNT];
     wire descriptor_fetcher__mmio__awready_out[CPU_COUNT];
     wire[32-1:0] descriptor_fetcher__mmio__awaddr_in[CPU_COUNT];
@@ -348,6 +375,7 @@ module Processing #(
     wire descriptor_fetcher__descriptor_available_out[CPU_COUNT];
     wire[$clog2('h4 + 'h1)-1:0] descriptor_fetcher__descriptor_count_out[CPU_COUNT];
     wire descriptor_fetcher__prefetch_enabled_out[CPU_COUNT];
+    wire descriptor_fetcher__auto_l2_enabled_out[CPU_COUNT];
     wire descriptor_fetcher__protocol_error_out[CPU_COUNT];
     generate
     for (__i=0; __i < CPU_COUNT; __i = __i + 1) begin
@@ -372,6 +400,8 @@ module Processing #(
         ,           .packet_command_handle_out(descriptor_fetcher__packet_command_handle_out[__i])
         ,           .packet_command_length_out(descriptor_fetcher__packet_command_length_out[__i])
         ,           .packet_command_system_out(descriptor_fetcher__packet_command_system_out[__i])
+        ,           .packet_command_cache_out(descriptor_fetcher__packet_command_cache_out[__i])
+        ,           .packet_command_destination_out(descriptor_fetcher__packet_command_destination_out[__i])
         ,           .mmio__awvalid_in(descriptor_fetcher__mmio__awvalid_in[__i])
         ,           .mmio__awready_out(descriptor_fetcher__mmio__awready_out[__i])
         ,           .mmio__awaddr_in(descriptor_fetcher__mmio__awaddr_in[__i])
@@ -396,6 +426,7 @@ module Processing #(
         ,           .descriptor_available_out(descriptor_fetcher__descriptor_available_out[__i])
         ,           .descriptor_count_out(descriptor_fetcher__descriptor_count_out[__i])
         ,           .prefetch_enabled_out(descriptor_fetcher__prefetch_enabled_out[__i])
+        ,           .auto_l2_enabled_out(descriptor_fetcher__auto_l2_enabled_out[__i])
         ,           .protocol_error_out(descriptor_fetcher__protocol_error_out[__i])
         );
     end
@@ -442,41 +473,77 @@ module Processing #(
     wire[256-1:0] packet_dma__l2_dma__rdata_in[CPU_COUNT];
     wire packet_dma__l2_dma__rlast_in[CPU_COUNT];
     wire[4-1:0] packet_dma__l2_dma__rid_in[CPU_COUNT];
+    wire packet_dma__backing_dma__awvalid_out[CPU_COUNT];
+    wire packet_dma__backing_dma__awready_in[CPU_COUNT];
+    wire[31-1:0] packet_dma__backing_dma__awaddr_out[CPU_COUNT];
+    wire[4-1:0] packet_dma__backing_dma__awid_out[CPU_COUNT];
+    wire packet_dma__backing_dma__wvalid_out[CPU_COUNT];
+    wire packet_dma__backing_dma__wready_in[CPU_COUNT];
+    wire[256-1:0] packet_dma__backing_dma__wdata_out[CPU_COUNT];
+    wire[256/'h8-1:0] packet_dma__backing_dma__wstrb_out[CPU_COUNT];
+    wire packet_dma__backing_dma__wlast_out[CPU_COUNT];
+    wire packet_dma__backing_dma__bvalid_in[CPU_COUNT];
+    wire packet_dma__backing_dma__bready_out[CPU_COUNT];
+    wire[4-1:0] packet_dma__backing_dma__bid_in[CPU_COUNT];
+    wire packet_dma__backing_dma__arvalid_out[CPU_COUNT];
+    wire packet_dma__backing_dma__arready_in[CPU_COUNT];
+    wire[31-1:0] packet_dma__backing_dma__araddr_out[CPU_COUNT];
+    wire[4-1:0] packet_dma__backing_dma__arid_out[CPU_COUNT];
+    wire packet_dma__backing_dma__rvalid_in[CPU_COUNT];
+    wire packet_dma__backing_dma__rready_out[CPU_COUNT];
+    wire[256-1:0] packet_dma__backing_dma__rdata_in[CPU_COUNT];
+    wire packet_dma__backing_dma__rlast_in[CPU_COUNT];
+    wire[4-1:0] packet_dma__backing_dma__rid_in[CPU_COUNT];
+    wire packet_dma__l2_line_valid_out[CPU_COUNT];
+    wire['h20-1:0] packet_dma__l2_line_addr_out[CPU_COUNT];
+    wire['h100-1:0] packet_dma__l2_line_data_out[CPU_COUNT];
+    wire['h100/'h8-1:0] packet_dma__l2_line_keep_out[CPU_COUNT];
+    wire packet_dma__l2_line_eop_out[CPU_COUNT];
+    wire packet_dma__l2_line_ready_in[CPU_COUNT];
     wire packet_dma__rx_read_valid_out[CPU_COUNT];
     wire[HANDLE_BITS-1:0] packet_dma__rx_read_handle_out[CPU_COUNT];
     wire[FRAME_LENGTH_BITS-1:0] packet_dma__rx_read_length_out[CPU_COUNT];
     wire packet_dma__rx_read_ready_in[CPU_COUNT];
     wire packet_dma__rx_valid_in[CPU_COUNT];
-    wire[256-1:0] packet_dma__rx_data_in[CPU_COUNT];
-    wire[256/'h8-1:0] packet_dma__rx_keep_in[CPU_COUNT];
+    wire['h100-1:0] packet_dma__rx_data_in[CPU_COUNT];
+    wire['h100/'h8-1:0] packet_dma__rx_keep_in[CPU_COUNT];
     wire packet_dma__rx_sop_in[CPU_COUNT];
     wire packet_dma__rx_eop_in[CPU_COUNT];
     wire packet_dma__rx_ready_out[CPU_COUNT];
     wire packet_dma__system_rx_valid_in[CPU_COUNT];
-    wire[256-1:0] packet_dma__system_rx_data_in[CPU_COUNT];
-    wire[256/'h8-1:0] packet_dma__system_rx_keep_in[CPU_COUNT];
+    wire['h100-1:0] packet_dma__system_rx_data_in[CPU_COUNT];
+    wire['h100/'h8-1:0] packet_dma__system_rx_keep_in[CPU_COUNT];
     wire packet_dma__system_rx_sop_in[CPU_COUNT];
     wire packet_dma__system_rx_eop_in[CPU_COUNT];
     wire packet_dma__system_rx_ready_out[CPU_COUNT];
     wire packet_dma__system_tx_valid_out[CPU_COUNT];
-    wire[256-1:0] packet_dma__system_tx_data_out[CPU_COUNT];
-    wire[256/'h8-1:0] packet_dma__system_tx_keep_out[CPU_COUNT];
+    wire['h100-1:0] packet_dma__system_tx_data_out[CPU_COUNT];
+    wire['h100/'h8-1:0] packet_dma__system_tx_keep_out[CPU_COUNT];
     wire packet_dma__system_tx_sop_out[CPU_COUNT];
     wire packet_dma__system_tx_eop_out[CPU_COUNT];
     wire packet_dma__system_tx_ready_in[CPU_COUNT];
     wire packet_dma__network_tx_valid_out[CPU_COUNT];
-    wire[256-1:0] packet_dma__network_tx_data_out[CPU_COUNT];
-    wire[256/'h8-1:0] packet_dma__network_tx_keep_out[CPU_COUNT];
+    wire['h100-1:0] packet_dma__network_tx_data_out[CPU_COUNT];
+    wire['h100/'h8-1:0] packet_dma__network_tx_keep_out[CPU_COUNT];
     wire packet_dma__network_tx_sop_out[CPU_COUNT];
     wire packet_dma__network_tx_eop_out[CPU_COUNT];
     wire packet_dma__network_tx_ready_in[CPU_COUNT];
+    wire[8-1:0] packet_dma__network_tx_port_out[CPU_COUNT];
     wire packet_dma__busy_out[CPU_COUNT];
     wire packet_dma__command_ready_out[CPU_COUNT];
+    wire packet_dma__descriptor_command_ready_out[CPU_COUNT];
     wire packet_dma__descriptor_command_valid_in[CPU_COUNT];
     wire[HANDLE_BITS-1:0] packet_dma__descriptor_command_handle_in[CPU_COUNT];
     wire[FRAME_LENGTH_BITS-1:0] packet_dma__descriptor_command_length_in[CPU_COUNT];
     wire packet_dma__descriptor_command_system_in[CPU_COUNT];
+    wire packet_dma__descriptor_command_cache_in[CPU_COUNT];
+    wire[32-1:0] packet_dma__descriptor_command_destination_in[CPU_COUNT];
     wire[32-1:0] packet_dma__completed_count_out[CPU_COUNT];
+    wire[32-1:0] packet_dma__cache_completed_count_out[CPU_COUNT];
+    wire[32-1:0] packet_dma__command_completed_count_out[CPU_COUNT];
+    wire[32-1:0] packet_dma__clear_completed_count_out[CPU_COUNT];
+    wire[$clog2('h40 + 'h1)-1:0] packet_dma__backing_pending_count_out[CPU_COUNT];
+    wire[32-1:0] packet_dma__backing_completed_beat_count_out[CPU_COUNT];
     wire[2-1:0] packet_dma__last_operation_out[CPU_COUNT];
     wire packet_dma__protocol_error_out[CPU_COUNT];
     wire[4-1:0] packet_dma__protocol_error_reason_out[CPU_COUNT];
@@ -485,10 +552,13 @@ module Processing #(
         PacketDMA #(
         HANDLE_BITS
 ,       FRAME_LENGTH_BITS
-,       8
-,       32
-,       4
-,       256
+,       'h40
+,       'h20
+,       'h4
+,       'h100
+,       CPU_pkg::EXTERNAL_ADDR_WIDTH
+,       'h40
+,       512
         ) packet_dma (
             .clk(clk)
         ,           .l2_clock(l2_clock)
@@ -535,6 +605,33 @@ module Processing #(
         ,           .l2_dma__rdata_in(packet_dma__l2_dma__rdata_in[__i])
         ,           .l2_dma__rlast_in(packet_dma__l2_dma__rlast_in[__i])
         ,           .l2_dma__rid_in(packet_dma__l2_dma__rid_in[__i])
+        ,           .backing_dma__awvalid_out(packet_dma__backing_dma__awvalid_out[__i])
+        ,           .backing_dma__awready_in(packet_dma__backing_dma__awready_in[__i])
+        ,           .backing_dma__awaddr_out(packet_dma__backing_dma__awaddr_out[__i])
+        ,           .backing_dma__awid_out(packet_dma__backing_dma__awid_out[__i])
+        ,           .backing_dma__wvalid_out(packet_dma__backing_dma__wvalid_out[__i])
+        ,           .backing_dma__wready_in(packet_dma__backing_dma__wready_in[__i])
+        ,           .backing_dma__wdata_out(packet_dma__backing_dma__wdata_out[__i])
+        ,           .backing_dma__wstrb_out(packet_dma__backing_dma__wstrb_out[__i])
+        ,           .backing_dma__wlast_out(packet_dma__backing_dma__wlast_out[__i])
+        ,           .backing_dma__bvalid_in(packet_dma__backing_dma__bvalid_in[__i])
+        ,           .backing_dma__bready_out(packet_dma__backing_dma__bready_out[__i])
+        ,           .backing_dma__bid_in(packet_dma__backing_dma__bid_in[__i])
+        ,           .backing_dma__arvalid_out(packet_dma__backing_dma__arvalid_out[__i])
+        ,           .backing_dma__arready_in(packet_dma__backing_dma__arready_in[__i])
+        ,           .backing_dma__araddr_out(packet_dma__backing_dma__araddr_out[__i])
+        ,           .backing_dma__arid_out(packet_dma__backing_dma__arid_out[__i])
+        ,           .backing_dma__rvalid_in(packet_dma__backing_dma__rvalid_in[__i])
+        ,           .backing_dma__rready_out(packet_dma__backing_dma__rready_out[__i])
+        ,           .backing_dma__rdata_in(packet_dma__backing_dma__rdata_in[__i])
+        ,           .backing_dma__rlast_in(packet_dma__backing_dma__rlast_in[__i])
+        ,           .backing_dma__rid_in(packet_dma__backing_dma__rid_in[__i])
+        ,           .l2_line_valid_out(packet_dma__l2_line_valid_out[__i])
+        ,           .l2_line_addr_out(packet_dma__l2_line_addr_out[__i])
+        ,           .l2_line_data_out(packet_dma__l2_line_data_out[__i])
+        ,           .l2_line_keep_out(packet_dma__l2_line_keep_out[__i])
+        ,           .l2_line_eop_out(packet_dma__l2_line_eop_out[__i])
+        ,           .l2_line_ready_in(packet_dma__l2_line_ready_in[__i])
         ,           .rx_read_valid_out(packet_dma__rx_read_valid_out[__i])
         ,           .rx_read_handle_out(packet_dma__rx_read_handle_out[__i])
         ,           .rx_read_length_out(packet_dma__rx_read_length_out[__i])
@@ -563,13 +660,22 @@ module Processing #(
         ,           .network_tx_sop_out(packet_dma__network_tx_sop_out[__i])
         ,           .network_tx_eop_out(packet_dma__network_tx_eop_out[__i])
         ,           .network_tx_ready_in(packet_dma__network_tx_ready_in[__i])
+        ,           .network_tx_port_out(packet_dma__network_tx_port_out[__i])
         ,           .busy_out(packet_dma__busy_out[__i])
         ,           .command_ready_out(packet_dma__command_ready_out[__i])
+        ,           .descriptor_command_ready_out(packet_dma__descriptor_command_ready_out[__i])
         ,           .descriptor_command_valid_in(packet_dma__descriptor_command_valid_in[__i])
         ,           .descriptor_command_handle_in(packet_dma__descriptor_command_handle_in[__i])
         ,           .descriptor_command_length_in(packet_dma__descriptor_command_length_in[__i])
         ,           .descriptor_command_system_in(packet_dma__descriptor_command_system_in[__i])
+        ,           .descriptor_command_cache_in(packet_dma__descriptor_command_cache_in[__i])
+        ,           .descriptor_command_destination_in(packet_dma__descriptor_command_destination_in[__i])
         ,           .completed_count_out(packet_dma__completed_count_out[__i])
+        ,           .cache_completed_count_out(packet_dma__cache_completed_count_out[__i])
+        ,           .command_completed_count_out(packet_dma__command_completed_count_out[__i])
+        ,           .clear_completed_count_out(packet_dma__clear_completed_count_out[__i])
+        ,           .backing_pending_count_out(packet_dma__backing_pending_count_out[__i])
+        ,           .backing_completed_beat_count_out(packet_dma__backing_completed_beat_count_out[__i])
         ,           .last_operation_out(packet_dma__last_operation_out[__i])
         ,           .protocol_error_out(packet_dma__protocol_error_out[__i])
         ,           .protocol_error_reason_out(packet_dma__protocol_error_reason_out[__i])
@@ -675,6 +781,145 @@ module Processing #(
         ,           .masters_out__rid_in(iomem_mux__masters_out__rid_in[__i])
         ,           .region_base_in(iomem_mux__region_base_in[__i])
         ,           .region_size_in(iomem_mux__region_size_in[__i])
+        );
+    end
+    endgenerate
+    wire ddr_arbiter__cpu__awvalid_in[CPU_COUNT];
+    wire ddr_arbiter__cpu__awready_out[CPU_COUNT];
+    wire[31-1:0] ddr_arbiter__cpu__awaddr_in[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__cpu__awid_in[CPU_COUNT];
+    wire ddr_arbiter__cpu__wvalid_in[CPU_COUNT];
+    wire ddr_arbiter__cpu__wready_out[CPU_COUNT];
+    wire[256-1:0] ddr_arbiter__cpu__wdata_in[CPU_COUNT];
+    wire[256/'h8-1:0] ddr_arbiter__cpu__wstrb_in[CPU_COUNT];
+    wire ddr_arbiter__cpu__wlast_in[CPU_COUNT];
+    wire ddr_arbiter__cpu__bvalid_out[CPU_COUNT];
+    wire ddr_arbiter__cpu__bready_in[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__cpu__bid_out[CPU_COUNT];
+    wire ddr_arbiter__cpu__arvalid_in[CPU_COUNT];
+    wire ddr_arbiter__cpu__arready_out[CPU_COUNT];
+    wire[31-1:0] ddr_arbiter__cpu__araddr_in[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__cpu__arid_in[CPU_COUNT];
+    wire ddr_arbiter__cpu__rvalid_out[CPU_COUNT];
+    wire ddr_arbiter__cpu__rready_in[CPU_COUNT];
+    wire[256-1:0] ddr_arbiter__cpu__rdata_out[CPU_COUNT];
+    wire ddr_arbiter__cpu__rlast_out[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__cpu__rid_out[CPU_COUNT];
+    wire ddr_arbiter__packet__awvalid_in[CPU_COUNT];
+    wire ddr_arbiter__packet__awready_out[CPU_COUNT];
+    wire[31-1:0] ddr_arbiter__packet__awaddr_in[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__packet__awid_in[CPU_COUNT];
+    wire ddr_arbiter__packet__wvalid_in[CPU_COUNT];
+    wire ddr_arbiter__packet__wready_out[CPU_COUNT];
+    wire[256-1:0] ddr_arbiter__packet__wdata_in[CPU_COUNT];
+    wire[256/'h8-1:0] ddr_arbiter__packet__wstrb_in[CPU_COUNT];
+    wire ddr_arbiter__packet__wlast_in[CPU_COUNT];
+    wire ddr_arbiter__packet__bvalid_out[CPU_COUNT];
+    wire ddr_arbiter__packet__bready_in[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__packet__bid_out[CPU_COUNT];
+    wire ddr_arbiter__packet__arvalid_in[CPU_COUNT];
+    wire ddr_arbiter__packet__arready_out[CPU_COUNT];
+    wire[31-1:0] ddr_arbiter__packet__araddr_in[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__packet__arid_in[CPU_COUNT];
+    wire ddr_arbiter__packet__rvalid_out[CPU_COUNT];
+    wire ddr_arbiter__packet__rready_in[CPU_COUNT];
+    wire[256-1:0] ddr_arbiter__packet__rdata_out[CPU_COUNT];
+    wire ddr_arbiter__packet__rlast_out[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__packet__rid_out[CPU_COUNT];
+    wire ddr_arbiter__memory__awvalid_out[CPU_COUNT];
+    wire ddr_arbiter__memory__awready_in[CPU_COUNT];
+    wire[31-1:0] ddr_arbiter__memory__awaddr_out[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__memory__awid_out[CPU_COUNT];
+    wire ddr_arbiter__memory__wvalid_out[CPU_COUNT];
+    wire ddr_arbiter__memory__wready_in[CPU_COUNT];
+    wire[256-1:0] ddr_arbiter__memory__wdata_out[CPU_COUNT];
+    wire[256/'h8-1:0] ddr_arbiter__memory__wstrb_out[CPU_COUNT];
+    wire ddr_arbiter__memory__wlast_out[CPU_COUNT];
+    wire ddr_arbiter__memory__bvalid_in[CPU_COUNT];
+    wire ddr_arbiter__memory__bready_out[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__memory__bid_in[CPU_COUNT];
+    wire ddr_arbiter__memory__arvalid_out[CPU_COUNT];
+    wire ddr_arbiter__memory__arready_in[CPU_COUNT];
+    wire[31-1:0] ddr_arbiter__memory__araddr_out[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__memory__arid_out[CPU_COUNT];
+    wire ddr_arbiter__memory__rvalid_in[CPU_COUNT];
+    wire ddr_arbiter__memory__rready_out[CPU_COUNT];
+    wire[256-1:0] ddr_arbiter__memory__rdata_in[CPU_COUNT];
+    wire ddr_arbiter__memory__rlast_in[CPU_COUNT];
+    wire[4-1:0] ddr_arbiter__memory__rid_in[CPU_COUNT];
+    generate
+    for (__i=0; __i < CPU_COUNT; __i = __i + 1) begin
+        Axi4WriteArbiter #(
+        31
+,       4
+,       256
+        ) ddr_arbiter (
+            .clk(clk)
+        ,           .l2_clock(l2_clock)
+        ,           .reset(reset)
+        ,           .cpu__awvalid_in(ddr_arbiter__cpu__awvalid_in[__i])
+        ,           .cpu__awready_out(ddr_arbiter__cpu__awready_out[__i])
+        ,           .cpu__awaddr_in(ddr_arbiter__cpu__awaddr_in[__i])
+        ,           .cpu__awid_in(ddr_arbiter__cpu__awid_in[__i])
+        ,           .cpu__wvalid_in(ddr_arbiter__cpu__wvalid_in[__i])
+        ,           .cpu__wready_out(ddr_arbiter__cpu__wready_out[__i])
+        ,           .cpu__wdata_in(ddr_arbiter__cpu__wdata_in[__i])
+        ,           .cpu__wstrb_in(ddr_arbiter__cpu__wstrb_in[__i])
+        ,           .cpu__wlast_in(ddr_arbiter__cpu__wlast_in[__i])
+        ,           .cpu__bvalid_out(ddr_arbiter__cpu__bvalid_out[__i])
+        ,           .cpu__bready_in(ddr_arbiter__cpu__bready_in[__i])
+        ,           .cpu__bid_out(ddr_arbiter__cpu__bid_out[__i])
+        ,           .cpu__arvalid_in(ddr_arbiter__cpu__arvalid_in[__i])
+        ,           .cpu__arready_out(ddr_arbiter__cpu__arready_out[__i])
+        ,           .cpu__araddr_in(ddr_arbiter__cpu__araddr_in[__i])
+        ,           .cpu__arid_in(ddr_arbiter__cpu__arid_in[__i])
+        ,           .cpu__rvalid_out(ddr_arbiter__cpu__rvalid_out[__i])
+        ,           .cpu__rready_in(ddr_arbiter__cpu__rready_in[__i])
+        ,           .cpu__rdata_out(ddr_arbiter__cpu__rdata_out[__i])
+        ,           .cpu__rlast_out(ddr_arbiter__cpu__rlast_out[__i])
+        ,           .cpu__rid_out(ddr_arbiter__cpu__rid_out[__i])
+        ,           .packet__awvalid_in(ddr_arbiter__packet__awvalid_in[__i])
+        ,           .packet__awready_out(ddr_arbiter__packet__awready_out[__i])
+        ,           .packet__awaddr_in(ddr_arbiter__packet__awaddr_in[__i])
+        ,           .packet__awid_in(ddr_arbiter__packet__awid_in[__i])
+        ,           .packet__wvalid_in(ddr_arbiter__packet__wvalid_in[__i])
+        ,           .packet__wready_out(ddr_arbiter__packet__wready_out[__i])
+        ,           .packet__wdata_in(ddr_arbiter__packet__wdata_in[__i])
+        ,           .packet__wstrb_in(ddr_arbiter__packet__wstrb_in[__i])
+        ,           .packet__wlast_in(ddr_arbiter__packet__wlast_in[__i])
+        ,           .packet__bvalid_out(ddr_arbiter__packet__bvalid_out[__i])
+        ,           .packet__bready_in(ddr_arbiter__packet__bready_in[__i])
+        ,           .packet__bid_out(ddr_arbiter__packet__bid_out[__i])
+        ,           .packet__arvalid_in(ddr_arbiter__packet__arvalid_in[__i])
+        ,           .packet__arready_out(ddr_arbiter__packet__arready_out[__i])
+        ,           .packet__araddr_in(ddr_arbiter__packet__araddr_in[__i])
+        ,           .packet__arid_in(ddr_arbiter__packet__arid_in[__i])
+        ,           .packet__rvalid_out(ddr_arbiter__packet__rvalid_out[__i])
+        ,           .packet__rready_in(ddr_arbiter__packet__rready_in[__i])
+        ,           .packet__rdata_out(ddr_arbiter__packet__rdata_out[__i])
+        ,           .packet__rlast_out(ddr_arbiter__packet__rlast_out[__i])
+        ,           .packet__rid_out(ddr_arbiter__packet__rid_out[__i])
+        ,           .memory__awvalid_out(ddr_arbiter__memory__awvalid_out[__i])
+        ,           .memory__awready_in(ddr_arbiter__memory__awready_in[__i])
+        ,           .memory__awaddr_out(ddr_arbiter__memory__awaddr_out[__i])
+        ,           .memory__awid_out(ddr_arbiter__memory__awid_out[__i])
+        ,           .memory__wvalid_out(ddr_arbiter__memory__wvalid_out[__i])
+        ,           .memory__wready_in(ddr_arbiter__memory__wready_in[__i])
+        ,           .memory__wdata_out(ddr_arbiter__memory__wdata_out[__i])
+        ,           .memory__wstrb_out(ddr_arbiter__memory__wstrb_out[__i])
+        ,           .memory__wlast_out(ddr_arbiter__memory__wlast_out[__i])
+        ,           .memory__bvalid_in(ddr_arbiter__memory__bvalid_in[__i])
+        ,           .memory__bready_out(ddr_arbiter__memory__bready_out[__i])
+        ,           .memory__bid_in(ddr_arbiter__memory__bid_in[__i])
+        ,           .memory__arvalid_out(ddr_arbiter__memory__arvalid_out[__i])
+        ,           .memory__arready_in(ddr_arbiter__memory__arready_in[__i])
+        ,           .memory__araddr_out(ddr_arbiter__memory__araddr_out[__i])
+        ,           .memory__arid_out(ddr_arbiter__memory__arid_out[__i])
+        ,           .memory__rvalid_in(ddr_arbiter__memory__rvalid_in[__i])
+        ,           .memory__rready_out(ddr_arbiter__memory__rready_out[__i])
+        ,           .memory__rdata_in(ddr_arbiter__memory__rdata_in[__i])
+        ,           .memory__rlast_in(ddr_arbiter__memory__rlast_in[__i])
+        ,           .memory__rid_in(ddr_arbiter__memory__rid_in[__i])
         );
     end
     endgenerate
@@ -848,6 +1093,17 @@ module Processing #(
         end
     end
 
+    always_comb begin : to_network_port_comb_func  // to_network_port_comb_func
+        logic[31:0] index;
+        logic[31:0] _bit;
+        to_network_port_comb = 'h0;
+        for (index='h0;index < CPU_COUNT;index=index+1) begin
+            for (_bit='h0;_bit < 'h8;_bit=_bit+1) begin
+                to_network_port_comb[(index*'h8) + _bit] = packet_dma__network_tx_port_out[index][_bit];
+            end
+        end
+    end
+
     always_comb begin : from_system_ready_comb_func  // from_system_ready_comb_func
         logic[31:0] index;
         from_system_ready_comb = 'h0;
@@ -875,17 +1131,20 @@ module Processing #(
         assign to_network_keep_out = to_network_keep_comb;
         assign to_network_sop_out = to_network_sop_comb;
         assign to_network_eop_out = to_network_eop_comb;
+        assign to_network_port_out = to_network_port_comb;
         for (gindex='h0;gindex < CPU_COUNT;gindex=gindex+1) begin
             assign descriptor_fetcher__descriptor_valid_in[gindex] = descriptor_valid_in;
             assign descriptor_fetcher__descriptor_data_in[gindex] = descriptor_data_in;
             assign descriptor_fetcher__descriptor_word_in[gindex] = descriptor_word_in;
             assign descriptor_fetcher__descriptor_sop_in[gindex] = descriptor_sop_in;
             assign descriptor_fetcher__descriptor_eop_in[gindex] = descriptor_eop_in;
-            assign descriptor_fetcher__packet_command_ready_in[gindex] = packet_dma__command_ready_out[gindex];
+            assign descriptor_fetcher__packet_command_ready_in[gindex] = packet_dma__descriptor_command_ready_out[gindex];
             assign packet_dma__descriptor_command_valid_in[gindex] = descriptor_fetcher__packet_command_valid_out[gindex];
             assign packet_dma__descriptor_command_handle_in[gindex] = descriptor_fetcher__packet_command_handle_out[gindex];
             assign packet_dma__descriptor_command_length_in[gindex] = descriptor_fetcher__packet_command_length_out[gindex];
             assign packet_dma__descriptor_command_system_in[gindex] = descriptor_fetcher__packet_command_system_out[gindex];
+            assign packet_dma__descriptor_command_cache_in[gindex] = descriptor_fetcher__packet_command_cache_out[gindex];
+            assign packet_dma__descriptor_command_destination_in[gindex] = descriptor_fetcher__packet_command_destination_out[gindex];
             assign iomem_mux__slave_in__awvalid_in[gindex] = cpu__iomem__awvalid_out[gindex];
             assign iomem_mux__slave_in__awaddr_in[gindex] = cpu__iomem__awaddr_out[gindex];
             assign iomem_mux__slave_in__awid_in[gindex] = cpu__iomem__awid_out[gindex];
@@ -974,6 +1233,12 @@ module Processing #(
             assign packet_dma__l2_dma__rdata_in[gindex] = cpu__dma_in__rdata_out[gindex];
             assign packet_dma__l2_dma__rlast_in[gindex] = cpu__dma_in__rlast_out[gindex];
             assign packet_dma__l2_dma__rid_in[gindex] = cpu__dma_in__rid_out[gindex];
+            assign cpu__dma_line_valid_in[gindex] = packet_dma__l2_line_valid_out[gindex];
+            assign cpu__dma_line_addr_in[gindex] = unsigned'(32'(packet_dma__l2_line_addr_out[gindex]));
+            assign cpu__dma_line_data_in[gindex] = packet_dma__l2_line_data_out[gindex];
+            assign cpu__dma_line_keep_in[gindex] = packet_dma__l2_line_keep_out[gindex];
+            assign cpu__dma_line_eop_in[gindex] = packet_dma__l2_line_eop_out[gindex];
+            assign packet_dma__l2_line_ready_in[gindex] = cpu__dma_line_ready_out[gindex];
             assign packet_dma__rx_read_ready_in[gindex] = rx_read_ready_in[gindex];
             assign packet_dma__rx_valid_in[gindex] = rx_valid_in[gindex];
             assign packet_dma__rx_data_in[gindex] = rx_data_in[gindex*'h100 +:256];
@@ -987,27 +1252,69 @@ module Processing #(
             assign packet_dma__system_rx_sop_in[gindex] = from_system_sop_in[gindex];
             assign packet_dma__system_rx_eop_in[gindex] = from_system_eop_in[gindex];
             assign packet_dma__network_tx_ready_in[gindex] = to_network_ready_in[gindex];
-            assign ddr__awvalid_out[gindex] = cpu__memory__awvalid_out[gindex];
-            assign ddr__awaddr_out[gindex] = cpu__memory__awaddr_out[gindex];
-            assign ddr__awid_out[gindex] = cpu__memory__awid_out[gindex];
-            assign ddr__wvalid_out[gindex] = cpu__memory__wvalid_out[gindex];
-            assign ddr__wdata_out[gindex] = cpu__memory__wdata_out[gindex];
-            assign ddr__wstrb_out[gindex] = cpu__memory__wstrb_out[gindex];
-            assign ddr__wlast_out[gindex] = cpu__memory__wlast_out[gindex];
-            assign ddr__bready_out[gindex] = cpu__memory__bready_out[gindex];
-            assign ddr__arvalid_out[gindex] = cpu__memory__arvalid_out[gindex];
-            assign ddr__araddr_out[gindex] = cpu__memory__araddr_out[gindex];
-            assign ddr__arid_out[gindex] = cpu__memory__arid_out[gindex];
-            assign ddr__rready_out[gindex] = cpu__memory__rready_out[gindex];
-            assign cpu__memory__awready_in[gindex] = ddr__awready_in[gindex];
-            assign cpu__memory__wready_in[gindex] = ddr__wready_in[gindex];
-            assign cpu__memory__bvalid_in[gindex] = ddr__bvalid_in[gindex];
-            assign cpu__memory__bid_in[gindex] = ddr__bid_in[gindex];
-            assign cpu__memory__arready_in[gindex] = ddr__arready_in[gindex];
-            assign cpu__memory__rvalid_in[gindex] = ddr__rvalid_in[gindex];
-            assign cpu__memory__rdata_in[gindex] = ddr__rdata_in[gindex];
-            assign cpu__memory__rlast_in[gindex] = ddr__rlast_in[gindex];
-            assign cpu__memory__rid_in[gindex] = ddr__rid_in[gindex];
+            assign ddr_arbiter__cpu__awvalid_in[gindex] = cpu__memory__awvalid_out[gindex];
+            assign ddr_arbiter__cpu__awaddr_in[gindex] = cpu__memory__awaddr_out[gindex];
+            assign ddr_arbiter__cpu__awid_in[gindex] = cpu__memory__awid_out[gindex];
+            assign ddr_arbiter__cpu__wvalid_in[gindex] = cpu__memory__wvalid_out[gindex];
+            assign ddr_arbiter__cpu__wdata_in[gindex] = cpu__memory__wdata_out[gindex];
+            assign ddr_arbiter__cpu__wstrb_in[gindex] = cpu__memory__wstrb_out[gindex];
+            assign ddr_arbiter__cpu__wlast_in[gindex] = cpu__memory__wlast_out[gindex];
+            assign ddr_arbiter__cpu__bready_in[gindex] = cpu__memory__bready_out[gindex];
+            assign ddr_arbiter__cpu__arvalid_in[gindex] = cpu__memory__arvalid_out[gindex];
+            assign ddr_arbiter__cpu__araddr_in[gindex] = cpu__memory__araddr_out[gindex];
+            assign ddr_arbiter__cpu__arid_in[gindex] = cpu__memory__arid_out[gindex];
+            assign ddr_arbiter__cpu__rready_in[gindex] = cpu__memory__rready_out[gindex];
+            assign cpu__memory__awready_in[gindex] = ddr_arbiter__cpu__awready_out[gindex];
+            assign cpu__memory__wready_in[gindex] = ddr_arbiter__cpu__wready_out[gindex];
+            assign cpu__memory__bvalid_in[gindex] = ddr_arbiter__cpu__bvalid_out[gindex];
+            assign cpu__memory__bid_in[gindex] = ddr_arbiter__cpu__bid_out[gindex];
+            assign cpu__memory__arready_in[gindex] = ddr_arbiter__cpu__arready_out[gindex];
+            assign cpu__memory__rvalid_in[gindex] = ddr_arbiter__cpu__rvalid_out[gindex];
+            assign cpu__memory__rdata_in[gindex] = ddr_arbiter__cpu__rdata_out[gindex];
+            assign cpu__memory__rlast_in[gindex] = ddr_arbiter__cpu__rlast_out[gindex];
+            assign cpu__memory__rid_in[gindex] = ddr_arbiter__cpu__rid_out[gindex];
+            assign ddr_arbiter__packet__awvalid_in[gindex] = packet_dma__backing_dma__awvalid_out[gindex];
+            assign ddr_arbiter__packet__awaddr_in[gindex] = packet_dma__backing_dma__awaddr_out[gindex];
+            assign ddr_arbiter__packet__awid_in[gindex] = packet_dma__backing_dma__awid_out[gindex];
+            assign ddr_arbiter__packet__wvalid_in[gindex] = packet_dma__backing_dma__wvalid_out[gindex];
+            assign ddr_arbiter__packet__wdata_in[gindex] = packet_dma__backing_dma__wdata_out[gindex];
+            assign ddr_arbiter__packet__wstrb_in[gindex] = packet_dma__backing_dma__wstrb_out[gindex];
+            assign ddr_arbiter__packet__wlast_in[gindex] = packet_dma__backing_dma__wlast_out[gindex];
+            assign ddr_arbiter__packet__bready_in[gindex] = packet_dma__backing_dma__bready_out[gindex];
+            assign ddr_arbiter__packet__arvalid_in[gindex] = packet_dma__backing_dma__arvalid_out[gindex];
+            assign ddr_arbiter__packet__araddr_in[gindex] = packet_dma__backing_dma__araddr_out[gindex];
+            assign ddr_arbiter__packet__arid_in[gindex] = packet_dma__backing_dma__arid_out[gindex];
+            assign ddr_arbiter__packet__rready_in[gindex] = packet_dma__backing_dma__rready_out[gindex];
+            assign packet_dma__backing_dma__awready_in[gindex] = ddr_arbiter__packet__awready_out[gindex];
+            assign packet_dma__backing_dma__wready_in[gindex] = ddr_arbiter__packet__wready_out[gindex];
+            assign packet_dma__backing_dma__bvalid_in[gindex] = ddr_arbiter__packet__bvalid_out[gindex];
+            assign packet_dma__backing_dma__bid_in[gindex] = ddr_arbiter__packet__bid_out[gindex];
+            assign packet_dma__backing_dma__arready_in[gindex] = ddr_arbiter__packet__arready_out[gindex];
+            assign packet_dma__backing_dma__rvalid_in[gindex] = ddr_arbiter__packet__rvalid_out[gindex];
+            assign packet_dma__backing_dma__rdata_in[gindex] = ddr_arbiter__packet__rdata_out[gindex];
+            assign packet_dma__backing_dma__rlast_in[gindex] = ddr_arbiter__packet__rlast_out[gindex];
+            assign packet_dma__backing_dma__rid_in[gindex] = ddr_arbiter__packet__rid_out[gindex];
+            assign ddr__awvalid_out[gindex] = ddr_arbiter__memory__awvalid_out[gindex];
+            assign ddr__awaddr_out[gindex] = ddr_arbiter__memory__awaddr_out[gindex];
+            assign ddr__awid_out[gindex] = ddr_arbiter__memory__awid_out[gindex];
+            assign ddr__wvalid_out[gindex] = ddr_arbiter__memory__wvalid_out[gindex];
+            assign ddr__wdata_out[gindex] = ddr_arbiter__memory__wdata_out[gindex];
+            assign ddr__wstrb_out[gindex] = ddr_arbiter__memory__wstrb_out[gindex];
+            assign ddr__wlast_out[gindex] = ddr_arbiter__memory__wlast_out[gindex];
+            assign ddr__bready_out[gindex] = ddr_arbiter__memory__bready_out[gindex];
+            assign ddr__arvalid_out[gindex] = ddr_arbiter__memory__arvalid_out[gindex];
+            assign ddr__araddr_out[gindex] = ddr_arbiter__memory__araddr_out[gindex];
+            assign ddr__arid_out[gindex] = ddr_arbiter__memory__arid_out[gindex];
+            assign ddr__rready_out[gindex] = ddr_arbiter__memory__rready_out[gindex];
+            assign ddr_arbiter__memory__awready_in[gindex] = ddr__awready_in[gindex];
+            assign ddr_arbiter__memory__wready_in[gindex] = ddr__wready_in[gindex];
+            assign ddr_arbiter__memory__bvalid_in[gindex] = ddr__bvalid_in[gindex];
+            assign ddr_arbiter__memory__bid_in[gindex] = ddr__bid_in[gindex];
+            assign ddr_arbiter__memory__arready_in[gindex] = ddr__arready_in[gindex];
+            assign ddr_arbiter__memory__rvalid_in[gindex] = ddr__rvalid_in[gindex];
+            assign ddr_arbiter__memory__rdata_in[gindex] = ddr__rdata_in[gindex];
+            assign ddr_arbiter__memory__rlast_in[gindex] = ddr__rlast_in[gindex];
+            assign ddr_arbiter__memory__rid_in[gindex] = ddr__rid_in[gindex];
             assign cpu__reset_pc_in[gindex] = unsigned'(32'(unsigned'(32'h0)));
             assign cpu__boot_hartid_in[gindex] = unsigned'(32'(unsigned'(32'((gindex*CPU_pkg::CORES)))));
             assign cpu__boot_dtb_addr_in[gindex] = unsigned'(32'(unsigned'(32'h0)));
@@ -1102,32 +1409,76 @@ module Processing #(
             assign packet_dma__l2_dma__rdata_in[gindex] = cpu__dma_in__rdata_out[gindex];
             assign packet_dma__l2_dma__rlast_in[gindex] = cpu__dma_in__rlast_out[gindex];
             assign packet_dma__l2_dma__rid_in[gindex] = cpu__dma_in__rid_out[gindex];
-            assign ddr__awvalid_out[gindex] = cpu__memory__awvalid_out[gindex];
-            assign ddr__awaddr_out[gindex] = cpu__memory__awaddr_out[gindex];
-            assign ddr__awid_out[gindex] = cpu__memory__awid_out[gindex];
-            assign ddr__wvalid_out[gindex] = cpu__memory__wvalid_out[gindex];
-            assign ddr__wdata_out[gindex] = cpu__memory__wdata_out[gindex];
-            assign ddr__wstrb_out[gindex] = cpu__memory__wstrb_out[gindex];
-            assign ddr__wlast_out[gindex] = cpu__memory__wlast_out[gindex];
-            assign ddr__bready_out[gindex] = cpu__memory__bready_out[gindex];
-            assign ddr__arvalid_out[gindex] = cpu__memory__arvalid_out[gindex];
-            assign ddr__araddr_out[gindex] = cpu__memory__araddr_out[gindex];
-            assign ddr__arid_out[gindex] = cpu__memory__arid_out[gindex];
-            assign ddr__rready_out[gindex] = cpu__memory__rready_out[gindex];
-            assign cpu__memory__awready_in[gindex] = ddr__awready_in[gindex];
-            assign cpu__memory__wready_in[gindex] = ddr__wready_in[gindex];
-            assign cpu__memory__bvalid_in[gindex] = ddr__bvalid_in[gindex];
-            assign cpu__memory__bid_in[gindex] = ddr__bid_in[gindex];
-            assign cpu__memory__arready_in[gindex] = ddr__arready_in[gindex];
-            assign cpu__memory__rvalid_in[gindex] = ddr__rvalid_in[gindex];
-            assign cpu__memory__rdata_in[gindex] = ddr__rdata_in[gindex];
-            assign cpu__memory__rlast_in[gindex] = ddr__rlast_in[gindex];
-            assign cpu__memory__rid_in[gindex] = ddr__rid_in[gindex];
-            assign descriptor_fetcher__packet_command_ready_in[gindex] = packet_dma__command_ready_out[gindex];
+            assign ddr_arbiter__cpu__awvalid_in[gindex] = cpu__memory__awvalid_out[gindex];
+            assign ddr_arbiter__cpu__awaddr_in[gindex] = cpu__memory__awaddr_out[gindex];
+            assign ddr_arbiter__cpu__awid_in[gindex] = cpu__memory__awid_out[gindex];
+            assign ddr_arbiter__cpu__wvalid_in[gindex] = cpu__memory__wvalid_out[gindex];
+            assign ddr_arbiter__cpu__wdata_in[gindex] = cpu__memory__wdata_out[gindex];
+            assign ddr_arbiter__cpu__wstrb_in[gindex] = cpu__memory__wstrb_out[gindex];
+            assign ddr_arbiter__cpu__wlast_in[gindex] = cpu__memory__wlast_out[gindex];
+            assign ddr_arbiter__cpu__bready_in[gindex] = cpu__memory__bready_out[gindex];
+            assign ddr_arbiter__cpu__arvalid_in[gindex] = cpu__memory__arvalid_out[gindex];
+            assign ddr_arbiter__cpu__araddr_in[gindex] = cpu__memory__araddr_out[gindex];
+            assign ddr_arbiter__cpu__arid_in[gindex] = cpu__memory__arid_out[gindex];
+            assign ddr_arbiter__cpu__rready_in[gindex] = cpu__memory__rready_out[gindex];
+            assign cpu__memory__awready_in[gindex] = ddr_arbiter__cpu__awready_out[gindex];
+            assign cpu__memory__wready_in[gindex] = ddr_arbiter__cpu__wready_out[gindex];
+            assign cpu__memory__bvalid_in[gindex] = ddr_arbiter__cpu__bvalid_out[gindex];
+            assign cpu__memory__bid_in[gindex] = ddr_arbiter__cpu__bid_out[gindex];
+            assign cpu__memory__arready_in[gindex] = ddr_arbiter__cpu__arready_out[gindex];
+            assign cpu__memory__rvalid_in[gindex] = ddr_arbiter__cpu__rvalid_out[gindex];
+            assign cpu__memory__rdata_in[gindex] = ddr_arbiter__cpu__rdata_out[gindex];
+            assign cpu__memory__rlast_in[gindex] = ddr_arbiter__cpu__rlast_out[gindex];
+            assign cpu__memory__rid_in[gindex] = ddr_arbiter__cpu__rid_out[gindex];
+            assign ddr_arbiter__packet__awvalid_in[gindex] = packet_dma__backing_dma__awvalid_out[gindex];
+            assign ddr_arbiter__packet__awaddr_in[gindex] = packet_dma__backing_dma__awaddr_out[gindex];
+            assign ddr_arbiter__packet__awid_in[gindex] = packet_dma__backing_dma__awid_out[gindex];
+            assign ddr_arbiter__packet__wvalid_in[gindex] = packet_dma__backing_dma__wvalid_out[gindex];
+            assign ddr_arbiter__packet__wdata_in[gindex] = packet_dma__backing_dma__wdata_out[gindex];
+            assign ddr_arbiter__packet__wstrb_in[gindex] = packet_dma__backing_dma__wstrb_out[gindex];
+            assign ddr_arbiter__packet__wlast_in[gindex] = packet_dma__backing_dma__wlast_out[gindex];
+            assign ddr_arbiter__packet__bready_in[gindex] = packet_dma__backing_dma__bready_out[gindex];
+            assign ddr_arbiter__packet__arvalid_in[gindex] = packet_dma__backing_dma__arvalid_out[gindex];
+            assign ddr_arbiter__packet__araddr_in[gindex] = packet_dma__backing_dma__araddr_out[gindex];
+            assign ddr_arbiter__packet__arid_in[gindex] = packet_dma__backing_dma__arid_out[gindex];
+            assign ddr_arbiter__packet__rready_in[gindex] = packet_dma__backing_dma__rready_out[gindex];
+            assign packet_dma__backing_dma__awready_in[gindex] = ddr_arbiter__packet__awready_out[gindex];
+            assign packet_dma__backing_dma__wready_in[gindex] = ddr_arbiter__packet__wready_out[gindex];
+            assign packet_dma__backing_dma__bvalid_in[gindex] = ddr_arbiter__packet__bvalid_out[gindex];
+            assign packet_dma__backing_dma__bid_in[gindex] = ddr_arbiter__packet__bid_out[gindex];
+            assign packet_dma__backing_dma__arready_in[gindex] = ddr_arbiter__packet__arready_out[gindex];
+            assign packet_dma__backing_dma__rvalid_in[gindex] = ddr_arbiter__packet__rvalid_out[gindex];
+            assign packet_dma__backing_dma__rdata_in[gindex] = ddr_arbiter__packet__rdata_out[gindex];
+            assign packet_dma__backing_dma__rlast_in[gindex] = ddr_arbiter__packet__rlast_out[gindex];
+            assign packet_dma__backing_dma__rid_in[gindex] = ddr_arbiter__packet__rid_out[gindex];
+            assign ddr_arbiter__memory__awready_in[gindex] = ddr__awready_in[gindex];
+            assign ddr_arbiter__memory__wready_in[gindex] = ddr__wready_in[gindex];
+            assign ddr_arbiter__memory__bvalid_in[gindex] = ddr__bvalid_in[gindex];
+            assign ddr_arbiter__memory__bid_in[gindex] = ddr__bid_in[gindex];
+            assign ddr_arbiter__memory__arready_in[gindex] = ddr__arready_in[gindex];
+            assign ddr_arbiter__memory__rvalid_in[gindex] = ddr__rvalid_in[gindex];
+            assign ddr_arbiter__memory__rdata_in[gindex] = ddr__rdata_in[gindex];
+            assign ddr_arbiter__memory__rlast_in[gindex] = ddr__rlast_in[gindex];
+            assign ddr_arbiter__memory__rid_in[gindex] = ddr__rid_in[gindex];
+            assign ddr__awvalid_out[gindex] = ddr_arbiter__memory__awvalid_out[gindex];
+            assign ddr__awaddr_out[gindex] = ddr_arbiter__memory__awaddr_out[gindex];
+            assign ddr__awid_out[gindex] = ddr_arbiter__memory__awid_out[gindex];
+            assign ddr__wvalid_out[gindex] = ddr_arbiter__memory__wvalid_out[gindex];
+            assign ddr__wdata_out[gindex] = ddr_arbiter__memory__wdata_out[gindex];
+            assign ddr__wstrb_out[gindex] = ddr_arbiter__memory__wstrb_out[gindex];
+            assign ddr__wlast_out[gindex] = ddr_arbiter__memory__wlast_out[gindex];
+            assign ddr__bready_out[gindex] = ddr_arbiter__memory__bready_out[gindex];
+            assign ddr__arvalid_out[gindex] = ddr_arbiter__memory__arvalid_out[gindex];
+            assign ddr__araddr_out[gindex] = ddr_arbiter__memory__araddr_out[gindex];
+            assign ddr__arid_out[gindex] = ddr_arbiter__memory__arid_out[gindex];
+            assign ddr__rready_out[gindex] = ddr_arbiter__memory__rready_out[gindex];
+            assign descriptor_fetcher__packet_command_ready_in[gindex] = packet_dma__descriptor_command_ready_out[gindex];
             assign packet_dma__descriptor_command_valid_in[gindex] = descriptor_fetcher__packet_command_valid_out[gindex];
             assign packet_dma__descriptor_command_handle_in[gindex] = descriptor_fetcher__packet_command_handle_out[gindex];
             assign packet_dma__descriptor_command_length_in[gindex] = descriptor_fetcher__packet_command_length_out[gindex];
             assign packet_dma__descriptor_command_system_in[gindex] = descriptor_fetcher__packet_command_system_out[gindex];
+            assign packet_dma__descriptor_command_cache_in[gindex] = descriptor_fetcher__packet_command_cache_out[gindex];
+            assign packet_dma__descriptor_command_destination_in[gindex] = descriptor_fetcher__packet_command_destination_out[gindex];
         end
     endgenerate
 

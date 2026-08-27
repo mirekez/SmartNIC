@@ -349,7 +349,7 @@ static bool build_verilator()
         "Axi4SlowToFastCdc", "Axi4FastToSlowCdc", "L1MemFastToSlowCdc",
         "L2CacheRamBank", "L2Cache", "Tribe", "BranchPredictor", "InterruptController",
         "Decode", "Execute", "ExecuteMem", "CSR", "MMU_TLB",
-        "Writeback", "WritebackMem", "TribeTest", "SmartNicTribeTest"};
+        "Writeback", "WritebackMem", "TribeTest"};
     return VerilatorCompileInExactFolderFromGenerated(source.string(),
         "CPU_verilator", "CPU", generated, modules, includes);
 #endif

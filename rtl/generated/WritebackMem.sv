@@ -23,7 +23,7 @@ module WritebackMem (
 ,   input wire[31:0] dcache_write_data_in
 ,   input wire[7:0] dcache_write_mask_in
 ,   input wire store_forward_enable_in
-,   input wire hold_in
+,   input wire retire_in
 ,   output wire load_ready_out
 ,   output wire[31:0] load_raw_out
 ,   output wire[31:0] load_result_out
@@ -40,12 +40,8 @@ module WritebackMem (
     // regs and combs
     reg[32-1:0] load_data_reg;
     reg[32-1:0] load_addr_reg;
-    reg[32-1:0] load_pc_reg;
-    reg[5-1:0] load_rd_reg;
     reg load_data_valid_reg;
     reg[32-1:0] load_raw_result_reg;
-    reg[32-1:0] load_result_pc_reg;
-    reg[5-1:0] load_result_rd_reg;
     reg load_result_valid_reg;
     reg[32-1:0] split_load_low_reg;
     reg[32-1:0] split_load_high_reg;
@@ -55,6 +51,10 @@ module WritebackMem (
     reg[2-1:0][32-1:0] store_forward_data_reg;
     reg[2-1:0][8-1:0] store_forward_mask_reg;
     reg[2-1:0] store_forward_valid_reg;
+    reg[4-1:0][32-1:0] load_byte_addr_reg;
+    reg[2-1:0][4-1:0][32-1:0] store_forward_byte_addr_reg;
+    reg[2-1:0][4-1:0][8-1:0] store_forward_byte_data_reg;
+    reg[2-1:0][4-1:0] store_forward_byte_valid_reg;
     logic debug_load_data_valid_comb;
 ;
     logic[31:0] debug_load_addr_comb;
@@ -99,12 +99,8 @@ module WritebackMem (
     // tmp variables
     logic[32-1:0] load_data_reg_tmp;
     logic[32-1:0] load_addr_reg_tmp;
-    logic[32-1:0] load_pc_reg_tmp;
-    logic[5-1:0] load_rd_reg_tmp;
     logic load_data_valid_reg_tmp;
     logic[32-1:0] load_raw_result_reg_tmp;
-    logic[32-1:0] load_result_pc_reg_tmp;
-    logic[5-1:0] load_result_rd_reg_tmp;
     logic load_result_valid_reg_tmp;
     logic[32-1:0] split_load_low_reg_tmp;
     logic[32-1:0] split_load_high_reg_tmp;
@@ -114,10 +110,14 @@ module WritebackMem (
     logic[2-1:0][32-1:0] store_forward_data_reg_tmp;
     logic[2-1:0][8-1:0] store_forward_mask_reg_tmp;
     logic[2-1:0] store_forward_valid_reg_tmp;
+    logic[4-1:0][32-1:0] load_byte_addr_reg_tmp;
+    logic[2-1:0][4-1:0][32-1:0] store_forward_byte_addr_reg_tmp;
+    logic[2-1:0][4-1:0][8-1:0] store_forward_byte_data_reg_tmp;
+    logic[2-1:0][4-1:0] store_forward_byte_valid_reg_tmp;
 
 
     always_comb begin : held_load_result_valid_comb_func  // held_load_result_valid_comb_func
-        held_load_result_valid_comb=(load_result_valid_reg && (unsigned'(32'(load_result_pc_reg)) == state_in.pc)) && (unsigned'(8'(load_result_rd_reg)) == state_in.rd);
+        held_load_result_valid_comb=load_result_valid_reg;
     end
 
     always_comb begin : load_ready_comb_func  // load_ready_comb_func
@@ -156,7 +156,7 @@ module WritebackMem (
     end
 
     always_comb begin : held_load_valid_comb_func  // held_load_valid_comb_func
-        held_load_valid_comb=(load_data_valid_reg && (unsigned'(32'(load_pc_reg)) == state_in.pc)) && (unsigned'(8'(load_rd_reg)) == state_in.rd);
+        held_load_valid_comb=load_data_valid_reg;
     end
 
     always_comb begin : wb_mem_data_comb_func  // wb_mem_data_comb_func
@@ -214,15 +214,13 @@ module WritebackMem (
 
     always_comb begin : load_candidate_raw_comb_func  // load_candidate_raw_comb_func
         logic[31:0] raw;
-        logic[31:0] result;
-        logic[31:0] load_addr;
-        logic[31:0] byte_addr;
-        logic[31:0] store_addr;
-        logic[31:0] store_data;
-        logic[31:0] store_byte;
-        logic[31:0] diff;
-        logic[7:0] store_mask;
+        logic[32-1:0] result;
         logic[31:0] shift;
+        logic[31:0] lane;
+        logic[31:0] store_slot_order;
+        logic[31:0] store_slot;
+        logic[31:0] store_lane;
+        logic[31:0] forwarded_byte;
         logic allow_store_forward;
         if (split_load_in) begin
             shift=((alu_result_in & 'h3))*'h8;
@@ -231,72 +229,31 @@ module WritebackMem (
         else begin
             raw=(held_load_valid_comb) ? (unsigned'(32'(load_data_reg))) : (unsigned'(32'('h0)));
         end
-        result=raw;
-        load_addr=(held_load_valid_comb) ? (unsigned'(32'(load_addr_reg))) : (dcache_read_addr_in);
+        result = raw;
         allow_store_forward=store_forward_enable_in && (state_in.amo_op == Amo_pkg::AMONONE);
-        if (allow_store_forward && store_forward_valid_reg['h1]) begin
-            store_addr=store_forward_addr_reg['h1];
-            store_data=store_forward_data_reg['h1];
-            store_mask=store_forward_mask_reg['h1];
-            byte_addr=load_addr;
-            diff=byte_addr - store_addr;
-            if ((byte_addr>=store_addr && (diff < 'h4)) && ((store_mask & (('h1 <<< diff))))) begin
-                store_byte=((store_data >>> ((diff*'h8)))) & 'hFF;
-                result=((result & ~'hFF)) | store_byte;
+        for (lane='h0;lane < 'h4;lane=lane+1) begin
+            forwarded_byte=((raw >>> ((lane*'h8)))) & 'hFF;
+            for (store_slot_order='h0;store_slot_order < 'h2;store_slot_order=store_slot_order+1) begin
+                store_slot='h1 - store_slot_order;
+                for (store_lane='h0;store_lane < 'h4;store_lane=store_lane+1) begin
+                    if ((allow_store_forward && store_forward_byte_valid_reg[store_slot][store_lane]) && (load_byte_addr_reg[lane] == store_forward_byte_addr_reg[store_slot][store_lane])) begin
+                        forwarded_byte=store_forward_byte_data_reg[store_slot][store_lane];
+                    end
+                end
             end
-            byte_addr=load_addr + 'h1;
-            diff=byte_addr - store_addr;
-            if ((byte_addr>=store_addr && (diff < 'h4)) && ((store_mask & (('h1 <<< diff))))) begin
-                store_byte=((store_data >>> ((diff*'h8)))) & 'hFF;
-                result=((result & ~'hFF00)) | ((store_byte <<< 'h8));
-            end
-            byte_addr=load_addr + 'h2;
-            diff=byte_addr - store_addr;
-            if ((byte_addr>=store_addr && (diff < 'h4)) && ((store_mask & (('h1 <<< diff))))) begin
-                store_byte=((store_data >>> ((diff*'h8)))) & 'hFF;
-                result=((result & ~'hFF0000)) | ((store_byte <<< 'h10));
-            end
-            byte_addr=load_addr + 'h3;
-            diff=byte_addr - store_addr;
-            if ((byte_addr>=store_addr && (diff < 'h4)) && ((store_mask & (('h1 <<< diff))))) begin
-                store_byte=((store_data >>> ((diff*'h8)))) & 'hFF;
-                result=((result & ~'hFF000000)) | ((store_byte <<< 'h18));
-            end
-        end
-        if (allow_store_forward && store_forward_valid_reg['h0]) begin
-            store_addr=store_forward_addr_reg['h0];
-            store_data=store_forward_data_reg['h0];
-            store_mask=store_forward_mask_reg['h0];
-            byte_addr=load_addr;
-            diff=byte_addr - store_addr;
-            if ((byte_addr>=store_addr && (diff < 'h4)) && ((store_mask & (('h1 <<< diff))))) begin
-                store_byte=((store_data >>> ((diff*'h8)))) & 'hFF;
-                result=((result & ~'hFF)) | store_byte;
-            end
-            byte_addr=load_addr + 'h1;
-            diff=byte_addr - store_addr;
-            if ((byte_addr>=store_addr && (diff < 'h4)) && ((store_mask & (('h1 <<< diff))))) begin
-                store_byte=((store_data >>> ((diff*'h8)))) & 'hFF;
-                result=((result & ~'hFF00)) | ((store_byte <<< 'h8));
-            end
-            byte_addr=load_addr + 'h2;
-            diff=byte_addr - store_addr;
-            if ((byte_addr>=store_addr && (diff < 'h4)) && ((store_mask & (('h1 <<< diff))))) begin
-                store_byte=((store_data >>> ((diff*'h8)))) & 'hFF;
-                result=((result & ~'hFF0000)) | ((store_byte <<< 'h10));
-            end
-            byte_addr=load_addr + 'h3;
-            diff=byte_addr - store_addr;
-            if ((byte_addr>=store_addr && (diff < 'h4)) && ((store_mask & (('h1 <<< diff))))) begin
-                store_byte=((store_data >>> ((diff*'h8)))) & 'hFF;
-                result=((result & ~'hFF000000)) | ((store_byte <<< 'h18));
-            end
+            result[lane*'h8 +:8] = forwarded_byte;
         end
         load_candidate_raw_comb=result;
     end
 
     task _work (input logic reset);
     begin: _work
+        logic[31:0] lane;
+        if (state_in.valid && (state_in.wb_op == Wb_pkg::MEM)) begin
+            for (lane='h0;lane < 'h4;lane=lane+1) begin
+                load_byte_addr_reg_tmp[lane] = unsigned'(32'(alu_result_in + lane));
+            end
+        end
         if (dcache_write_valid_in && dcache_write_mask_in) begin
             logic same_head; same_head = ((store_forward_valid_reg['h0] && (unsigned'(32'(store_forward_addr_reg['h0])) == dcache_write_addr_in)) && (unsigned'(32'(store_forward_data_reg['h0])) == dcache_write_data_in)) && (unsigned'(8'(store_forward_mask_reg['h0])) == dcache_write_mask_in);
             if (!same_head) begin
@@ -304,15 +261,27 @@ module WritebackMem (
                 store_forward_data_reg_tmp['h1] = store_forward_data_reg['h0];
                 store_forward_mask_reg_tmp['h1] = store_forward_mask_reg['h0];
                 store_forward_valid_reg_tmp['h1] = store_forward_valid_reg['h0];
+                store_forward_byte_addr_reg_tmp['h1] = store_forward_byte_addr_reg['h0];
+                store_forward_byte_data_reg_tmp['h1] = store_forward_byte_data_reg['h0];
+                store_forward_byte_valid_reg_tmp['h1] = store_forward_byte_valid_reg['h0];
             end
             store_forward_addr_reg_tmp['h0] = unsigned'(32'(dcache_write_addr_in));
             store_forward_data_reg_tmp['h0] = unsigned'(32'(dcache_write_data_in));
             store_forward_mask_reg_tmp['h0] = unsigned'(8'(dcache_write_mask_in));
             store_forward_valid_reg_tmp['h0] = unsigned'(1'(1));
+            for (lane='h0;lane < 'h4;lane=lane+1) begin
+                store_forward_byte_addr_reg_tmp['h0][lane] = unsigned'(32'(dcache_write_addr_in + lane));
+                store_forward_byte_data_reg_tmp['h0][lane] = unsigned'(8'(((dcache_write_data_in >>> ((lane*'h8)))) & 'hFF));
+                store_forward_byte_valid_reg_tmp['h0][lane] = unsigned'(1'(((dcache_write_mask_in & (('h1 <<< lane)))) != 'h0));
+            end
         end
         else begin
             store_forward_valid_reg_tmp['h0] = unsigned'(1'(0));
             store_forward_valid_reg_tmp['h1] = unsigned'(1'(0));
+            for (lane='h0;lane < 'h4;lane=lane+1) begin
+                store_forward_byte_valid_reg_tmp['h0][lane] = unsigned'(1'(0));
+                store_forward_byte_valid_reg_tmp['h1][lane] = unsigned'(1'(0));
+            end
         end
         if (split_load_in) begin
             if (split_load_current_low_valid_comb) begin
@@ -328,18 +297,14 @@ module WritebackMem (
             if ((state_in.valid && (state_in.wb_op == Wb_pkg::MEM)) && non_split_current_valid_comb) begin
                 load_data_reg_tmp = unsigned'(32'(dcache_read_data_in));
                 load_addr_reg_tmp = unsigned'(32'(dcache_read_addr_in));
-                load_pc_reg_tmp = unsigned'(32'(state_in.pc));
-                load_rd_reg_tmp = state_in.rd;
                 load_data_valid_reg_tmp = unsigned'(1'(1));
             end
         end
         if (((state_in.valid && (state_in.wb_op == Wb_pkg::MEM)) && !held_load_result_valid_comb) && ((split_load_in) ? (((split_load_low_valid_reg && split_load_high_valid_reg))) : (held_load_valid_comb))) begin
             load_raw_result_reg_tmp = unsigned'(32'(load_candidate_raw_comb));
-            load_result_pc_reg_tmp = unsigned'(32'(state_in.pc));
-            load_result_rd_reg_tmp = state_in.rd;
             load_result_valid_reg_tmp = unsigned'(1'(1));
         end
-        if (!hold_in) begin
+        if ((retire_in || !state_in.valid) || (state_in.wb_op != Wb_pkg::MEM)) begin
             load_data_valid_reg_tmp = unsigned'(1'(0));
             load_result_valid_reg_tmp = unsigned'(1'(0));
             split_load_low_valid_reg_tmp = unsigned'(1'(0));
@@ -348,12 +313,8 @@ module WritebackMem (
         if (reset) begin
             load_data_reg_tmp = '0;
             load_addr_reg_tmp = '0;
-            load_pc_reg_tmp = '0;
-            load_rd_reg_tmp = '0;
             load_data_valid_reg_tmp = '0;
             load_raw_result_reg_tmp = '0;
-            load_result_pc_reg_tmp = '0;
-            load_result_rd_reg_tmp = '0;
             load_result_valid_reg_tmp = '0;
             split_load_low_reg_tmp = '0;
             split_load_high_reg_tmp = '0;
@@ -363,6 +324,10 @@ module WritebackMem (
             store_forward_data_reg_tmp = '0;
             store_forward_mask_reg_tmp = '0;
             store_forward_valid_reg_tmp = '0;
+            load_byte_addr_reg_tmp = '0;
+            store_forward_byte_addr_reg_tmp = '0;
+            store_forward_byte_data_reg_tmp = '0;
+            store_forward_byte_valid_reg_tmp = '0;
         end
     end
     endtask
@@ -378,12 +343,8 @@ module WritebackMem (
     always_ff @(posedge clk) begin
         load_data_reg_tmp = load_data_reg;
         load_addr_reg_tmp = load_addr_reg;
-        load_pc_reg_tmp = load_pc_reg;
-        load_rd_reg_tmp = load_rd_reg;
         load_data_valid_reg_tmp = load_data_valid_reg;
         load_raw_result_reg_tmp = load_raw_result_reg;
-        load_result_pc_reg_tmp = load_result_pc_reg;
-        load_result_rd_reg_tmp = load_result_rd_reg;
         load_result_valid_reg_tmp = load_result_valid_reg;
         split_load_low_reg_tmp = split_load_low_reg;
         split_load_high_reg_tmp = split_load_high_reg;
@@ -393,17 +354,17 @@ module WritebackMem (
         store_forward_data_reg_tmp = store_forward_data_reg;
         store_forward_mask_reg_tmp = store_forward_mask_reg;
         store_forward_valid_reg_tmp = store_forward_valid_reg;
+        load_byte_addr_reg_tmp = load_byte_addr_reg;
+        store_forward_byte_addr_reg_tmp = store_forward_byte_addr_reg;
+        store_forward_byte_data_reg_tmp = store_forward_byte_data_reg;
+        store_forward_byte_valid_reg_tmp = store_forward_byte_valid_reg;
 
         _work(reset);
 
         load_data_reg <= load_data_reg_tmp;
         load_addr_reg <= load_addr_reg_tmp;
-        load_pc_reg <= load_pc_reg_tmp;
-        load_rd_reg <= load_rd_reg_tmp;
         load_data_valid_reg <= load_data_valid_reg_tmp;
         load_raw_result_reg <= load_raw_result_reg_tmp;
-        load_result_pc_reg <= load_result_pc_reg_tmp;
-        load_result_rd_reg <= load_result_rd_reg_tmp;
         load_result_valid_reg <= load_result_valid_reg_tmp;
         split_load_low_reg <= split_load_low_reg_tmp;
         split_load_high_reg <= split_load_high_reg_tmp;
@@ -413,6 +374,10 @@ module WritebackMem (
         store_forward_data_reg <= store_forward_data_reg_tmp;
         store_forward_mask_reg <= store_forward_mask_reg_tmp;
         store_forward_valid_reg <= store_forward_valid_reg_tmp;
+        load_byte_addr_reg <= load_byte_addr_reg_tmp;
+        store_forward_byte_addr_reg <= store_forward_byte_addr_reg_tmp;
+        store_forward_byte_data_reg <= store_forward_byte_data_reg_tmp;
+        store_forward_byte_valid_reg <= store_forward_byte_valid_reg_tmp;
     end
 
     always_ff @(posedge l2_clock) begin

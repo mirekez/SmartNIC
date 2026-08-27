@@ -34,68 +34,6 @@
 
 using namespace cpphdl;
 
-// SmartNIC owns a reserved L2 packet window and publishes a packet only after
-// its EOP line is installed. Allocate consecutive lines at full L2 bandwidth,
-// then invalidate private caches once at the packet boundary. This preserves
-// coherency without serializing every 32-byte line on an invalidate mailbox.
-template<size_t CPU_CORES>
-class SmartNicTribeTest : public TribeTest<CPU_CORES>
-{
-    using Base = TribeTest<CPU_CORES>;
-
-public:
-    _PORT(bool) packet_line_valid_in;
-    _PORT(u32) packet_line_addr_in;
-    _PORT(logic<256>) packet_line_data_in;
-    _PORT(logic<32>) packet_line_keep_in;
-    _PORT(bool) packet_line_ready_out;
-
-    void _assign()
-    {
-        // Keep Tribe's generic per-line invalidation port idle. The direct
-        // allocator below is paired with the packet-EOP invalidation supplied
-        // through external_cache_invalidate_in by CPU::_assign().
-        Base::_assign();
-
-        Base::l2cache.dma_line_valid_in = packet_line_valid_in;
-        Base::l2cache.dma_line_addr_in = packet_line_addr_in;
-        Base::l2cache.dma_line_data_in = packet_line_data_in;
-        Base::l2cache.dma_line_keep_in = packet_line_keep_in;
-        packet_line_ready_out = Base::l2cache.dma_line_ready_out;
-    }
-
-    // Native simulation must commit the inherited Tribe state. In generated
-    // RTL the state is owned by clocked always blocks; emitting C++ register
-    // `strobe()` helpers as SystemVerilog task calls is both unnecessary and
-    // invalid for a derived module.
-    void _strobe()
-    {
-#ifndef SYNTHESIS
-        Base::_strobe();
-#endif
-    }
-
-    void _work_clk(bool reset)
-    {
-        Base::_work_clk(reset);
-    }
-
-    void _strobe_clk()
-    {
-        Base::_strobe_clk();
-    }
-
-    void _work_l2_clock(bool reset)
-    {
-        Base::_work_l2_clock(reset);
-    }
-
-    void _strobe_l2_clock()
-    {
-        Base::_strobe_l2_clock();
-    }
-};
-
 class CPU : public Module
 {
 public:
@@ -122,7 +60,11 @@ public:
     static_assert(MEMORY_BYTES + IO_BYTES == MAX_RAM_SIZE,
         "Tribe address layout must match CPU_MEMORY plus IOMEM");
 
-    SmartNicTribeTest<CORES> tribe;
+    // SmartNIC publishes consecutive packet lines at full L2 bandwidth and
+    // invalidates private caches once at EOP. Disable TribeTest's generic
+    // per-line invalidate mailbox, which would otherwise add CDC latency to
+    // every 32-byte line.
+    TribeTest<CORES> tribe;
 
     // Coherent, write-allocating ingress used by the packet DMA.
     Axi4If<32, ID_WIDTH, DATA_WIDTH> dma_in;
@@ -194,17 +136,10 @@ public:
         tribe.mem_region_size_in[2] = _ASSIGN((uint32_t)0);
         tribe.mem_region_size_in[3] = _ASSIGN((uint32_t)IO_BYTES);
         tribe.debugen_in = false;
-        // Tie the inherited generic Tribe DMA input off from the parent. The
-        // SmartNIC-specific packet-line port below drives L2 directly.
-        tribe.dma_line_valid_in = _ASSIGN(false);
-        tribe.dma_line_addr_in = _ASSIGN((u32)0);
-        tribe.dma_line_data_in = _ASSIGN((logic<256>)0);
-        tribe.dma_line_keep_in = _ASSIGN((logic<32>)0);
-        tribe.packet_line_valid_in = dma_line_valid_in;
-        tribe.packet_line_addr_in = dma_line_addr_in;
-        tribe.packet_line_data_in = dma_line_data_in;
-        tribe.packet_line_keep_in = dma_line_keep_in;
-        dma_line_ready_out = tribe.packet_line_ready_out;
+        tribe.dma_line_valid_in = dma_line_valid_in;
+        tribe.dma_line_addr_in = dma_line_addr_in;
+        tribe.dma_line_data_in = dma_line_data_in;
+        tribe.dma_line_keep_in = dma_line_keep_in;
 
 #if defined(ENABLE_ZICSR) && defined(ENABLE_ISR)
         tribe.time_lo_in = _ASSIGN((uint32_t)0);
@@ -273,7 +208,7 @@ public:
         // after elaborating the child so function_ref copies are never empty
         // in native C++ simulation.
         AXI4_RESPONDER_FROM(dma_in, tribe.axi_in[0]);
-        dma_line_ready_out = tribe.packet_line_ready_out;
+        dma_line_ready_out = tribe.dma_line_ready_out;
         AXI4_MASTER_FROM_TARGET_IF(memory, tribe.axi_out[0]);
         iomem.awvalid_out = tribe.axi_out[3].awvalid_in;
         iomem.awid_out = tribe.axi_out[3].awid_in;

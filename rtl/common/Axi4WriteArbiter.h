@@ -30,70 +30,76 @@ private:
     reg<u<2>> state_reg;
     reg<u1> packet_owner_reg;
 
-    bool packet_aw_selected()
-    {
-        return (uint32_t)state_reg == AXI4_ARB_IDLE
+    // These selectors are combinational nodes, not ordinary C++ helper
+    // functions.  Marking them as such is important to the CppHDL converter:
+    // calls to an ordinary zero-argument function from an _ASSIGN lambda are
+    // not expression nodes and were emitted as empty operands in SystemVerilog
+    // (for example, "assign ... = || ;").  _LAZY_COMB gives both native C++
+    // simulation and generated RTL one shared, explicitly named signal.
+    _LAZY_COMB(packet_aw_selected_comb, bool)
+        packet_aw_selected_comb = (uint32_t)state_reg == AXI4_ARB_IDLE
             && !cpu.arvalid_in() && !packet.arvalid_in()
             && !cpu.awvalid_in()
             && packet.awvalid_in();
+        return packet_aw_selected_comb;
     }
 
-    bool cpu_aw_selected()
-    {
-        return (uint32_t)state_reg == AXI4_ARB_IDLE
+    _LAZY_COMB(cpu_aw_selected_comb, bool)
+        cpu_aw_selected_comb = (uint32_t)state_reg == AXI4_ARB_IDLE
             && !cpu.arvalid_in() && !packet.arvalid_in()
             && cpu.awvalid_in();
+        return cpu_aw_selected_comb;
     }
 
-    bool cpu_ar_selected()
-    {
-        return (uint32_t)state_reg == AXI4_ARB_IDLE
+    _LAZY_COMB(cpu_ar_selected_comb, bool)
+        cpu_ar_selected_comb = (uint32_t)state_reg == AXI4_ARB_IDLE
             && cpu.arvalid_in();
+        return cpu_ar_selected_comb;
     }
 
-    bool packet_ar_selected()
-    {
-        return (uint32_t)state_reg == AXI4_ARB_IDLE
+    _LAZY_COMB(packet_ar_selected_comb, bool)
+        packet_ar_selected_comb = (uint32_t)state_reg == AXI4_ARB_IDLE
             && !cpu.arvalid_in() && packet.arvalid_in();
+        return packet_ar_selected_comb;
     }
 
 public:
     void _assign()
     {
-        memory.awvalid_out = _ASSIGN(packet_aw_selected()
-            || cpu_aw_selected());
-        memory.awaddr_out = _ASSIGN(packet_aw_selected()
+        memory.awvalid_out = _ASSIGN(packet_aw_selected_comb_func()
+            || cpu_aw_selected_comb_func());
+        memory.awaddr_out = _ASSIGN(packet_aw_selected_comb_func()
             ? (u<ADDR_WIDTH>)packet.awaddr_in()
             : (u<ADDR_WIDTH>)cpu.awaddr_in());
-        memory.awid_out = _ASSIGN(packet_aw_selected()
+        memory.awid_out = _ASSIGN(packet_aw_selected_comb_func()
             ? (u<ID_WIDTH>)packet.awid_in()
             : (u<ID_WIDTH>)cpu.awid_in());
-        memory.wvalid_out = _ASSIGN((packet_aw_selected()
+        memory.wvalid_out = _ASSIGN((packet_aw_selected_comb_func()
                 && packet.wvalid_in())
             || ((uint32_t)state_reg == AXI4_ARB_WRITE_DATA
                 && ((bool)packet_owner_reg
                     ? packet.wvalid_in() : cpu.wvalid_in())));
-        memory.wdata_out = _ASSIGN(packet_aw_selected()
+        memory.wdata_out = _ASSIGN(packet_aw_selected_comb_func()
                 || (bool)packet_owner_reg
             ? (logic<DATA_WIDTH>)packet.wdata_in()
             : (logic<DATA_WIDTH>)cpu.wdata_in());
-        memory.wstrb_out = _ASSIGN(packet_aw_selected()
+        memory.wstrb_out = _ASSIGN(packet_aw_selected_comb_func()
                 || (bool)packet_owner_reg
             ? (logic<DATA_WIDTH / 8>)packet.wstrb_in()
             : (logic<DATA_WIDTH / 8>)cpu.wstrb_in());
-        memory.wlast_out = _ASSIGN(packet_aw_selected()
+        memory.wlast_out = _ASSIGN(packet_aw_selected_comb_func()
                 || (bool)packet_owner_reg
             ? packet.wlast_in() : cpu.wlast_in());
         memory.bready_out = _ASSIGN((uint32_t)state_reg
             == AXI4_ARB_WRITE_RESPONSE
             && ((bool)packet_owner_reg
                 ? packet.bready_in() : cpu.bready_in()));
-        memory.arvalid_out = _ASSIGN(cpu_ar_selected()
-            || packet_ar_selected());
-        memory.araddr_out = _ASSIGN(packet_ar_selected()
+        memory.arvalid_out = _ASSIGN(cpu_ar_selected_comb_func()
+            || packet_ar_selected_comb_func());
+        memory.araddr_out = _ASSIGN(packet_ar_selected_comb_func()
             ? (u<ADDR_WIDTH>)packet.araddr_in()
             : (u<ADDR_WIDTH>)cpu.araddr_in());
-        memory.arid_out = _ASSIGN(packet_ar_selected()
+        memory.arid_out = _ASSIGN(packet_ar_selected_comb_func()
             ? (u<ID_WIDTH>)packet.arid_in()
             : (u<ID_WIDTH>)cpu.arid_in());
         memory.rready_out = _ASSIGN((uint32_t)state_reg
@@ -101,11 +107,11 @@ public:
             && ((bool)packet_owner_reg
                 ? packet.rready_in() : cpu.rready_in()));
 
-        packet.awready_out = _ASSIGN(packet_aw_selected()
+        packet.awready_out = _ASSIGN(packet_aw_selected_comb_func()
             && memory.awready_in());
-        cpu.awready_out = _ASSIGN(cpu_aw_selected()
+        cpu.awready_out = _ASSIGN(cpu_aw_selected_comb_func()
             && memory.awready_in());
-        packet.wready_out = _ASSIGN((packet_aw_selected()
+        packet.wready_out = _ASSIGN((packet_aw_selected_comb_func()
                 || ((uint32_t)state_reg == AXI4_ARB_WRITE_DATA
                     && (bool)packet_owner_reg))
             && memory.wready_in());
@@ -120,9 +126,9 @@ public:
             && memory.bvalid_in());
         packet.bid_out = _ASSIGN((u<ID_WIDTH>)memory.bid_in());
         cpu.bid_out = _ASSIGN((u<ID_WIDTH>)memory.bid_in());
-        packet.arready_out = _ASSIGN(packet_ar_selected()
+        packet.arready_out = _ASSIGN(packet_ar_selected_comb_func()
             && memory.arready_in());
-        cpu.arready_out = _ASSIGN(cpu_ar_selected()
+        cpu.arready_out = _ASSIGN(cpu_ar_selected_comb_func()
             && memory.arready_in());
         packet.rvalid_out = _ASSIGN((uint32_t)state_reg
             == AXI4_ARB_READ_DATA && (bool)packet_owner_reg

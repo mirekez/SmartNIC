@@ -24,6 +24,7 @@ module Network #(
 ,   parameter RX_FIFO_DEPTH = 'h40
 ,   parameter TX_FIFO_WORDS = 'h800
 ,   parameter ENABLE_RAW = 1
+,   parameter READ_WIDTH = LANE_WIDTH
  )
  (
     input wire net_clk
@@ -43,7 +44,7 @@ module Network #(
 ,   input wire[READ_PORTS*HANDLE_BITS-1:0] read_handle_in
 ,   input wire[READ_PORTS*LOGICAL_ROW_BITS-1:0] read_word_in
 ,   output wire[READ_PORTS-1:0] read_ready_out
-,   output wire[READ_PORTS*LANE_WIDTH-1:0] read_data_out
+,   output wire[READ_PORTS*READ_WIDTH-1:0] read_data_out
 ,   output wire[READ_PORTS-1:0] read_valid_out
 ,   input wire[READ_PORTS-1:0] read_ready_in
 ,   input wire[READ_PORTS-1:0] release_valid_in
@@ -194,7 +195,7 @@ module Network #(
     wire[READ_PORTS*($clog2((BANK_DEPTH*64'h2)) + 'h3)-1:0] rx_ram__read_handle_in;
     wire[READ_PORTS*$clog2((BANK_DEPTH*64'h2))-1:0] rx_ram__read_word_in;
     wire[READ_PORTS-1:0] rx_ram__read_ready_out;
-    wire[READ_PORTS*LANE_WIDTH-1:0] rx_ram__read_data_out;
+    wire[READ_PORTS*READ_WIDTH-1:0] rx_ram__read_data_out;
     wire[READ_PORTS-1:0] rx_ram__read_valid_out;
     wire[READ_PORTS-1:0] rx_ram__read_ready_in;
     wire[READ_PORTS-1:0] rx_ram__release_valid_in;
@@ -206,6 +207,7 @@ module Network #(
         LANE_WIDTH
 ,       READ_PORTS
 ,       BANK_DEPTH
+,       READ_WIDTH
     ) rx_ram (
         .net_clk(net_clk)
 ,       .l2_clk(l2_clk)
@@ -412,6 +414,7 @@ module Network #(
             word.descriptor.packet_length = ram_length_reg[stream];
             word.descriptor.ingress_stream = unsigned'(8'(stream));
             word.descriptor.flags = unsigned'(8'((parser_raw_reg[stream]) ? (RxDescriptorFlags_pkg::RX_DESCRIPTOR_FLAG_RAW) : ('h0)));
+            word.descriptor.source_port = unsigned'(8'(stream));
             word.descriptor.reserved = 'h0;
             word.descriptor.packet_word0.raw = parser_word0_reg[stream];
             word.descriptor.packet_word1.raw = parser_word1_reg[stream];

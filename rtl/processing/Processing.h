@@ -364,12 +364,25 @@ public:
                 packet_dma[index].l2_dma);
             AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].l2_dma,
                 cpu[index].dma_in);
-            cpu[index].dma_line_valid_in = packet_dma[index].l2_line_valid_out;
-            cpu[index].dma_line_addr_in = packet_dma[index].l2_line_addr_out;
-            cpu[index].dma_line_data_in = packet_dma[index].l2_line_data_out;
-            cpu[index].dma_line_keep_in = packet_dma[index].l2_line_keep_out;
-            cpu[index].dma_line_eop_in = packet_dma[index].l2_line_eop_out;
-            packet_dma[index].l2_line_ready_in = cpu[index].dma_line_ready_out;
+            // Bind these through deferred calls. PacketDMA and CPU create
+            // their output function_refs below, so copying the not-yet-bound
+            // function_ref here required a second binding after _assign().
+            // The converter emitted both bindings as continuous assignments,
+            // giving Vivado a multi-driven coherent-line valid net. A deferred
+            // indexed lambda is valid in native simulation and emits exactly
+            // one RTL driver.
+            cpu[index].dma_line_valid_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].l2_line_valid_out());
+            cpu[index].dma_line_addr_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].l2_line_addr_out());
+            cpu[index].dma_line_data_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].l2_line_data_out());
+            cpu[index].dma_line_keep_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].l2_line_keep_out());
+            cpu[index].dma_line_eop_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].l2_line_eop_out());
+            packet_dma[index].l2_line_ready_in = _ASSIGN_INDEXED((index),
+                cpu[index].dma_line_ready_out());
 
             packet_dma[index].rx_read_ready_in =
                 _ASSIGN_INDEXED((index), rx_read_ready_in()[index]);
@@ -470,12 +483,6 @@ public:
                 packet_dma[index].l2_dma);
             AXI4_MASTER_RESPONDER_FROM_TARGET(packet_dma[index].l2_dma,
                 cpu[index].dma_in);
-            cpu[index].dma_line_valid_in = packet_dma[index].l2_line_valid_out;
-            cpu[index].dma_line_addr_in = packet_dma[index].l2_line_addr_out;
-            cpu[index].dma_line_data_in = packet_dma[index].l2_line_data_out;
-            cpu[index].dma_line_keep_in = packet_dma[index].l2_line_keep_out;
-            cpu[index].dma_line_eop_in = packet_dma[index].l2_line_eop_out;
-            packet_dma[index].l2_line_ready_in = cpu[index].dma_line_ready_out;
             AXI4_TARGET_IF_DRIVER_FROM_MASTER(ddr_arbiter[index].cpu,
                 cpu[index].memory);
             AXI4_MASTER_RESPONDER_FROM_TARGET(cpu[index].memory,

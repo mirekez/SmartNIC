@@ -4,6 +4,8 @@ typedef enum logic[32-1:0] {
     REG_CONTROL = 'h0,
     REG_STATUS = 'h4,
     REG_ACTION = 'h8,
+    REG_AUTO_SLOT_MASK = 'hC,
+    REG_AUTO_BASE = 'h10,
     REG_DESCRIPTOR_BASE = 'h20,
     REG_PACKET_ADDRESS = 'h100,
     REG_PACKET_META = 'h104,
@@ -20,7 +22,8 @@ typedef enum logic[32-1:0] {
     REG_DESTINATION_IP2 = 'h130,
     REG_DESTINATION_IP3 = 'h134,
     REG_PORTS = 'h138,
-    REG_PROTOCOL = 'h13C
+    REG_PROTOCOL = 'h13C,
+    REG_SOURCE_PORT = 'h140
 } DescriptorFetcher_Register;
 
 

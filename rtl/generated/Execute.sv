@@ -14,6 +14,7 @@ module Execute (
 ,   input wire State state_in
 ,   input wire State multicycle_state_in
 ,   output wire[31:0] alu_result_out
+,   output wire[31:0] mem_addr_out
 ,   output wire[31:0] debug_alu_a_out
 ,   output wire[31:0] debug_alu_b_out
 ,   output wire branch_taken_out
@@ -64,6 +65,8 @@ module Execute (
 ;
     logic[31:0] alu_b_comb;
 ;
+    logic[31:0] mem_addr_comb;
+;
     logic[63:0] alu_result_comb;
 ;
     logic branch_taken_comb;
@@ -108,7 +111,7 @@ module Execute (
     end
 
     always_comb begin : alu_b_comb_func  // alu_b_comb_func
-        alu_b_comb=(((state_in.alu_op == Alu_pkg::ADD) && (state_in.mem_op != Mem_pkg::MNONE))) ? (unsigned'(32'(state_in.imm))) : ((((state_in.br_op != Br_pkg::BNONE) || state_in.rs2)) ? (state_in.rs2_val) : (unsigned'(32'(state_in.imm))));
+        alu_b_comb=(((state_in.alu_op == Alu_pkg::ADD) && (state_in.mem_op != Mem_pkg::MNONE))) ? (unsigned'(32'(state_in.imm))) : ((state_in.rs2) ? (state_in.rs2_val) : (unsigned'(32'(state_in.imm))));
     end
 
     always_comb begin : alu_result_comb_func  // alu_result_comb_func
@@ -119,75 +122,81 @@ module Execute (
         b=alu_b_comb;
         alu_result_comb='h0;
         alu_op=state_in.alu_op;
-        case (alu_op)
-        Alu_pkg::ADD: begin
-            alu_result_comb=a + b;
+        if (state_in.br_op == Br_pkg::BNONE) begin
+            case (alu_op)
+            Alu_pkg::ADD: begin
+                alu_result_comb=a + b;
+            end
+            Alu_pkg::SUB: begin
+                alu_result_comb=a - b;
+            end
+            Alu_pkg::AND: begin
+                alu_result_comb=a & b;
+            end
+            Alu_pkg::OR: begin
+                alu_result_comb=a | b;
+            end
+            Alu_pkg::XOR: begin
+                alu_result_comb=a ^ b;
+            end
+            Alu_pkg::SLL: begin
+                alu_result_comb=a <<< ((b & 'h1F));
+            end
+            Alu_pkg::SRL: begin
+                alu_result_comb=a >>> ((b & 'h1F));
+            end
+            Alu_pkg::SRA: begin
+                alu_result_comb=unsigned'(32'(signed'(32'(a)) >>> ((b & 'h1F))));
+            end
+            Alu_pkg::SLT: begin
+                alu_result_comb=(signed'(32'(a)) < signed'(32'(b)));
+            end
+            Alu_pkg::SLTU: begin
+                alu_result_comb=(a < b);
+            end
+            Alu_pkg::PASS: begin
+                alu_result_comb=b;
+            end
+            Alu_pkg::MUL: begin
+                alu_result_comb=mul_result_reg;
+            end
+            Alu_pkg::MULH: begin
+                alu_result_comb=mul_result_reg;
+            end
+            Alu_pkg::MULHSU: begin
+                alu_result_comb=mul_result_reg;
+            end
+            Alu_pkg::MULHU: begin
+                alu_result_comb=mul_result_reg;
+            end
+            Alu_pkg::DIV: begin
+                alu_result_comb=div_result_reg;
+            end
+            Alu_pkg::DIVU: begin
+                alu_result_comb=div_result_reg;
+            end
+            Alu_pkg::REM: begin
+                alu_result_comb=div_result_reg;
+            end
+            Alu_pkg::REMU: begin
+                alu_result_comb=div_result_reg;
+            end
+            Alu_pkg::ANONE: begin
+            end
+            endcase
         end
-        Alu_pkg::SUB: begin
-            alu_result_comb=a - b;
-        end
-        Alu_pkg::AND: begin
-            alu_result_comb=a & b;
-        end
-        Alu_pkg::OR: begin
-            alu_result_comb=a | b;
-        end
-        Alu_pkg::XOR: begin
-            alu_result_comb=a ^ b;
-        end
-        Alu_pkg::SLL: begin
-            alu_result_comb=a <<< ((b & 'h1F));
-        end
-        Alu_pkg::SRL: begin
-            alu_result_comb=a >>> ((b & 'h1F));
-        end
-        Alu_pkg::SRA: begin
-            alu_result_comb=unsigned'(32'(signed'(32'(a)) >>> ((b & 'h1F))));
-        end
-        Alu_pkg::SLT: begin
-            alu_result_comb=(signed'(32'(a)) < signed'(32'(b)));
-        end
-        Alu_pkg::SLTU: begin
-            alu_result_comb=(a < b);
-        end
-        Alu_pkg::PASS: begin
-            alu_result_comb=b;
-        end
-        Alu_pkg::MUL: begin
-            alu_result_comb=mul_result_reg;
-        end
-        Alu_pkg::MULH: begin
-            alu_result_comb=mul_result_reg;
-        end
-        Alu_pkg::MULHSU: begin
-            alu_result_comb=mul_result_reg;
-        end
-        Alu_pkg::MULHU: begin
-            alu_result_comb=mul_result_reg;
-        end
-        Alu_pkg::DIV: begin
-            alu_result_comb=div_result_reg;
-        end
-        Alu_pkg::DIVU: begin
-            alu_result_comb=div_result_reg;
-        end
-        Alu_pkg::REM: begin
-            alu_result_comb=div_result_reg;
-        end
-        Alu_pkg::REMU: begin
-            alu_result_comb=div_result_reg;
-        end
-        Alu_pkg::ANONE: begin
-        end
-        endcase
+    end
+
+    always_comb begin : mem_addr_comb_func  // mem_addr_comb_func
+        mem_addr_comb=state_in.rs1_val + unsigned'(32'(state_in.imm));
     end
 
     always_comb begin : branch_taken_comb_func  // branch_taken_comb_func
         logic[31:0] a;
         logic[31:0] b;
         logic signed_less;
-        a=alu_a_comb;
-        b=alu_b_comb;
+        a=state_in.rs1_val;
+        b=state_in.rs2_val;
         signed_less=(((((a ^ b)) >>> 'h1F)) != 'h0) ? ((((a >>> 'h1F)) != 'h0)) : (a < b);
         branch_taken_comb=0;
         case (state_in.br_op)
@@ -506,6 +515,8 @@ module Execute (
     end
 
     assign alu_result_out = unsigned'(32'(alu_result_comb));
+
+    assign mem_addr_out = mem_addr_comb;
 
     assign debug_alu_a_out = alu_a_comb;
 

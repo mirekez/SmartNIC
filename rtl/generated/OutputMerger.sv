@@ -32,65 +32,28 @@ module OutputMerger #(
     localparam  LANE_BYTES = LANE_WIDTH/'h8;
     localparam  OUTPUT_BITS = STREAMS*LANE_WIDTH;
     localparam  OUTPUT_BYTES = STREAMS*LANE_BYTES;
-    localparam  BATCH_BYTES = OUTPUT_BYTES;
-    localparam  BATCH_QUEUE_WORDS = 64'h2;
-    localparam  TIME_QUEUE_BYTES = 64'h40;
-    localparam  BATCH_COUNT_BITS = $clog2(BATCH_BYTES + 'h1);
-    localparam  SCHED_VALID = 64'h0;
-    localparam  SCHED_SELECTED = 64'h1;
-    localparam  SCHED_READ_COUNT = 64'h2;
-    localparam  SCHED_DATA = 64'h4;
-    localparam  SCHED_KEEP = SCHED_DATA + OUTPUT_BITS;
-    localparam  SCHED_SOP = SCHED_KEEP + OUTPUT_BYTES;
-    localparam  SCHED_EOP = SCHED_SOP + OUTPUT_BYTES;
-    localparam  SCHED_BYTES = SCHED_EOP + OUTPUT_BYTES;
-    localparam  SCHED_NEXT_RR = SCHED_BYTES + BATCH_COUNT_BITS;
-    localparam  SCHED_NEXT_ACTIVE = SCHED_NEXT_RR + 'h1;
-    localparam  SCHED_NEXT_STREAM = SCHED_NEXT_ACTIVE + 'h1;
-    localparam  SCHED_ERROR = SCHED_NEXT_STREAM + 'h1;
-    localparam  SCHED_BITS = SCHED_ERROR + 'h1;
-    localparam  WINDOW_WORDS = 64'h2;
-    localparam  TIME_QUEUE_BITS = 64'h200;
-    localparam  TIME_COUNT_BITS = 64'h7;
+    localparam  IPG_CYCLES = (((MIN_IPG_BYTES + LANE_BYTES) - 'h1))/LANE_BYTES;
+    localparam  IPG_COUNT_BITS = $clog2(IPG_CYCLES + 'h1);
 
 
     // regs and combs
-    reg scheduler_rr_reg;
-    reg scheduler_active_reg;
-    reg scheduler_stream_reg;
-    reg[OUTPUT_BITS-1:0] batch_data_reg[2];
-    reg[OUTPUT_BYTES-1:0] batch_keep_reg[2];
-    reg[OUTPUT_BYTES-1:0] batch_sop_reg[2];
-    reg[OUTPUT_BYTES-1:0] batch_eop_reg[2];
-    reg[BATCH_COUNT_BITS-1:0] batch_bytes_reg[2];
-    reg batch_head_reg;
-    reg batch_tail_reg;
-    reg[2-1:0] batch_count_reg;
-    reg[512-1:0] time_data_reg;
-    reg[64-1:0] time_keep_reg;
-    reg[64-1:0] time_sop_reg;
-    reg[64-1:0] time_eop_reg;
-    reg[7-1:0] time_count_reg;
-    reg protocol_error_reg;
-    logic[2-1:0] tx_ready_comb;
-    logic[2-1:0] tx_almost_full_comb;
-    logic[2-1:0] tx_fifo_error_comb;
+    reg[IPG_COUNT_BITS-1:0] ipg_cycles_reg[2];
     logic[LANE_WIDTH-1:0] tx_data_0_comb;
     logic[LANE_BYTES-1:0] tx_keep_0_comb;
     logic[LANE_WIDTH-1:0] tx_data_1_comb;
     logic[LANE_BYTES-1:0] tx_keep_1_comb;
-    logic[SCHED_BITS-1:0] scheduler_result_comb;
+    logic[2-1:0] lane_valid_comb;
 ;
     logic output_valid_comb;
-    logic output_drain_comb;
-    logic queue_append_comb;
-    logic batch_slot_ready_comb;
-    logic[4-1:0] read_count_0_comb;
-    logic[4-1:0] read_count_1_comb;
     logic[OUTPUT_BITS-1:0] output_data_comb;
     logic[OUTPUT_BYTES-1:0] output_keep_comb;
     logic[OUTPUT_BYTES-1:0] output_sop_comb;
     logic[OUTPUT_BYTES-1:0] output_eop_comb;
+    logic[2-1:0] tx_ready_comb;
+    logic[2-1:0] tx_almost_full_comb;
+    logic[2-1:0] tx_fifo_error_comb;
+    logic[4-1:0] read_count_0_comb;
+    logic[4-1:0] read_count_1_comb;
     logic error_comb;
 
     // members
@@ -139,50 +102,88 @@ module OutputMerger #(
     endgenerate
 
     // tmp variables
-    logic scheduler_rr_reg_tmp;
-    logic scheduler_active_reg_tmp;
-    logic scheduler_stream_reg_tmp;
-    logic[OUTPUT_BITS-1:0] batch_data_reg_tmp[2];
-    logic[OUTPUT_BYTES-1:0] batch_keep_reg_tmp[2];
-    logic[OUTPUT_BYTES-1:0] batch_sop_reg_tmp[2];
-    logic[OUTPUT_BYTES-1:0] batch_eop_reg_tmp[2];
-    logic[BATCH_COUNT_BITS-1:0] batch_bytes_reg_tmp[2];
-    logic batch_head_reg_tmp;
-    logic batch_tail_reg_tmp;
-    logic[2-1:0] batch_count_reg_tmp;
-    logic[512-1:0] time_data_reg_tmp;
-    logic[64-1:0] time_keep_reg_tmp;
-    logic[64-1:0] time_sop_reg_tmp;
-    logic[64-1:0] time_eop_reg_tmp;
-    logic[7-1:0] time_count_reg_tmp;
-    logic protocol_error_reg_tmp;
+    logic[IPG_COUNT_BITS-1:0] ipg_cycles_reg_tmp[2];
 
 
     always_comb begin : tx_data_0_comb_func  // tx_data_0_comb_func
-        logic[63:0] _bit;
-        for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-            tx_data_0_comb[_bit] = tx_data_in[('h0*LANE_WIDTH) + _bit];
-        end
+        tx_data_0_comb = tx_data_in['h0*LANE_WIDTH +:(('h0*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h0*LANE_WIDTH + 1];
     end
 
     always_comb begin : tx_keep_0_comb_func  // tx_keep_0_comb_func
-        logic[63:0] _byte;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            tx_keep_0_comb[_byte] = tx_keep_in[('h0*LANE_BYTES) + _byte];
-        end
+        tx_keep_0_comb = tx_keep_in['h0*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
     end
 
     always_comb begin : tx_data_1_comb_func  // tx_data_1_comb_func
-        logic[63:0] _bit;
-        for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
-            tx_data_1_comb[_bit] = tx_data_in[('h1*LANE_WIDTH) + _bit];
-        end
+        tx_data_1_comb = tx_data_in['h1*LANE_WIDTH +:(('h1*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h1*LANE_WIDTH + 1];
     end
 
     always_comb begin : tx_keep_1_comb_func  // tx_keep_1_comb_func
+        tx_keep_1_comb = tx_keep_in['h1*LANE_BYTES +:(0 + LANE_BYTES) - 'h1 - 0 + 1];
+    end
+
+    always_comb begin : lane_valid_comb_func  // lane_valid_comb_func
+        logic[63:0] stream;
+        lane_valid_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            lane_valid_comb[stream] = (unsigned'(32'(ipg_cycles_reg[stream])) == 'h0) && fifos__valid_out[stream]['h0];
+        end
+    end
+
+    always_comb begin : output_valid_comb_func  // output_valid_comb_func
+        output_valid_comb=unsigned'(64'(lane_valid_comb)) != 'h0;
+    end
+
+    always_comb begin : output_data_comb_func  // output_data_comb_func
+        logic[63:0] stream;
+        logic[63:0] _bit;
+        output_data_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            if (lane_valid_comb[stream]) begin
+                for (_bit='h0;_bit < LANE_WIDTH;_bit=_bit+1) begin
+                    output_data_comb[(stream*LANE_WIDTH) + _bit] = fifos__data_out[stream][_bit];
+                end
+            end
+        end
+    end
+
+    always_comb begin : output_keep_comb_func  // output_keep_comb_func
+        logic[63:0] stream;
         logic[63:0] _byte;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            tx_keep_1_comb[_byte] = tx_keep_in[('h1*LANE_BYTES) + _byte];
+        output_keep_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            if (lane_valid_comb[stream]) begin
+                for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
+                    output_keep_comb[(stream*LANE_BYTES) + _byte] = fifos__keep_out[stream][_byte];
+                end
+            end
+        end
+    end
+
+    always_comb begin : output_sop_comb_func  // output_sop_comb_func
+        logic[63:0] stream;
+        output_sop_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            if (lane_valid_comb[stream] && fifos__sop_out[stream]['h0]) begin
+                output_sop_comb[stream*LANE_BYTES] = 'h1;
+            end
+        end
+    end
+
+    always_comb begin : output_eop_comb_func  // output_eop_comb_func
+        logic[63:0] stream;
+        logic[63:0] _byte;
+        logic[31:0] last_byte;
+        output_eop_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            last_byte='h0;
+            for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
+                if (fifos__keep_out[stream][_byte]) begin
+                    last_byte=_byte;
+                end
+            end
+            if (lane_valid_comb[stream] && fifos__eop_out[stream]['h0]) begin
+                output_eop_comb[(stream*LANE_BYTES) + last_byte] = 'h1;
+            end
         end
     end
 
@@ -204,235 +205,16 @@ module OutputMerger #(
         tx_fifo_error_comb['h1] = fifos__protocol_error_out['h1];
     end
 
-    function logic[31:0] prefix_bytes (input logic[8-1:0] keep);
-        logic[31:0] count;
-        logic[31:0] _byte;
-        count='h0;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            if (keep[_byte]) begin
-                count=count+1;
-            end
-        end
-        return count;
-    endfunction
-
-    function logic prefix_keep_valid (input logic[8-1:0] keep);
-        logic[31:0] _byte;
-        logic seen_zero;
-        logic malformed;
-        seen_zero=0;
-        malformed=0;
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
-            if (!keep[_byte]) begin
-                seen_zero=1;
-            end
-            else begin
-                if (seen_zero) begin
-                    malformed=1;
-                end
-            end
-        end
-        return !malformed && (unsigned'(64'(keep)) != 'h0);
-    endfunction
-
-    always_comb begin : scheduler_result_comb_func  // scheduler_result_comb_func
-        logic[31:0] selected;
-        logic[31:0] read_count;
-        logic[31:0] bytes0;
-        logic[31:0] bytes1;
-        logic[31:0] total_bytes;
-        logic active;
-        logic valid0;
-        logic valid1;
-        logic eop0;
-        logic eop1;
-        logic sop0;
-        logic sop1;
-        logic error;
-        logic[128-1:0] words_data;
-        logic[16-1:0] words_keep;
-        logic[2-1:0] words_sop;
-        logic[2-1:0] words_eop;
-        logic[2-1:0] words_valid;
-        logic[128-1:0] batch_data;
-        logic[16-1:0] batch_keep;
-        logic[16-1:0] batch_sop;
-        logic[16-1:0] batch_eop;
-        scheduler_result_comb = 'h0;
-        selected=unsigned'(32'(scheduler_stream_reg));
-        active=scheduler_active_reg;
-        if (!active) begin
-            if (scheduler_rr_reg) begin
-                selected=(fifos__valid_out['h1]['h0]) ? ('h1) : ('h0);
-            end
-            else begin
-                selected=(fifos__valid_out['h0]['h0]) ? ('h0) : ('h1);
-            end
-        end
-        if (selected == 'h0) begin
-            words_data = fifos__data_out['h0];
-            words_keep = fifos__keep_out['h0];
-            words_sop = fifos__sop_out['h0];
-            words_eop = fifos__eop_out['h0];
-            words_valid = fifos__valid_out['h0];
-        end
-        else begin
-            words_data = fifos__data_out['h1];
-            words_keep = fifos__keep_out['h1];
-            words_sop = fifos__sop_out['h1];
-            words_eop = fifos__eop_out['h1];
-            words_valid = fifos__valid_out['h1];
-        end
-        valid0=words_valid['h0];
-        valid1=words_valid['h1];
-        eop0=words_eop['h0];
-        eop1=words_eop['h1];
-        sop0=words_sop['h0];
-        sop1=words_sop['h1];
-        read_count='h0;
-        bytes0='h0;
-        bytes1='h0;
-        total_bytes='h0;
-        error=0;
-        batch_data = 'h0;
-        batch_keep = 'h0;
-        batch_sop = 'h0;
-        batch_eop = 'h0;
-        if (valid0) begin
-            read_count='h1;
-            bytes0=prefix_bytes(words_keep['h0 +:LANE_BYTES - 'h1 - 'h0 + 1]);
-            if (!prefix_keep_valid(words_keep['h0 +:LANE_BYTES - 'h1 - 'h0 + 1])) begin
-                error=1;
-            end
-            if (sop0 == active) begin
-                error=1;
-            end
-            if (!eop0 && (bytes0 != LANE_BYTES)) begin
-                error=1;
-            end
-            batch_data['h0 +:LANE_WIDTH - 'h1 - 'h0 + 1] = words_data['h0 +:LANE_WIDTH - 'h1 - 'h0 + 1];
-            batch_keep['h0 +:LANE_BYTES - 'h1 - 'h0 + 1] = words_keep['h0 +:LANE_BYTES - 'h1 - 'h0 + 1];
-            if (sop0) begin
-                batch_sop['h0] = 'h1;
-            end
-            total_bytes=bytes0;
-            if (!eop0) begin
-                if (!valid1) begin
-                    error=1;
-                end
-                else begin
-                    read_count='h2;
-                    bytes1=prefix_bytes(words_keep['h8 +:8]);
-                    if (!prefix_keep_valid(words_keep['h8 +:8])) begin
-                        error=1;
-                    end
-                    if (sop1) begin
-                        error=1;
-                    end
-                    if (!eop1 && (bytes1 != LANE_BYTES)) begin
-                        error=1;
-                    end
-                    batch_data[LANE_WIDTH +:OUTPUT_BITS - 'h1 - LANE_WIDTH + 1] = words_data['h40 +:64];
-                    batch_keep[LANE_BYTES +:OUTPUT_BYTES - 'h1 - LANE_BYTES + 1] = words_keep['h8 +:8];
-                    total_bytes+=bytes1;
-                end
-            end
-            if (((eop0 || (((read_count == 'h2) && eop1)))) && (total_bytes != 'h0)) begin
-                batch_eop[total_bytes - 'h1] = 'h1;
-            end
-            scheduler_result_comb[SCHED_VALID] = 'h1;
-            scheduler_result_comb[SCHED_SELECTED] = selected;
-            scheduler_result_comb[SCHED_READ_COUNT +:SCHED_READ_COUNT + 'h1 - SCHED_READ_COUNT + 1] = read_count;
-            scheduler_result_comb[SCHED_DATA +:(SCHED_DATA + OUTPUT_BITS) - 'h1 - SCHED_DATA + 1] = batch_data;
-            scheduler_result_comb[SCHED_KEEP +:(SCHED_KEEP + OUTPUT_BYTES) - 'h1 - SCHED_KEEP + 1] = batch_keep;
-            scheduler_result_comb[SCHED_SOP +:(SCHED_SOP + OUTPUT_BYTES) - 'h1 - SCHED_SOP + 1] = batch_sop;
-            scheduler_result_comb[SCHED_EOP +:(SCHED_EOP + OUTPUT_BYTES) - 'h1 - SCHED_EOP + 1] = batch_eop;
-            scheduler_result_comb[SCHED_BYTES +:(SCHED_BYTES + BATCH_COUNT_BITS) - 'h1 - SCHED_BYTES + 1] = total_bytes;
-            if (eop0 || (((read_count == 'h2) && eop1))) begin
-                scheduler_result_comb[SCHED_NEXT_RR] = selected ^ 'h1;
-                scheduler_result_comb[SCHED_NEXT_ACTIVE] = 'h0;
-                scheduler_result_comb[SCHED_NEXT_STREAM] = selected;
-            end
-            else begin
-                scheduler_result_comb[SCHED_NEXT_RR] = scheduler_rr_reg;
-                scheduler_result_comb[SCHED_NEXT_ACTIVE] = 'h1;
-                scheduler_result_comb[SCHED_NEXT_STREAM] = selected;
-            end
-        end
-        else begin
-            scheduler_result_comb[SCHED_NEXT_RR] = scheduler_rr_reg;
-            scheduler_result_comb[SCHED_NEXT_ACTIVE] = active;
-            scheduler_result_comb[SCHED_NEXT_STREAM] = selected;
-        end
-        scheduler_result_comb[SCHED_ERROR] = error;
-    end
-
-    always_comb begin : output_valid_comb_func  // output_valid_comb_func
-        logic[31:0] count;
-        count=unsigned'(32'(time_count_reg));
-        output_valid_comb=(count != 'h0) && ((count>=OUTPUT_BYTES || (((unsigned'(32'(batch_count_reg)) == 'h0) && !scheduler_active_reg))));
-    end
-
-    always_comb begin : output_drain_comb_func  // output_drain_comb_func
-        output_drain_comb=output_valid_comb && ready_in;
-    end
-
-    function logic[31:0] queue_count_after_drain ();
-        logic[31:0] count;
-        count=unsigned'(32'(time_count_reg));
-        if (output_drain_comb) begin
-            count=(count > OUTPUT_BYTES) ? (count - OUTPUT_BYTES) : ('h0);
-        end
-        return count;
-    endfunction
-
-    always_comb begin : queue_append_comb_func  // queue_append_comb_func
-        logic[31:0] head;
-        logic[31:0] span;
-        head=unsigned'(32'(batch_head_reg));
-        span=unsigned'(32'(batch_bytes_reg[head]));
-        if (unsigned'(64'(batch_eop_reg[head])) != 'h0) begin
-            span+=MIN_IPG_BYTES;
-        end
-        queue_append_comb=(unsigned'(32'(batch_count_reg)) != 'h0) && (queue_count_after_drain() + span)<=TIME_QUEUE_BYTES;
-    end
-
-    always_comb begin : batch_slot_ready_comb_func  // batch_slot_ready_comb_func
-        batch_slot_ready_comb=unsigned'(32'(batch_count_reg)) < BATCH_QUEUE_WORDS;
-    end
-
     always_comb begin : read_count_0_comb_func  // read_count_0_comb_func
-        read_count_0_comb = 'h0;
-        if ((batch_slot_ready_comb && scheduler_result_comb[SCHED_VALID]) && ((scheduler_result_comb[SCHED_SELECTED] == (('h0 != 'h0))))) begin
-            read_count_0_comb = scheduler_result_comb[SCHED_READ_COUNT +:SCHED_READ_COUNT + 'h1 - SCHED_READ_COUNT + 1];
-        end
+        read_count_0_comb = (ready_in && lane_valid_comb['h0]) ? ('h1) : ('h0);
     end
 
     always_comb begin : read_count_1_comb_func  // read_count_1_comb_func
-        read_count_1_comb = 'h0;
-        if ((batch_slot_ready_comb && scheduler_result_comb[SCHED_VALID]) && ((scheduler_result_comb[SCHED_SELECTED] == (('h1 != 'h0))))) begin
-            read_count_1_comb = scheduler_result_comb[SCHED_READ_COUNT +:SCHED_READ_COUNT + 'h1 - SCHED_READ_COUNT + 1];
-        end
-    end
-
-    always_comb begin : output_data_comb_func  // output_data_comb_func
-        output_data_comb = time_data_reg['h0 +:OUTPUT_BITS - 'h1 - 'h0 + 1];
-    end
-
-    always_comb begin : output_keep_comb_func  // output_keep_comb_func
-        output_keep_comb = time_keep_reg['h0 +:OUTPUT_BYTES - 'h1 - 'h0 + 1];
-    end
-
-    always_comb begin : output_sop_comb_func  // output_sop_comb_func
-        output_sop_comb = time_sop_reg['h0 +:OUTPUT_BYTES - 'h1 - 'h0 + 1];
-    end
-
-    always_comb begin : output_eop_comb_func  // output_eop_comb_func
-        output_eop_comb = time_eop_reg['h0 +:OUTPUT_BYTES - 'h1 - 'h0 + 1];
+        read_count_1_comb = (ready_in && lane_valid_comb['h1]) ? ('h1) : ('h0);
     end
 
     always_comb begin : error_comb_func  // error_comb_func
-        error_comb=(protocol_error_reg || fifos__protocol_error_out['h0]) || fifos__protocol_error_out['h1];
+        error_comb=unsigned'(64'(tx_fifo_error_comb)) != 'h0;
     end
 
     generate  // _assign
@@ -464,97 +246,21 @@ module OutputMerger #(
     task _work_net_clk (input logic reset);
     begin: _work_net_clk
         logic[63:0] stream;
-        logic[63:0] batch_slot;
-        logic[31:0] count;
-        logic[31:0] batch_head;
-        logic[31:0] batch_tail;
-        logic[31:0] batch_count;
-        logic[31:0] append_position;
-        logic[31:0] append_span;
-        logic[512-1:0] queue_data;
-        logic[64-1:0] queue_keep;
-        logic[64-1:0] queue_sop;
-        logic[64-1:0] queue_eop;
-        logic[189-1:0] candidate;
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
-        end
-        if (reset) begin
-            scheduler_rr_reg_tmp = '0;
-            scheduler_active_reg_tmp = '0;
-            scheduler_stream_reg_tmp = '0;
-            for (batch_slot='h0;batch_slot < BATCH_QUEUE_WORDS;batch_slot=batch_slot+1) begin
-                batch_data_reg_tmp[batch_slot] = '0;
-                batch_keep_reg_tmp[batch_slot] = '0;
-                batch_sop_reg_tmp[batch_slot] = '0;
-                batch_eop_reg_tmp[batch_slot] = '0;
-                batch_bytes_reg_tmp[batch_slot] = '0;
+            if (reset) begin
+                ipg_cycles_reg_tmp[stream] = '0;
             end
-            batch_head_reg_tmp = '0;
-            batch_tail_reg_tmp = '0;
-            batch_count_reg_tmp = '0;
-            time_data_reg_tmp = '0;
-            time_keep_reg_tmp = '0;
-            time_sop_reg_tmp = '0;
-            time_eop_reg_tmp = '0;
-            time_count_reg_tmp = '0;
-            protocol_error_reg_tmp = '0;
-            disable _work_net_clk;
-        end
-        queue_data = time_data_reg;
-        queue_keep = time_keep_reg;
-        queue_sop = time_sop_reg;
-        queue_eop = time_eop_reg;
-        count=unsigned'(32'(time_count_reg));
-        batch_head=unsigned'(32'(batch_head_reg));
-        batch_tail=unsigned'(32'(batch_tail_reg));
-        batch_count=unsigned'(32'(batch_count_reg));
-        if (output_drain_comb) begin
-            queue_data = queue_data >> OUTPUT_BITS;
-            queue_keep = queue_keep >> OUTPUT_BYTES;
-            queue_sop = queue_sop >> OUTPUT_BYTES;
-            queue_eop = queue_eop >> OUTPUT_BYTES;
-            count=(count > OUTPUT_BYTES) ? (count - OUTPUT_BYTES) : ('h0);
-        end
-        if (queue_append_comb) begin
-            append_position=count;
-            append_span=unsigned'(32'(batch_bytes_reg[batch_head]));
-            queue_data = queue_data | (batch_data_reg[batch_head] << (append_position*'h8));
-            queue_keep = queue_keep | (batch_keep_reg[batch_head] << append_position);
-            queue_sop = queue_sop | (batch_sop_reg[batch_head] << append_position);
-            queue_eop = queue_eop | (batch_eop_reg[batch_head] << append_position);
-            if (unsigned'(64'(batch_eop_reg[batch_head])) != 'h0) begin
-                append_span+=MIN_IPG_BYTES;
-            end
-            count+=append_span;
-            batch_head=((batch_head + 'h1)) & ((BATCH_QUEUE_WORDS - 'h1));
-            --batch_count;
-        end
-        time_data_reg_tmp = queue_data;
-        time_keep_reg_tmp = queue_keep;
-        time_sop_reg_tmp = queue_sop;
-        time_eop_reg_tmp = queue_eop;
-        time_count_reg_tmp = count;
-        if (batch_slot_ready_comb) begin
-            candidate = scheduler_result_comb;
-            if (candidate[SCHED_VALID]) begin
-                batch_data_reg_tmp[batch_tail] = candidate[SCHED_DATA +:(SCHED_DATA + OUTPUT_BITS) - 'h1 - SCHED_DATA + 1];
-                batch_keep_reg_tmp[batch_tail] = candidate[SCHED_KEEP +:(SCHED_KEEP + OUTPUT_BYTES) - 'h1 - SCHED_KEEP + 1];
-                batch_sop_reg_tmp[batch_tail] = candidate[SCHED_SOP +:(SCHED_SOP + OUTPUT_BYTES) - 'h1 - SCHED_SOP + 1];
-                batch_eop_reg_tmp[batch_tail] = candidate[SCHED_EOP +:(SCHED_EOP + OUTPUT_BYTES) - 'h1 - SCHED_EOP + 1];
-                batch_bytes_reg_tmp[batch_tail] = candidate[SCHED_BYTES +:(SCHED_BYTES + BATCH_COUNT_BITS) - 'h1 - SCHED_BYTES + 1];
-                batch_tail=((batch_tail + 'h1)) & ((BATCH_QUEUE_WORDS - 'h1));
-                batch_count=batch_count+1;
-                scheduler_rr_reg_tmp = unsigned'(1'(candidate[SCHED_NEXT_RR]));
-                scheduler_active_reg_tmp = unsigned'(1'(candidate[SCHED_NEXT_ACTIVE]));
-                scheduler_stream_reg_tmp = unsigned'(1'(candidate[SCHED_NEXT_STREAM]));
-                if (candidate[SCHED_ERROR]) begin
-                    protocol_error_reg_tmp = unsigned'(1'h1);
+            else begin
+                if ((ready_in && lane_valid_comb[stream]) && fifos__eop_out[stream]['h0]) begin
+                    ipg_cycles_reg_tmp[stream] = IPG_CYCLES;
+                end
+                else begin
+                    if (ready_in && (unsigned'(32'(ipg_cycles_reg[stream])) != 'h0)) begin
+                        ipg_cycles_reg_tmp[stream] = ipg_cycles_reg[stream] - 'h1;
+                    end
                 end
             end
         end
-        batch_head_reg_tmp = unsigned'(1'(batch_head));
-        batch_tail_reg_tmp = unsigned'(1'(batch_tail));
-        batch_count_reg_tmp = batch_count;
     end
     endtask
 
@@ -570,43 +276,11 @@ module OutputMerger #(
     endtask
 
     always_ff @(posedge net_clk) begin
-        scheduler_rr_reg_tmp = scheduler_rr_reg;
-        scheduler_active_reg_tmp = scheduler_active_reg;
-        scheduler_stream_reg_tmp = scheduler_stream_reg;
-        batch_data_reg_tmp = batch_data_reg;
-        batch_keep_reg_tmp = batch_keep_reg;
-        batch_sop_reg_tmp = batch_sop_reg;
-        batch_eop_reg_tmp = batch_eop_reg;
-        batch_bytes_reg_tmp = batch_bytes_reg;
-        batch_head_reg_tmp = batch_head_reg;
-        batch_tail_reg_tmp = batch_tail_reg;
-        batch_count_reg_tmp = batch_count_reg;
-        time_data_reg_tmp = time_data_reg;
-        time_keep_reg_tmp = time_keep_reg;
-        time_sop_reg_tmp = time_sop_reg;
-        time_eop_reg_tmp = time_eop_reg;
-        time_count_reg_tmp = time_count_reg;
-        protocol_error_reg_tmp = protocol_error_reg;
+        ipg_cycles_reg_tmp = ipg_cycles_reg;
 
         _work_net_clk(reset);
 
-        scheduler_rr_reg <= scheduler_rr_reg_tmp;
-        scheduler_active_reg <= scheduler_active_reg_tmp;
-        scheduler_stream_reg <= scheduler_stream_reg_tmp;
-        batch_data_reg <= batch_data_reg_tmp;
-        batch_keep_reg <= batch_keep_reg_tmp;
-        batch_sop_reg <= batch_sop_reg_tmp;
-        batch_eop_reg <= batch_eop_reg_tmp;
-        batch_bytes_reg <= batch_bytes_reg_tmp;
-        batch_head_reg <= batch_head_reg_tmp;
-        batch_tail_reg <= batch_tail_reg_tmp;
-        batch_count_reg <= batch_count_reg_tmp;
-        time_data_reg <= time_data_reg_tmp;
-        time_keep_reg <= time_keep_reg_tmp;
-        time_sop_reg <= time_sop_reg_tmp;
-        time_eop_reg <= time_eop_reg_tmp;
-        time_count_reg <= time_count_reg_tmp;
-        protocol_error_reg <= protocol_error_reg_tmp;
+        ipg_cycles_reg <= ipg_cycles_reg_tmp;
     end
 
     always_ff @(posedge l2_clk) begin

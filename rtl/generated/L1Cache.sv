@@ -7,11 +7,13 @@ import L1LookupComb_pkg::*;
 import L1RefillLinesComb_pkg::*;
 import L1CpuResponseComb_pkg::*;
 import L1CachePerf_pkg::*;
+import L1SelectedLineState_pkg::*;
 import L1RequestGeometryComb_pkg::*;
 import L1MemDriver_pkg::*;
 import L1RequestState_pkg::*;
 import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
+import L1LookupState_pkg::*;
 
 
 module L1Cache #(
@@ -73,6 +75,14 @@ module L1Cache #(
 ;
     L1LookupComb L1CacheLookup___lookup_comb;
 ;
+    L1SelectedLineState L1CacheLookup___selected_line_comb;
+;
+    logic L1CacheLookup___selected_line_hit_comb;
+;
+    logic[32-1:0] L1CacheLookup___selected_line_data_comb;
+;
+    logic[32-1:0] L1CacheLookup___lookup_data_comb;
+;
     L1InputRequestComb L1CacheLookup___input_request_comb;
 ;
     logic[((ADDR_BITS - $clog2(((TOTAL_CACHE_SIZE/CACHE_LINE_SIZE)/WAYS))) - $clog2(CACHE_LINE_SIZE)) + 'hA-1:0] L1CacheLookup___refill_tag_comb;
@@ -92,11 +102,15 @@ module L1Cache #(
     reg[3-1:0] L1CacheState___state_reg;
     L1RequestState L1CacheState___req_reg;
     reg L1CacheState___tag_epoch_reg;
+    reg L1CacheState___epoch_wrap_pending_reg;
     reg[SETS-1:0][8-1:0] L1CacheState___tag_set_epoch_reg;
     L1RefillState L1CacheState___refill_reg;
     reg[WAY_BITS-1:0] L1CacheState___victim_reg;
     reg[SET_BITS-1:0] L1CacheState___init_set_reg;
     L1HeldResponse L1CacheState___response_reg;
+    L1LookupState L1CacheState___lookup_reg;
+    L1SelectedLineState L1CacheState___selected_line_reg;
+    reg[WAYS-1:0][TAG_BITS + 'hA-1:0] L1CacheState___tag_entries_reg;
 
     // members
     genvar __i;
@@ -177,20 +191,31 @@ module L1Cache #(
     logic[3-1:0] L1CacheState___state_reg_tmp;
     L1RequestState L1CacheState___req_reg_tmp;
     logic L1CacheState___tag_epoch_reg_tmp;
+    logic L1CacheState___epoch_wrap_pending_reg_tmp;
     logic[SETS-1:0][8-1:0] L1CacheState___tag_set_epoch_reg_tmp;
     L1RefillState L1CacheState___refill_reg_tmp;
     logic[WAY_BITS-1:0] L1CacheState___victim_reg_tmp;
     logic[SET_BITS-1:0] L1CacheState___init_set_reg_tmp;
     L1HeldResponse L1CacheState___response_reg_tmp;
+    L1LookupState L1CacheState___lookup_reg_tmp;
+    L1SelectedLineState L1CacheState___selected_line_reg_tmp;
+    logic[WAYS-1:0][TAG_BITS + 'hA-1:0] L1CacheState___tag_entries_reg_tmp;
 
 
-    always_comb begin : L1CacheRequest___request_geometry_comb_func  // L1CacheRequest___request_geometry_comb_func
-        L1CacheRequest___request_geometry_comb = 0;
-        L1CacheRequest___request_geometry_comb.set = unsigned'(32'(((unsigned'(32'(L1CacheState___req_reg.addr))/CACHE_LINE_SIZE)) % SETS));
-        L1CacheRequest___request_geometry_comb.tag = unsigned'(32'(unsigned'(32'(L1CacheState___req_reg.addr))/((CACHE_LINE_SIZE*SETS))));
-        L1CacheRequest___request_geometry_comb.word = unsigned'(32'(((unsigned'(32'(L1CacheState___req_reg.addr)) >>> 'h2)) & ((LINE_WORDS - 'h1))));
-        L1CacheRequest___request_geometry_comb.refill_beat = unsigned'(32'(((unsigned'(32'(L1CacheState___req_reg.addr)) & ((CACHE_LINE_SIZE - 'h1))))/PORT_BYTES));
-        L1CacheRequest___request_geometry_comb.direct_cross_beat = unsigned'(1'((!L1CacheState___req_reg.cache_disable && ((((unsigned'(32'(L1CacheState___req_reg.addr)) & 'h3)) != 'h0))) && (((((unsigned'(32'(L1CacheState___req_reg.addr)) % PORT_BYTES))/'h4)) + 'h1)>=PORT_WORDS));
+    always_comb begin : L1CacheRequest___input_decode_comb_func  // L1CacheRequest___input_decode_comb_func
+        L1CacheRequest___input_decode_comb = 0;
+        L1CacheRequest___input_decode_comb.set = unsigned'(32'(((addr_in/CACHE_LINE_SIZE)) % SETS));
+        L1CacheRequest___input_decode_comb.cacheable = unsigned'(1'(!cache_disable_in && !((addr_in & 'h1))));
+        if (((DCACHE != 'h0) && (((addr_in & 'h3)) != 'h0)) && ((((((addr_in >>> 'h2)) & ((LINE_WORDS - 'h1)))) == (LINE_WORDS - 'h1)))) begin
+            L1CacheRequest___input_decode_comb.cacheable = unsigned'(1'(0));
+        end
+        if (((DCACHE == 'h0) && (((addr_in & 'h2)) != 'h0)) && ((((((addr_in >>> 'h2)) & ((LINE_WORDS - 'h1)))) == (LINE_WORDS - 'h1)))) begin
+            L1CacheRequest___input_decode_comb.cacheable = unsigned'(1'(0));
+        end
+    end
+
+    always_comb begin : L1CacheLookup___selected_line_hit_comb_func  // L1CacheLookup___selected_line_hit_comb_func
+        L1CacheLookup___selected_line_hit_comb=((((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_IDLE) && read_in) && !write_in) && !flush_in) && L1CacheState___selected_line_reg.valid) && L1CacheRequest___input_decode_comb.cacheable) && ((((addr_in & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1)))))) == unsigned'(32'(L1CacheState___selected_line_reg.addr))));
     end
 
     function logic[31:0] L1CacheRefill___assemble_line_word (
@@ -215,33 +240,17 @@ module L1Cache #(
         return (byte_offset == 'h0) ? (word_data) : (((word_data >>> ((byte_offset*'h8)))) | ((next_word_data <<< (('h20 - (byte_offset*'h8))))));
     endfunction
 
-    always_comb begin : L1CacheLookup___lookup_comb_func  // L1CacheLookup___lookup_comb_func
-        logic[63:0] i;
-        logic[31:0] word;
-        logic[31:0] _byte;
-        logic[128-1:0] even_line;
-        logic[128-1:0] odd_line;
-        logic[256-1:0] tag_entry;
-        L1CacheLookup___lookup_comb = 0;
-        word=unsigned'(32'(L1CacheRequest___request_geometry_comb.word));
-        _byte=unsigned'(32'(L1CacheState___req_reg.addr)) & 'h3;
-        even_line = 'h0;
-        odd_line = 'h0;
-        tag_entry = 'h0;
-        if (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) && L1CacheState___req_reg.cacheable) begin
-            for (i='h0;i < WAYS;i=i+1) begin
-                tag_entry = L1CacheState___tag_ram__q_out[i];
-                if (((tag_entry[(TAG_BITS + 'h9)] && (tag_entry[(TAG_BITS + 'h8)] == L1CacheState___tag_epoch_reg)) && (tag_entry[TAG_BITS +:(TAG_BITS + 'h7) - TAG_BITS + 1] == L1CacheState___tag_set_epoch_reg[unsigned'(32'(L1CacheRequest___request_geometry_comb.set))])) && (tag_entry['h0 +:(TAG_BITS - 'h1) - 'h0 + 1] == unsigned'(32'(L1CacheRequest___request_geometry_comb.tag)))) begin
-                    L1CacheLookup___lookup_comb.hit = unsigned'(1'(1));
-                    L1CacheLookup___lookup_comb.way = unsigned'(8'(i));
-                    even_line = L1CacheState___even_ram__q_out[i];
-                    odd_line = L1CacheState___odd_ram__q_out[i];
-                end
-            end
-        end
-        if (L1CacheLookup___lookup_comb.hit) begin
-            L1CacheLookup___lookup_comb.data = unsigned'(32'(L1CacheRefill___assemble_line_word(even_line, odd_line, word, _byte)));
-        end
+    always_comb begin : L1CacheLookup___selected_line_data_comb_func  // L1CacheLookup___selected_line_data_comb_func
+        L1CacheLookup___selected_line_data_comb = unsigned'(32'(L1CacheRefill___assemble_line_word(L1CacheState___selected_line_reg.even, L1CacheState___selected_line_reg.odd, ((addr_in >>> 'h2)) & ((LINE_WORDS - 'h1)), addr_in & 'h3)));
+    end
+
+    always_comb begin : L1CacheRequest___request_geometry_comb_func  // L1CacheRequest___request_geometry_comb_func
+        L1CacheRequest___request_geometry_comb = 0;
+        L1CacheRequest___request_geometry_comb.set = unsigned'(32'(((unsigned'(32'(L1CacheState___req_reg.addr))/CACHE_LINE_SIZE)) % SETS));
+        L1CacheRequest___request_geometry_comb.tag = unsigned'(32'(unsigned'(32'(L1CacheState___req_reg.addr))/((CACHE_LINE_SIZE*SETS))));
+        L1CacheRequest___request_geometry_comb.word = unsigned'(32'(((unsigned'(32'(L1CacheState___req_reg.addr)) >>> 'h2)) & ((LINE_WORDS - 'h1))));
+        L1CacheRequest___request_geometry_comb.refill_beat = unsigned'(32'(((unsigned'(32'(L1CacheState___req_reg.addr)) & ((CACHE_LINE_SIZE - 'h1))))/PORT_BYTES));
+        L1CacheRequest___request_geometry_comb.direct_cross_beat = unsigned'(1'((!L1CacheState___req_reg.cache_disable && ((((unsigned'(32'(L1CacheState___req_reg.addr)) & 'h3)) != 'h0))) && (((((unsigned'(32'(L1CacheState___req_reg.addr)) % PORT_BYTES))/'h4)) + 'h1)>=PORT_WORDS));
     end
 
     always_comb begin : L1CacheRefill___direct_data_comb_func  // L1CacheRefill___direct_data_comb_func
@@ -267,30 +276,59 @@ module L1Cache #(
 
     always_comb begin : L1CacheResponse___cpu_response_comb_func  // L1CacheResponse___cpu_response_comb_func
         L1CacheResponse___cpu_response_comb = 0;
-        if (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) && L1CacheLookup___lookup_comb.hit) begin
-            L1CacheResponse___cpu_response_comb.data = L1CacheLookup___lookup_comb.data;
+        if (L1CacheState___response_reg.valid) begin
+            L1CacheResponse___cpu_response_comb.data = L1CacheState___response_reg.data;
         end
         else begin
-            if (L1CacheState___response_reg.valid) begin
-                L1CacheResponse___cpu_response_comb.data = L1CacheState___response_reg.data;
+            if (L1CacheLookup___selected_line_hit_comb) begin
+                L1CacheResponse___cpu_response_comb.data = L1CacheLookup___selected_line_data_comb;
             end
             else begin
                 L1CacheResponse___cpu_response_comb.data = unsigned'(32'(L1CacheRefill___direct_data_comb));
             end
         end
-        L1CacheResponse___cpu_response_comb.addr = unsigned'(32'((L1CacheState___response_reg.valid) ? (unsigned'(32'(L1CacheState___response_reg.addr))) : (unsigned'(32'(L1CacheState___req_reg.addr)))));
-        L1CacheResponse___cpu_response_comb.valid = unsigned'(1'(L1CacheState___response_reg.valid || ((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) && L1CacheLookup___lookup_comb.hit))));
-        L1CacheResponse___cpu_response_comb.busy = unsigned'(1'(((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_INIT) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL)) || ((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) && !L1CacheLookup___lookup_comb.hit))));
+        L1CacheResponse___cpu_response_comb.addr = unsigned'(32'((L1CacheState___response_reg.valid) ? (unsigned'(32'(L1CacheState___response_reg.addr))) : (((L1CacheLookup___selected_line_hit_comb) ? (unsigned'(32'(addr_in))) : (unsigned'(32'(L1CacheState___req_reg.addr)))))));
+        L1CacheResponse___cpu_response_comb.valid = unsigned'(1'(((L1CacheState___response_reg.valid || L1CacheLookup___selected_line_hit_comb)) && !L1CacheState___epoch_wrap_pending_reg));
+        L1CacheResponse___cpu_response_comb.busy = unsigned'(1'((((((L1CacheState___epoch_wrap_pending_reg || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_INIT)) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL)) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP)) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_COMPARE)) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_SELECT)) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_ASSEMBLE)));
+    end
+
+    always_comb begin : L1CacheLookup___lookup_comb_func  // L1CacheLookup___lookup_comb_func
+        logic[63:0] i;
+        logic[31:0] word;
+        logic[31:0] _byte;
+        logic[128-1:0] even_line;
+        logic[128-1:0] odd_line;
+        logic[256-1:0] tag_entry;
+        L1CacheLookup___lookup_comb = 0;
+        word=unsigned'(32'(L1CacheRequest___request_geometry_comb.word));
+        _byte=unsigned'(32'(L1CacheState___req_reg.addr)) & 'h3;
+        even_line = 'h0;
+        odd_line = 'h0;
+        tag_entry = 'h0;
+        if (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_COMPARE) && L1CacheState___req_reg.read) && L1CacheState___req_reg.cacheable) begin
+            for (i='h0;i < WAYS;i=i+1) begin
+                tag_entry = L1CacheState___tag_entries_reg[i];
+                if (((tag_entry[(TAG_BITS + 'h9)] && (tag_entry[(TAG_BITS + 'h8)] == L1CacheState___tag_epoch_reg)) && (tag_entry[TAG_BITS +:(TAG_BITS + 'h7) - TAG_BITS + 1] == L1CacheState___tag_set_epoch_reg[unsigned'(32'(L1CacheRequest___request_geometry_comb.set))])) && (tag_entry['h0 +:(TAG_BITS - 'h1) - 'h0 + 1] == unsigned'(32'(L1CacheRequest___request_geometry_comb.tag)))) begin
+                    L1CacheLookup___lookup_comb.hit = unsigned'(1'(1));
+                    L1CacheLookup___lookup_comb.way = unsigned'(8'(i));
+                    even_line = L1CacheState___even_ram__q_out[i];
+                    odd_line = L1CacheState___odd_ram__q_out[i];
+                end
+            end
+        end
+        if (L1CacheLookup___lookup_comb.hit) begin
+            L1CacheLookup___lookup_comb.data = unsigned'(32'(L1CacheRefill___assemble_line_word(even_line, odd_line, word, _byte)));
+        end
     end
 
     always_comb begin : L1CacheResponse___perf_comb_func  // L1CacheResponse___perf_comb_func
         L1CacheResponse___perf_comb = 0;
         L1CacheResponse___perf_comb.state = L1CacheState___state_reg;
-        L1CacheResponse___perf_comb.hit=L1CacheLookup___lookup_comb.hit;
-        L1CacheResponse___perf_comb.lookup_wait=L1CacheResponse___cpu_response_comb.busy && (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP);
+        L1CacheResponse___perf_comb.hit=(((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_SELECT) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_ASSEMBLE))) ? (L1CacheState___lookup_reg.hit) : (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_COMPARE) ? (L1CacheLookup___lookup_comb.hit) : (0)));
+        L1CacheResponse___perf_comb.lookup_wait=L1CacheResponse___cpu_response_comb.busy && (((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_COMPARE)) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_SELECT)) || (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_ASSEMBLE)));
         L1CacheResponse___perf_comb.refill_wait=L1CacheResponse___cpu_response_comb.busy && (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL);
         L1CacheResponse___perf_comb.init_wait=L1CacheResponse___cpu_response_comb.busy && (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_INIT);
-        L1CacheResponse___perf_comb.issue_wait=read_in && (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_IDLE);
+        L1CacheResponse___perf_comb.issue_wait=(read_in && (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_IDLE)) && !L1CacheLookup___selected_line_hit_comb;
     end
 
     always_comb begin : L1CacheRequest___mem_driver_comb_func  // L1CacheRequest___mem_driver_comb_func
@@ -318,29 +356,14 @@ module L1Cache #(
         end
     end
 
-    always_comb begin : L1CacheRequest___input_decode_comb_func  // L1CacheRequest___input_decode_comb_func
-        L1CacheRequest___input_decode_comb = 0;
-        L1CacheRequest___input_decode_comb.set = unsigned'(32'(((addr_in/CACHE_LINE_SIZE)) % SETS));
-        L1CacheRequest___input_decode_comb.cacheable = unsigned'(1'(!cache_disable_in && !((addr_in & 'h1))));
-        if (((DCACHE != 'h0) && (((addr_in & 'h3)) != 'h0)) && ((((((addr_in >>> 'h2)) & ((LINE_WORDS - 'h1)))) == (LINE_WORDS - 'h1)))) begin
-            L1CacheRequest___input_decode_comb.cacheable = unsigned'(1'(0));
-        end
-        if (((DCACHE == 'h0) && (((addr_in & 'h2)) != 'h0)) && ((((((addr_in >>> 'h2)) & ((LINE_WORDS - 'h1)))) == (LINE_WORDS - 'h1)))) begin
-            L1CacheRequest___input_decode_comb.cacheable = unsigned'(1'(0));
-        end
-    end
-
     always_comb begin : L1CacheLookup___input_request_comb_func  // L1CacheLookup___input_request_comb_func
         L1CacheLookup___input_request_comb = L1CacheRequest___input_decode_comb;
         L1CacheLookup___input_request_comb.start = unsigned'(1'(0));
-        if (read_in && !stall_in) begin
+        if ((read_in && !stall_in) && !L1CacheLookup___selected_line_hit_comb) begin
             if (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_IDLE) begin
                 L1CacheLookup___input_request_comb.start = unsigned'(1'(1));
             end
             if (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_DONE) && L1CacheState___req_reg.cacheable) && (addr_in != unsigned'(32'(L1CacheState___response_reg.addr)))) begin
-                L1CacheLookup___input_request_comb.start = unsigned'(1'(1));
-            end
-            if ((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) && L1CacheLookup___lookup_comb.hit) && (addr_in != unsigned'(32'(L1CacheState___req_reg.addr)))) begin
                 L1CacheLookup___input_request_comb.start = unsigned'(1'(1));
             end
         end
@@ -385,21 +408,40 @@ module L1Cache #(
         for (gi='h0;gi < WAYS;gi=gi+1) begin
             assign L1CacheState___even_ram__addr_in[gi] = (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) || (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && !L1CacheLookup___input_request_comb.issue)))) ? (unsigned'(32'(L1CacheRequest___request_geometry_comb.set))) : (unsigned'(32'(L1CacheLookup___input_request_comb.set)));
             assign L1CacheState___even_ram__data_in[gi] = L1CacheRefill___refill_lines_comb.even;
-            assign L1CacheState___even_ram__wr_in[gi] = ((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) && L1CacheState___req_reg.read) && L1CacheState___req_reg.cacheable) && (L1CacheState___refill_reg.beat == (REFILL_BEATS - 'h1))) && (L1CacheState___victim_reg == gi);
+            assign L1CacheState___even_ram__wr_in[gi] = (((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) && L1CacheState___req_reg.read) && L1CacheState___req_reg.cacheable) && !mem_out__wait_in) && (L1CacheState___refill_reg.beat == (REFILL_BEATS - 'h1))) && (L1CacheState___victim_reg == gi);
             assign L1CacheState___even_ram__rd_in[gi] = L1CacheLookup___input_request_comb.issue && L1CacheLookup___input_request_comb.cacheable;
             assign L1CacheState___even_ram__id_in[gi]=(DCACHE*'h64) + (gi*'h3);
             assign L1CacheState___odd_ram__addr_in[gi] = (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) || (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && !L1CacheLookup___input_request_comb.issue)))) ? (unsigned'(32'(L1CacheRequest___request_geometry_comb.set))) : (unsigned'(32'(L1CacheLookup___input_request_comb.set)));
             assign L1CacheState___odd_ram__data_in[gi] = L1CacheRefill___refill_lines_comb.odd;
-            assign L1CacheState___odd_ram__wr_in[gi] = ((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) && L1CacheState___req_reg.read) && L1CacheState___req_reg.cacheable) && (L1CacheState___refill_reg.beat == (REFILL_BEATS - 'h1))) && (L1CacheState___victim_reg == gi);
+            assign L1CacheState___odd_ram__wr_in[gi] = (((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) && L1CacheState___req_reg.read) && L1CacheState___req_reg.cacheable) && !mem_out__wait_in) && (L1CacheState___refill_reg.beat == (REFILL_BEATS - 'h1))) && (L1CacheState___victim_reg == gi);
             assign L1CacheState___odd_ram__rd_in[gi] = L1CacheLookup___input_request_comb.issue && L1CacheLookup___input_request_comb.cacheable;
             assign L1CacheState___odd_ram__id_in[gi]=((DCACHE*'h64) + (gi*'h3)) + 'h1;
             assign L1CacheState___tag_ram__addr_in[gi] = (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_INIT) ? (unsigned'(32'(L1CacheState___init_set_reg))) : (((write_in) ? (unsigned'(32'(L1CacheLookup___input_request_comb.set))) : (((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) || (((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && !L1CacheLookup___input_request_comb.issue)))) ? (unsigned'(32'(L1CacheRequest___request_geometry_comb.set))) : (unsigned'(32'(L1CacheLookup___input_request_comb.set)))))));
             assign L1CacheState___tag_ram__data_in[gi] = (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) ? (L1CacheLookup___refill_tag_comb) : ('h0);
-            assign L1CacheState___tag_ram__wr_in[gi] = ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_INIT) || ((((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) && L1CacheState___req_reg.read) && L1CacheState___req_reg.cacheable) && (L1CacheState___refill_reg.beat == (REFILL_BEATS - 'h1))) && (L1CacheState___victim_reg == gi)))) || write_in;
+            assign L1CacheState___tag_ram__wr_in[gi] = ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_INIT) || (((((((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) && L1CacheState___req_reg.read) && L1CacheState___req_reg.cacheable) && !mem_out__wait_in) && (L1CacheState___refill_reg.beat == (REFILL_BEATS - 'h1))) && (L1CacheState___victim_reg == gi)))) || write_in;
             assign L1CacheState___tag_ram__rd_in[gi] = L1CacheLookup___input_request_comb.issue && L1CacheLookup___input_request_comb.cacheable;
             assign L1CacheState___tag_ram__id_in[gi]=((DCACHE*'h64) + (gi*'h3)) + 'h2;
         end
     endgenerate
+
+    always_comb begin : L1CacheLookup___selected_line_comb_func  // L1CacheLookup___selected_line_comb_func
+        logic[63:0] i;
+        L1CacheLookup___selected_line_comb = 0;
+        if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_SELECT) && L1CacheState___lookup_reg.hit) begin
+            for (i='h0;i < WAYS;i=i+1) begin
+                if (L1CacheState___lookup_reg.way == i) begin
+                    L1CacheLookup___selected_line_comb.even = L1CacheState___even_ram__q_out[i];
+                    L1CacheLookup___selected_line_comb.odd = L1CacheState___odd_ram__q_out[i];
+                    L1CacheLookup___selected_line_comb.addr = unsigned'(32'(unsigned'(32'(L1CacheState___req_reg.addr)) & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1))))));
+                    L1CacheLookup___selected_line_comb.valid = unsigned'(1'(1));
+                end
+            end
+        end
+    end
+
+    always_comb begin : L1CacheLookup___lookup_data_comb_func  // L1CacheLookup___lookup_data_comb_func
+        L1CacheLookup___lookup_data_comb = unsigned'(32'(L1CacheRefill___assemble_line_word(L1CacheState___selected_line_reg.even, L1CacheState___selected_line_reg.odd, unsigned'(32'(L1CacheRequest___request_geometry_comb.word)), unsigned'(32'(L1CacheState___req_reg.addr)) & 'h3)));
+    end
 
     always_comb begin : L1CacheRefill___refill_data_comb_func  // L1CacheRefill___refill_data_comb_func
         L1CacheRefill___refill_data_comb=L1CacheRefill___assemble_line_word(L1CacheRefill___refill_lines_comb.even, L1CacheRefill___refill_lines_comb.odd, unsigned'(32'(L1CacheRequest___request_geometry_comb.word)), unsigned'(32'(L1CacheState___req_reg.addr)) & 'h3);
@@ -425,21 +467,23 @@ module L1Cache #(
             L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
         end
         if (invalidate_line_in) begin
-            if (invalidate_epoch_wrap) begin
-                for (i='h0;i < SETS;i=i+1) begin
-                    L1CacheState___tag_set_epoch_reg_tmp[i] = unsigned'(8'h0);
+            for (i='h0;i < SETS;i=i+1) begin
+                if (invalidate_set == i) begin
+                    L1CacheState___tag_set_epoch_reg_tmp[i] = unsigned'(8'(L1CacheState___tag_set_epoch_reg[i] + 'h1));
                 end
             end
-            else begin
-                L1CacheState___tag_set_epoch_reg_tmp[invalidate_set] = unsigned'(8'(L1CacheState___tag_set_epoch_reg[invalidate_set] + 'h1));
+            if (invalidate_epoch_wrap) begin
+                L1CacheState___tag_epoch_reg_tmp = unsigned'(1'(!L1CacheState___tag_epoch_reg));
+                L1CacheState___epoch_wrap_pending_reg_tmp = unsigned'(1'(1));
             end
         end
-        if (invalidate_epoch_wrap) begin
+        if (L1CacheState___epoch_wrap_pending_reg) begin
             L1CacheState___req_reg_tmp.read = unsigned'(1'(0));
             L1CacheState___response_reg_tmp.valid = unsigned'(1'(0));
             L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
             L1CacheState___init_set_reg_tmp = 'h0;
             L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_INIT;
+            L1CacheState___epoch_wrap_pending_reg_tmp = unsigned'(1'(0));
         end
         else begin
             if (invalidate_conflict) begin
@@ -478,7 +522,7 @@ module L1Cache #(
                         else begin
                             if (L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_IDLE) begin
                                 L1CacheState___response_reg_tmp.valid = unsigned'(1'(0));
-                                if (read_in && !stall_in) begin
+                                if (input_request.start) begin
                                     L1CacheState___req_reg_tmp.addr = unsigned'(32'(addr_in));
                                     L1CacheState___req_reg_tmp.read = unsigned'(1'(1));
                                     L1CacheState___req_reg_tmp.cacheable = input_request.cacheable;
@@ -488,77 +532,85 @@ module L1Cache #(
                             end
                             else begin
                                 if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_LOOKUP) && L1CacheState___req_reg.read) begin
-                                    if (lookup.hit) begin
-                                        if (stall_in) begin
-                                            L1CacheState___response_reg_tmp.addr = L1CacheState___req_reg.addr;
-                                            L1CacheState___response_reg_tmp.data = lookup.data;
-                                            L1CacheState___response_reg_tmp.valid = unsigned'(1'(1));
-                                            L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_DONE;
-                                        end
-                                        else begin
-                                            if (input_request.start) begin
-                                                L1CacheState___req_reg_tmp.addr = unsigned'(32'(addr_in));
-                                                L1CacheState___req_reg_tmp.cacheable = input_request.cacheable;
-                                                L1CacheState___req_reg_tmp.cache_disable = unsigned'(1'(cache_disable_in));
-                                                L1CacheState___response_reg_tmp.valid = unsigned'(1'(0));
-                                                L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_LOOKUP;
-                                            end
-                                            else begin
-                                                L1CacheState___req_reg_tmp.read = unsigned'(1'(0));
-                                                L1CacheState___req_reg_tmp.cacheable = unsigned'(1'(0));
-                                                L1CacheState___response_reg_tmp.valid = unsigned'(1'(0));
-                                                L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_IDLE;
-                                            end
-                                        end
+                                    for (i='h0;i < WAYS;i=i+1) begin
+                                        L1CacheState___tag_entries_reg_tmp[i] = L1CacheState___tag_ram__q_out[i];
                                     end
-                                    else begin
-                                        L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_REFILL;
-                                    end
+                                    L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_COMPARE;
                                 end
                                 else begin
-                                    if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) && L1CacheState___req_reg.read) begin
-                                        if (!mem_out__wait_in) begin
-                                            if (L1CacheState___req_reg.cacheable) begin
-                                                L1CacheState___refill_reg_tmp.even_line = refill_lines.even;
-                                                L1CacheState___refill_reg_tmp.odd_line = refill_lines.odd;
-                                                if ((L1CacheState___refill_reg.beat == L1CacheRequest___request_geometry_comb.refill_beat) && ((((unsigned'(32'(L1CacheState___req_reg.addr)) & 'h3)) == 'h0))) begin
-                                                    L1CacheState___refill_reg_tmp.req_data = unsigned'(32'(L1CacheRefill___direct_data_comb));
-                                                    L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(1));
-                                                end
-                                                if (L1CacheState___refill_reg.beat == (REFILL_BEATS - 'h1)) begin
-                                                    L1CacheState___response_reg_tmp.addr = L1CacheState___req_reg.addr;
-                                                    L1CacheState___response_reg_tmp.data = unsigned'(32'(((L1CacheState___refill_reg.beat == L1CacheRequest___request_geometry_comb.refill_beat)) ? (L1CacheRefill___direct_data_comb) : (((L1CacheState___refill_reg.req_data_valid) ? (unsigned'(32'(L1CacheState___refill_reg.req_data))) : (L1CacheRefill___refill_data_comb)))));
-                                                    L1CacheState___response_reg_tmp.valid = unsigned'(1'(1));
-                                                    L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
-                                                    L1CacheState___victim_reg_tmp = (L1CacheState___victim_reg == (WAYS - 'h1)) ? ('h0) : (L1CacheState___victim_reg + 'h1);
-                                                    L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_DONE;
-                                                end
-                                                else begin
-                                                    L1CacheState___refill_reg_tmp.beat = unsigned'(8'(L1CacheState___refill_reg.beat + 'h1));
-                                                end
+                                    if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_COMPARE) && L1CacheState___req_reg.read) begin
+                                        L1CacheState___lookup_reg_tmp.hit = lookup.hit;
+                                        L1CacheState___lookup_reg_tmp.way = lookup.way;
+                                        L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_SELECT;
+                                    end
+                                    else begin
+                                        if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_SELECT) && L1CacheState___req_reg.read) begin
+                                            if (L1CacheState___lookup_reg.hit) begin
+                                                L1CacheState___selected_line_reg_tmp = L1CacheLookup___selected_line_comb;
+                                                L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_ASSEMBLE;
                                             end
                                             else begin
+                                                L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_REFILL;
+                                            end
+                                        end
+                                        else begin
+                                            if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_ASSEMBLE) && L1CacheState___req_reg.read) begin
                                                 L1CacheState___response_reg_tmp.addr = L1CacheState___req_reg.addr;
-                                                L1CacheState___response_reg_tmp.data = unsigned'(32'(L1CacheRefill___direct_data_comb));
+                                                L1CacheState___response_reg_tmp.data = L1CacheLookup___lookup_data_comb;
                                                 L1CacheState___response_reg_tmp.valid = unsigned'(1'(1));
                                                 L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_DONE;
                                             end
-                                        end
-                                    end
-                                    else begin
-                                        if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_DONE) && !stall_in) begin
-                                            L1CacheState___response_reg_tmp.valid = unsigned'(1'(0));
-                                            if (input_request.start) begin
-                                                L1CacheState___req_reg_tmp.addr = unsigned'(32'(addr_in));
-                                                L1CacheState___req_reg_tmp.read = unsigned'(1'(1));
-                                                L1CacheState___req_reg_tmp.cacheable = input_request.cacheable;
-                                                L1CacheState___req_reg_tmp.cache_disable = unsigned'(1'(cache_disable_in));
-                                                L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_LOOKUP;
-                                            end
                                             else begin
-                                                L1CacheState___req_reg_tmp.read = unsigned'(1'(0));
-                                                L1CacheState___req_reg_tmp.cacheable = unsigned'(1'(0));
-                                                L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_IDLE;
+                                                if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_REFILL) && L1CacheState___req_reg.read) begin
+                                                    if (!mem_out__wait_in) begin
+                                                        if (L1CacheState___req_reg.cacheable) begin
+                                                            L1CacheState___refill_reg_tmp.even_line = refill_lines.even;
+                                                            L1CacheState___refill_reg_tmp.odd_line = refill_lines.odd;
+                                                            if ((L1CacheState___refill_reg.beat == L1CacheRequest___request_geometry_comb.refill_beat) && ((((unsigned'(32'(L1CacheState___req_reg.addr)) & 'h3)) == 'h0))) begin
+                                                                L1CacheState___refill_reg_tmp.req_data = unsigned'(32'(L1CacheRefill___direct_data_comb));
+                                                                L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(1));
+                                                            end
+                                                            if (L1CacheState___refill_reg.beat == (REFILL_BEATS - 'h1)) begin
+                                                                L1CacheState___response_reg_tmp.addr = L1CacheState___req_reg.addr;
+                                                                L1CacheState___response_reg_tmp.data = unsigned'(32'(((L1CacheState___refill_reg.beat == L1CacheRequest___request_geometry_comb.refill_beat)) ? (L1CacheRefill___direct_data_comb) : (((L1CacheState___refill_reg.req_data_valid) ? (unsigned'(32'(L1CacheState___refill_reg.req_data))) : (L1CacheRefill___refill_data_comb)))));
+                                                                L1CacheState___response_reg_tmp.valid = unsigned'(1'(1));
+                                                                L1CacheState___selected_line_reg_tmp.even = refill_lines.even;
+                                                                L1CacheState___selected_line_reg_tmp.odd = refill_lines.odd;
+                                                                L1CacheState___selected_line_reg_tmp.addr = unsigned'(32'(unsigned'(32'(L1CacheState___req_reg.addr)) & ~unsigned'(32'(((CACHE_LINE_SIZE - 'h1))))));
+                                                                L1CacheState___selected_line_reg_tmp.valid = unsigned'(1'(1));
+                                                                L1CacheState___refill_reg_tmp.req_data_valid = unsigned'(1'(0));
+                                                                L1CacheState___victim_reg_tmp = (L1CacheState___victim_reg == (WAYS - 'h1)) ? ('h0) : (L1CacheState___victim_reg + 'h1);
+                                                                L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_DONE;
+                                                            end
+                                                            else begin
+                                                                L1CacheState___refill_reg_tmp.beat = unsigned'(8'(L1CacheState___refill_reg.beat + 'h1));
+                                                            end
+                                                        end
+                                                        else begin
+                                                            L1CacheState___response_reg_tmp.addr = L1CacheState___req_reg.addr;
+                                                            L1CacheState___response_reg_tmp.data = unsigned'(32'(L1CacheRefill___direct_data_comb));
+                                                            L1CacheState___response_reg_tmp.valid = unsigned'(1'(1));
+                                                            L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_DONE;
+                                                        end
+                                                    end
+                                                end
+                                                else begin
+                                                    if ((L1CacheState___state_reg == L1CacheFsmState_pkg::L1_ST_DONE) && !stall_in) begin
+                                                        L1CacheState___response_reg_tmp.valid = unsigned'(1'(0));
+                                                        if (input_request.start) begin
+                                                            L1CacheState___req_reg_tmp.addr = unsigned'(32'(addr_in));
+                                                            L1CacheState___req_reg_tmp.read = unsigned'(1'(1));
+                                                            L1CacheState___req_reg_tmp.cacheable = input_request.cacheable;
+                                                            L1CacheState___req_reg_tmp.cache_disable = unsigned'(1'(cache_disable_in));
+                                                            L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_LOOKUP;
+                                                        end
+                                                        else begin
+                                                            L1CacheState___req_reg_tmp.read = unsigned'(1'(0));
+                                                            L1CacheState___req_reg_tmp.cacheable = unsigned'(1'(0));
+                                                            L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_IDLE;
+                                                        end
+                                                    end
+                                                end
                                             end
                                         end
                                     end
@@ -571,6 +623,13 @@ module L1Cache #(
         end
         if (write_in) begin
             L1CacheState___response_reg_tmp.valid = unsigned'(1'(0));
+            L1CacheState___selected_line_reg_tmp.valid = unsigned'(1'(0));
+        end
+        if (invalidate_in || L1CacheState___epoch_wrap_pending_reg) begin
+            L1CacheState___selected_line_reg_tmp.valid = unsigned'(1'(0));
+        end
+        if ((invalidate_line_in && L1CacheState___selected_line_reg.valid) && (((((unsigned'(32'(L1CacheState___selected_line_reg.addr))/CACHE_LINE_SIZE)) % SETS)) == invalidate_set)) begin
+            L1CacheState___selected_line_reg_tmp.valid = unsigned'(1'(0));
         end
         for (i='h0;i < WAYS;i=i+1) begin
         end
@@ -578,11 +637,15 @@ module L1Cache #(
             L1CacheState___state_reg_tmp = '0;
             L1CacheState___req_reg_tmp = '0;
             L1CacheState___tag_epoch_reg_tmp = '0;
+            L1CacheState___epoch_wrap_pending_reg_tmp = '0;
             L1CacheState___tag_set_epoch_reg_tmp = '0;
             L1CacheState___refill_reg_tmp = '0;
             L1CacheState___victim_reg_tmp = '0;
             L1CacheState___init_set_reg_tmp = '0;
             L1CacheState___response_reg_tmp = '0;
+            L1CacheState___lookup_reg_tmp = '0;
+            L1CacheState___selected_line_reg_tmp = '0;
+            L1CacheState___tag_entries_reg_tmp = '0;
             L1CacheState___state_reg_tmp = L1CacheFsmState_pkg::L1_ST_INIT;
         end
     end
@@ -597,22 +660,30 @@ module L1Cache #(
         L1CacheState___state_reg_tmp = L1CacheState___state_reg;
         L1CacheState___req_reg_tmp = L1CacheState___req_reg;
         L1CacheState___tag_epoch_reg_tmp = L1CacheState___tag_epoch_reg;
+        L1CacheState___epoch_wrap_pending_reg_tmp = L1CacheState___epoch_wrap_pending_reg;
         L1CacheState___tag_set_epoch_reg_tmp = L1CacheState___tag_set_epoch_reg;
         L1CacheState___refill_reg_tmp = L1CacheState___refill_reg;
         L1CacheState___victim_reg_tmp = L1CacheState___victim_reg;
         L1CacheState___init_set_reg_tmp = L1CacheState___init_set_reg;
         L1CacheState___response_reg_tmp = L1CacheState___response_reg;
+        L1CacheState___lookup_reg_tmp = L1CacheState___lookup_reg;
+        L1CacheState___selected_line_reg_tmp = L1CacheState___selected_line_reg;
+        L1CacheState___tag_entries_reg_tmp = L1CacheState___tag_entries_reg;
 
         _work(reset);
 
         L1CacheState___state_reg <= L1CacheState___state_reg_tmp;
         L1CacheState___req_reg <= L1CacheState___req_reg_tmp;
         L1CacheState___tag_epoch_reg <= L1CacheState___tag_epoch_reg_tmp;
+        L1CacheState___epoch_wrap_pending_reg <= L1CacheState___epoch_wrap_pending_reg_tmp;
         L1CacheState___tag_set_epoch_reg <= L1CacheState___tag_set_epoch_reg_tmp;
         L1CacheState___refill_reg <= L1CacheState___refill_reg_tmp;
         L1CacheState___victim_reg <= L1CacheState___victim_reg_tmp;
         L1CacheState___init_set_reg <= L1CacheState___init_set_reg_tmp;
         L1CacheState___response_reg <= L1CacheState___response_reg_tmp;
+        L1CacheState___lookup_reg <= L1CacheState___lookup_reg_tmp;
+        L1CacheState___selected_line_reg <= L1CacheState___selected_line_reg_tmp;
+        L1CacheState___tag_entries_reg <= L1CacheState___tag_entries_reg_tmp;
     end
 
     always_ff @(posedge l2_clock) begin

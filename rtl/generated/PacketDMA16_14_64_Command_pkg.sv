@@ -1,4 +1,4 @@
-package PacketDMA_Command_pkg;
+package PacketDMA16_14_64_Command_pkg;
 
 typedef struct packed {
     logic[8-1:0] network_port;
@@ -8,7 +8,7 @@ typedef struct packed {
     logic[2-1:0] _align1;
     logic[14-1:0] length;
     logic[16-1:0] handle;
-} PacketDMA_Command;
+} PacketDMA16_14_64_Command;
 
 
 endpackage

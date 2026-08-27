@@ -20,11 +20,14 @@ import L1LookupComb_pkg::*;
 import L1RefillLinesComb_pkg::*;
 import L1CpuResponseComb_pkg::*;
 import L1CachePerf_pkg::*;
+import L1SelectedLineState_pkg::*;
 import L1RequestGeometryComb_pkg::*;
 import L1MemDriver_pkg::*;
 import L1RequestState_pkg::*;
 import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
+import L1LookupState_pkg::*;
+import TribeSbiDecodeState_pkg::*;
 import TribeSbiDebug_pkg::*;
 import TribePerf_pkg::*;
 import Axi4WriteAddressReady_pkg::*;
@@ -81,6 +84,12 @@ module CPU (
 ,   output wire[256-1:0] dma_in__rdata_out
 ,   output wire dma_in__rlast_out
 ,   output wire[4-1:0] dma_in__rid_out
+,   input wire dma_line_valid_in
+,   input wire[32-1:0] dma_line_addr_in
+,   input wire[256-1:0] dma_line_data_in
+,   input wire[32-1:0] dma_line_keep_in
+,   input wire dma_line_eop_in
+,   output wire dma_line_ready_out
 ,   output wire memory__awvalid_out
 ,   input wire memory__awready_in
 ,   output wire[31-1:0] memory__awaddr_out
@@ -308,7 +317,7 @@ module CPU (
         assign tribe__boot_hartid_in = boot_hartid_in;
         assign tribe__boot_dtb_addr_in = boot_dtb_addr_in;
         assign tribe__boot_priv_in = boot_priv_in;
-        assign tribe__external_cache_invalidate_in = cache_invalidate_in;
+        assign tribe__external_cache_invalidate_in = cache_invalidate_in || dma_line_eop_in;
         assign tribe__memory_base_in = unsigned'(32'('h0));
         assign tribe__memory_size_in = unsigned'(32'((MEMORY_BYTES + IO_BYTES)));
         assign tribe__mem_region_size_in['h0] = unsigned'(32'(MEMORY_BYTES));
@@ -316,10 +325,10 @@ module CPU (
         assign tribe__mem_region_size_in['h2] = unsigned'(32'('h0));
         assign tribe__mem_region_size_in['h3] = unsigned'(32'(IO_BYTES));
         assign tribe__debugen_in=0;
-        assign tribe__dma_line_valid_in = 0;
-        assign tribe__dma_line_addr_in = unsigned'(32'(unsigned'(32'h0)));
-        assign tribe__dma_line_data_in = 'h0;
-        assign tribe__dma_line_keep_in = 'h0;
+        assign tribe__dma_line_valid_in = dma_line_valid_in;
+        assign tribe__dma_line_addr_in = dma_line_addr_in;
+        assign tribe__dma_line_data_in = dma_line_data_in;
+        assign tribe__dma_line_keep_in = dma_line_keep_in;
         assign tribe__axi_in__awvalid_in['h0] = dma_in__awvalid_in;
         assign tribe__axi_in__awaddr_in['h0] = dma_in__awaddr_in;
         assign tribe__axi_in__awid_in['h0] = dma_in__awid_in;
@@ -417,6 +426,7 @@ module CPU (
         assign dma_in__rdata_out = tribe__axi_in__rdata_out['h0];
         assign dma_in__rlast_out = tribe__axi_in__rlast_out['h0];
         assign dma_in__rid_out = tribe__axi_in__rid_out['h0];
+        assign dma_line_ready_out = tribe__dma_line_ready_out;
         assign memory__awvalid_out = tribe__axi_out__awvalid_out['h0];
         assign memory__awaddr_out = tribe__axi_out__awaddr_out['h0];
         assign memory__awid_out = tribe__axi_out__awid_out['h0];

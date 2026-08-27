@@ -38,6 +38,7 @@ module L1MemFastToSlowCdc #(
     reg cache_disable_fast_reg;
     reg request_fast_reg;
     reg request_active_fast_reg;
+    reg request_orphaned_fast_reg;
     (* ASYNC_REG = "TRUE" *)
     logic response_fast1_reg;
     (* ASYNC_REG = "TRUE" *)
@@ -70,6 +71,7 @@ module L1MemFastToSlowCdc #(
     logic cache_disable_fast_reg_tmp;
     logic request_fast_reg_tmp;
     logic request_active_fast_reg_tmp;
+    logic request_orphaned_fast_reg_tmp;
     logic response_fast1_reg_tmp;
     logic response_fast2_reg_tmp;
     logic response_ack_fast_reg_tmp;
@@ -90,7 +92,7 @@ module L1MemFastToSlowCdc #(
 
     generate  // _assign
         assign fast_in__read_data_out = read_data_fast_reg;
-        assign fast_in__wait_out = ((fast_in__read_in || fast_in__write_in)) && !(((((((request_active_fast_reg && (response_fast2_reg != response_ack_fast_reg)) && (fast_in__read_in == read_fast_reg)) && (fast_in__write_in == write_fast_reg)) && (fast_in__addr_in == unsigned'(32'(addr_fast_reg)))) && ((!fast_in__write_in || (((fast_in__write_data_in == unsigned'(32'(write_data_fast_reg))) && (fast_in__write_mask_in == unsigned'(8'(write_mask_fast_reg)))))))) && (fast_in__cache_disable_in == cache_disable_fast_reg)));
+        assign fast_in__wait_out = ((fast_in__read_in || fast_in__write_in)) && !(((request_active_fast_reg && !request_orphaned_fast_reg) && (response_fast2_reg != response_ack_fast_reg)));
         assign slow_out__read_out = (request_active_slow_reg && read_slow_reg);
         assign slow_out__write_out = (request_active_slow_reg && write_slow_reg);
         assign slow_out__addr_out = addr_slow_reg;
@@ -111,6 +113,7 @@ module L1MemFastToSlowCdc #(
         if (request_active_fast_reg && (response_fast2_reg != response_ack_fast_reg)) begin
             response_ack_fast_reg_tmp = response_fast2_reg;
             request_active_fast_reg_tmp = unsigned'(1'(0));
+            request_orphaned_fast_reg_tmp = unsigned'(1'(0));
         end
         else begin
             if (!request_active_fast_reg && request) begin
@@ -122,6 +125,12 @@ module L1MemFastToSlowCdc #(
                 cache_disable_fast_reg_tmp = unsigned'(1'(fast_in__cache_disable_in));
                 request_fast_reg_tmp = unsigned'(1'(!request_fast_reg));
                 request_active_fast_reg_tmp = unsigned'(1'(1));
+                request_orphaned_fast_reg_tmp = unsigned'(1'(0));
+            end
+            else begin
+                if (request_active_fast_reg && !request) begin
+                    request_orphaned_fast_reg_tmp = unsigned'(1'(1));
+                end
             end
         end
         if (reset) begin
@@ -133,6 +142,7 @@ module L1MemFastToSlowCdc #(
             cache_disable_fast_reg_tmp = '0;
             request_fast_reg_tmp = '0;
             request_active_fast_reg_tmp = '0;
+            request_orphaned_fast_reg_tmp = '0;
             response_fast1_reg_tmp = '0;
             response_fast2_reg_tmp = '0;
             response_ack_fast_reg_tmp = '0;
@@ -194,6 +204,7 @@ module L1MemFastToSlowCdc #(
         cache_disable_fast_reg_tmp = cache_disable_fast_reg;
         request_fast_reg_tmp = request_fast_reg;
         request_active_fast_reg_tmp = request_active_fast_reg;
+        request_orphaned_fast_reg_tmp = request_orphaned_fast_reg;
         response_fast1_reg_tmp = response_fast1_reg;
         response_fast2_reg_tmp = response_fast2_reg;
         response_ack_fast_reg_tmp = response_ack_fast_reg;
@@ -209,6 +220,7 @@ module L1MemFastToSlowCdc #(
         cache_disable_fast_reg <= cache_disable_fast_reg_tmp;
         request_fast_reg <= request_fast_reg_tmp;
         request_active_fast_reg <= request_active_fast_reg_tmp;
+        request_orphaned_fast_reg <= request_orphaned_fast_reg_tmp;
         response_fast1_reg <= response_fast1_reg_tmp;
         response_fast2_reg <= response_fast2_reg_tmp;
         response_ack_fast_reg <= response_ack_fast_reg_tmp;

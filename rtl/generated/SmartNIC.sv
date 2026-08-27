@@ -57,6 +57,9 @@ module SmartNIC #(
     localparam  L2_WIDTH = 64'h100;
     localparam  L2_BYTES = 64'h20;
     localparam  LANE_BYTES = LANE_WIDTH/'h8;
+    localparam  RX_READ_WIDTH = LANE_WIDTH*'h2;
+    localparam  RX_READ_BYTES = RX_READ_WIDTH/'h8;
+    localparam  RX_READ_WORDS = RX_READ_WIDTH/LANE_WIDTH;
     localparam  NET_BITS = STREAMS*LANE_WIDTH;
     localparam  NET_BYTES = STREAMS*LANE_BYTES;
     localparam  LOGICAL_ROWS = BANK_DEPTH*'h2;
@@ -106,8 +109,8 @@ module SmartNIC #(
     logic[256-1:0] descriptor_word_comb;
     logic[READ_COMMAND_BITS-1:0] read_command_0_comb;
     logic read_command_pop_0_comb;
-    logic[LANE_WIDTH-1:0] rx_input_data_0_comb;
-    logic[LANE_BYTES-1:0] rx_input_keep_0_comb;
+    logic[RX_READ_WIDTH-1:0] rx_input_data_0_comb;
+    logic[RX_READ_BYTES-1:0] rx_input_keep_0_comb;
 
     // members
     genvar __i;
@@ -125,7 +128,7 @@ module SmartNIC #(
     wire[READ_PORTS*($clog2((BANK_DEPTH*'h2)) + 'h3)-1:0] network__read_handle_in;
     wire[READ_PORTS*$clog2((BANK_DEPTH*'h2))-1:0] network__read_word_in;
     wire[READ_PORTS-1:0] network__read_ready_out;
-    wire[READ_PORTS*LANE_WIDTH-1:0] network__read_data_out;
+    wire[READ_PORTS*RX_READ_WIDTH-1:0] network__read_data_out;
     wire[READ_PORTS-1:0] network__read_valid_out;
     wire[READ_PORTS-1:0] network__read_ready_in;
     wire[READ_PORTS-1:0] network__release_valid_in;
@@ -153,6 +156,7 @@ module SmartNIC #(
 ,       RX_FIFO_DEPTH
 ,       TX_FIFO_WORDS
 ,       ENABLE_RAW
+,       RX_READ_WIDTH
     ) network (
         .net_clk(net_clk)
 ,       .l2_clk(l2_clk)
@@ -194,8 +198,8 @@ module SmartNIC #(
 ,       .storage_full_out(network__storage_full_out)
     );
     wire rx_stream__valid_in[1];
-    wire[LANE_WIDTH-1:0] rx_stream__data_in[1];
-    wire[LANE_WIDTH/'h8-1:0] rx_stream__keep_in[1];
+    wire[RX_READ_WIDTH-1:0] rx_stream__data_in[1];
+    wire[RX_READ_WIDTH/'h8-1:0] rx_stream__keep_in[1];
     wire rx_stream__sop_in[1];
     wire rx_stream__eop_in[1];
     wire rx_stream__ready_out[1];
@@ -208,7 +212,7 @@ module SmartNIC #(
     generate
     for (__i=0; __i < 1; __i = __i + 1) begin
         PacketStream #(
-        LANE_WIDTH
+        RX_READ_WIDTH
 ,       L2_WIDTH
         ) rx_stream (
             .net_clk(net_clk)
@@ -484,7 +488,7 @@ module SmartNIC #(
     end
 
     always_comb begin : rx_input_data_0_comb_func  // rx_input_data_0_comb_func
-        rx_input_data_0_comb = network__read_data_out['h0*LANE_WIDTH +:(('h0*LANE_WIDTH) + LANE_WIDTH) - 'h1 - 'h0*LANE_WIDTH + 1];
+        rx_input_data_0_comb = network__read_data_out['h0*RX_READ_WIDTH +:(0 + RX_READ_WIDTH) - 'h1 - 0 + 1];
     end
 
     always_comb begin : rx_input_keep_0_comb_func  // rx_input_keep_0_comb_func
@@ -492,7 +496,7 @@ module SmartNIC #(
         logic[31:0] head;
         rx_input_keep_0_comb = 'h0;
         head=unsigned'(32'(meta_head_reg['h0]));
-        for (_byte='h0;_byte < LANE_BYTES;_byte=_byte+1) begin
+        for (_byte='h0;_byte < RX_READ_BYTES;_byte=_byte+1) begin
             rx_input_keep_0_comb[_byte] = _byte < unsigned'(32'(meta_bytes_reg['h0][head]));
         end
     end
@@ -592,21 +596,21 @@ module SmartNIC #(
             end
             if (request_fire) begin
                 remaining=unsigned'(32'(read_remaining_reg[port]));
-                bytes=(remaining > LANE_BYTES) ? (LANE_BYTES) : (remaining);
+                bytes=(remaining > RX_READ_BYTES) ? (RX_READ_BYTES) : (remaining);
                 meta_bytes_reg_tmp[port][tail] = bytes;
                 meta_sop_reg_tmp[port][tail] = unsigned'(1'(unsigned'(32'(read_word_reg[port])) == 'h0));
-                meta_eop_reg_tmp[port][tail] = unsigned'(1'(remaining<=LANE_BYTES));
+                meta_eop_reg_tmp[port][tail] = unsigned'(1'(remaining<=RX_READ_BYTES));
                 meta_handle_reg_tmp[port][tail] = read_handle_reg[port];
                 meta_length_reg_tmp[port][tail] = read_length_reg[port];
                 tail=((tail + 'h1)) & ((READ_META_DEPTH - 'h1));
                 count=count+1;
-                read_word_reg_tmp[port] = read_word_reg[port] + 'h1;
-                if (remaining<=LANE_BYTES) begin
+                read_word_reg_tmp[port] = read_word_reg[port] + RX_READ_WORDS;
+                if (remaining<=RX_READ_BYTES) begin
                     read_remaining_reg_tmp[port] = 'h0;
                     read_active_reg_tmp[port] = unsigned'(1'h0);
                 end
                 else begin
-                    read_remaining_reg_tmp[port] = remaining - LANE_BYTES;
+                    read_remaining_reg_tmp[port] = remaining - RX_READ_BYTES;
                 end
             end
             meta_head_reg_tmp[port] = head;

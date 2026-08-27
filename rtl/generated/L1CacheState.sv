@@ -5,6 +5,8 @@ import L1CachePerf_pkg::*;
 import L1RequestState_pkg::*;
 import L1RefillState_pkg::*;
 import L1HeldResponse_pkg::*;
+import L1LookupState_pkg::*;
+import L1SelectedLineState_pkg::*;
 
 
 module L1CacheState #(
@@ -63,11 +65,15 @@ module L1CacheState #(
     reg[3-1:0] state_reg;
     L1RequestState req_reg;
     reg tag_epoch_reg;
+    reg epoch_wrap_pending_reg;
     reg[SETS-1:0][8-1:0] tag_set_epoch_reg;
     L1RefillState refill_reg;
     reg[WAY_BITS-1:0] victim_reg;
     reg[SET_BITS-1:0] init_set_reg;
     L1HeldResponse response_reg;
+    L1LookupState lookup_reg;
+    L1SelectedLineState selected_line_reg;
+    reg[WAYS-1:0][TAG_BITS + 'hA-1:0] tag_entries_reg;
 
     // members
     genvar __i;
@@ -148,11 +154,15 @@ module L1CacheState #(
     logic[3-1:0] state_reg_tmp;
     L1RequestState req_reg_tmp;
     logic tag_epoch_reg_tmp;
+    logic epoch_wrap_pending_reg_tmp;
     logic[SETS-1:0][8-1:0] tag_set_epoch_reg_tmp;
     L1RefillState refill_reg_tmp;
     logic[WAY_BITS-1:0] victim_reg_tmp;
     logic[SET_BITS-1:0] init_set_reg_tmp;
     L1HeldResponse response_reg_tmp;
+    L1LookupState lookup_reg_tmp;
+    L1SelectedLineState selected_line_reg_tmp;
+    logic[WAYS-1:0][TAG_BITS + 'hA-1:0] tag_entries_reg_tmp;
 
 
     task _work_clk (input logic reset);

@@ -110,6 +110,8 @@ add_custom_command(
     TARGET cpu_test
     POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CPU_GENERATED_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E rm -f
+        "${CPU_GENERATED_DIR}/SmartNicTribeTest.sv"
     COMMAND $<TARGET_FILE:cpphdl>
         --generated-dir "${CPU_GENERATED_DIR}"
         --primary_clock clk ${SMARTNIC_CPU_CLOCK_HZ}
@@ -132,6 +134,8 @@ add_custom_command(
 set(PROCESSING_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_processing")
 add_custom_target(processing_rtl
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${PROCESSING_GENERATED_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E rm -f
+        "${PROCESSING_GENERATED_DIR}/SmartNicTribeTest.sv"
     COMMAND $<TARGET_FILE:cpphdl>
         --generated-dir "${PROCESSING_GENERATED_DIR}"
         --primary_clock clk ${SMARTNIC_CPU_CLOCK_HZ}
@@ -156,10 +160,53 @@ add_custom_target(processing_rtl
     VERBATIM
 )
 
+# Keep the AXI arbiter in the normal build's RTL checks.  Its selectors are
+# used only through Processing, so native C++ tests can still pass when the
+# converter emits malformed expressions.  Linting the concrete generated
+# instance catches that class of converter/source-structure regression before
+# a long Vivado run is started.
+add_custom_target(processing_axi4_write_arbiter_rtl_lint ALL
+    COMMAND "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator"
+        --lint-only --Wno-fatal --Wno-WIDTH --top-module Axi4WriteArbiter
+        "${PROCESSING_GENERATED_DIR}/Predef_pkg.sv"
+        "${PROCESSING_GENERATED_DIR}/Axi4WriteArbiterState_pkg.sv"
+        "${PROCESSING_GENERATED_DIR}/Axi4WriteArbiter.sv"
+    COMMAND "${CMAKE_COMMAND}"
+        -DPROCESSING_SV=${PROCESSING_GENERATED_DIR}/Processing.sv
+        -DCPU_SV=${PROCESSING_GENERATED_DIR}/CPU.sv
+        -DTRIBE_TEST_SV=${PROCESSING_GENERATED_DIR}/TribeTest.sv
+        -DOBSOLETE_SMARTNIC_TRIBE_SV=${PROCESSING_GENERATED_DIR}/SmartNicTribeTest.sv
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/check_single_drivers.cmake"
+    DEPENDS processing_rtl
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
+
 if(BUILD_TESTING)
     add_test(NAME processing_descriptor_fetcher COMMAND descriptor_fetcher_test)
     add_test(NAME processing_packet_dma COMMAND packet_dma_test)
     add_test(NAME processing_cpu COMMAND cpu_test)
+    add_test(NAME processing_axi4_write_arbiter_rtl_lint
+        COMMAND "${PROJECT_SOURCE_DIR}/cpphdl/.conda/bin/verilator"
+            --lint-only --Wno-fatal --Wno-WIDTH
+            --top-module Axi4WriteArbiter
+            "${PROCESSING_GENERATED_DIR}/Predef_pkg.sv"
+            "${PROCESSING_GENERATED_DIR}/Axi4WriteArbiterState_pkg.sv"
+            "${PROCESSING_GENERATED_DIR}/Axi4WriteArbiter.sv")
+    add_test(NAME processing_coherent_line_single_driver
+        COMMAND "${CMAKE_COMMAND}"
+            -DPROCESSING_SV=${PROCESSING_GENERATED_DIR}/Processing.sv
+            -DCPU_SV=${PROCESSING_GENERATED_DIR}/CPU.sv
+            -DTRIBE_TEST_SV=${PROCESSING_GENERATED_DIR}/TribeTest.sv
+            -DOBSOLETE_SMARTNIC_TRIBE_SV=${PROCESSING_GENERATED_DIR}/SmartNicTribeTest.sv
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/check_single_drivers.cmake")
+    set_tests_properties(processing_axi4_write_arbiter_rtl_lint PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "processing;cpphdl;verilator;axi4;fpga;regression"
+        TIMEOUT 120)
+    set_tests_properties(processing_coherent_line_single_driver PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "processing;cpphdl;axi4;fpga;regression"
+        TIMEOUT 30)
     set_tests_properties(processing_descriptor_fetcher PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
         LABELS "processing;cpphdl;verilator"

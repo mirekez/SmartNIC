@@ -53,10 +53,6 @@ module ExecuteMem (
 ;
     logic[7:0] second_split_mask_comb;
 ;
-    logic[31:0] split_load_low_addr_comb;
-;
-    logic[31:0] split_load_high_addr_comb;
-;
 
     // members
 
@@ -107,11 +103,11 @@ module ExecuteMem (
     end
 
     always_comb begin : mem_split_comb_func  // mem_split_comb_func
-        logic[31:0] addr;
+        logic[7:0] addr_offset;
         logic[31:0] size;
-        addr=alu_result_in;
+        addr_offset=unsigned'(8'((((((state_in.rs1_val & 'h1F)) + ((unsigned'(32'(state_in.imm)) & 'h1F)))) & 'h1F)));
         size=mem_size_comb;
-        mem_split_comb=(((state_in.valid && (((state_in.mem_op == Mem_pkg::LOAD) || (state_in.mem_op == Mem_pkg::STORE)))) && (state_in.amo_op == Amo_pkg::AMONONE)) && (size != 'h0)) && (((((addr & 'h1F)) + size) > 'h20));
+        mem_split_comb=(((state_in.valid && (((state_in.mem_op == Mem_pkg::LOAD) || (state_in.mem_op == Mem_pkg::STORE)))) && (state_in.amo_op == Amo_pkg::AMONONE)) && (size != 'h0)) && (((unsigned'(32'(addr_offset)) + size) > 'h20));
     end
 
     always_comb begin : first_split_mask_comb_func  // first_split_mask_comb_func
@@ -133,14 +129,6 @@ module ExecuteMem (
         logic[31:0] overflow;
         overflow=(unsigned'(32'(mem_split_offset_reg)) + unsigned'(32'(mem_split_size_reg))) - 'h4;
         second_split_mask_comb=unsigned'(8'(((('h1 <<< overflow)) - 'h1)));
-    end
-
-    always_comb begin : split_load_low_addr_comb_func  // split_load_low_addr_comb_func
-        split_load_low_addr_comb=alu_result_in & ~'h3;
-    end
-
-    always_comb begin : split_load_high_addr_comb_func  // split_load_high_addr_comb_func
-        split_load_high_addr_comb=split_load_low_addr_comb + 'h4;
     end
 
     task do_memory ();
@@ -181,6 +169,10 @@ module ExecuteMem (
             mem_read_reg_tmp = mem_split_read_reg;
             mem_mask_reg_tmp = unsigned'(8'(second_split_mask_comb));
             mem_split_pending_reg_tmp = unsigned'(1'(0));
+            if (mem_split_read_reg) begin
+                split_load_low_addr_reg_tmp = unsigned'(32'(unsigned'(32'(mem_split_addr_reg)) & ~'h3));
+                split_load_high_addr_reg_tmp = unsigned'(32'(((unsigned'(32'(mem_split_addr_reg)) & ~'h3)) + 'h4));
+            end
             disable do_memory;
         end
         if (hold_in) begin
@@ -197,8 +189,6 @@ module ExecuteMem (
         mem_addr_reg_tmp = unsigned'(32'((state_in.amo_op != Amo_pkg::AMONONE) ? ((alu_result_in & ~'h3)) : (alu_result_in)));
         mem_data_reg_tmp = unsigned'(32'(state_in.rs2_val));
         split_load_reg_tmp = unsigned'(1'((state_in.valid && (state_in.mem_op == Mem_pkg::LOAD)) && mem_split_comb));
-        split_load_low_addr_reg_tmp = unsigned'(32'(split_load_low_addr_comb));
-        split_load_high_addr_reg_tmp = unsigned'(32'(split_load_high_addr_comb));
         if (mem_split_comb) begin
             logic[31:0] offset; offset = alu_result_in & 'h3;
             mem_addr_reg_tmp = unsigned'(32'((state_in.mem_op == Mem_pkg::STORE) ? (alu_result_in) : ((alu_result_in & ~'h3))));

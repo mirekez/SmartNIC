@@ -30,7 +30,7 @@ module PacketStream #(
     localparam  WIDE_BYTES = 64'h20;
     localparam  LANE_WIDTH = 64'h40;
     localparam  LANE_BYTES = 64'h8;
-    localparam  LANES = 64'h4;
+    localparam  LANES = (SRC_WIDTH < DST_WIDTH) ? (DST_WIDTH/SRC_WIDTH) : (SRC_WIDTH/DST_WIDTH);
 
 
     // regs and combs
@@ -173,23 +173,35 @@ module PacketStream #(
                 eop_reg_tmp = unsigned'(1'(0));
             end
             if (input_fire) begin
-                if (lane == 'h0) begin
-                    data['h0 +:64] = data_in;
-                    keep['h0 +:8] = keep_in;
+                if ((SRC_WIDTH == 'h80) && (lane == 'h0)) begin
+                    data['h0 +:128] = data_in;
+                    keep['h0 +:16] = keep_in;
                 end
                 else begin
-                    if (lane == 'h1) begin
-                        data['h40 +:64] = data_in;
-                        keep['h8 +:8] = keep_in;
+                    if (SRC_WIDTH == 'h80) begin
+                        data['h80 +:128] = data_in;
+                        keep['h10 +:16] = keep_in;
                     end
                     else begin
-                        if (lane == 'h2) begin
-                            data['h80 +:64] = data_in;
-                            keep['h10 +:8] = keep_in;
+                        if (lane == 'h0) begin
+                            data['h0 +:64] = data_in;
+                            keep['h0 +:8] = keep_in;
                         end
                         else begin
-                            data['hC0 +:64] = data_in;
-                            keep['h18 +:8] = keep_in;
+                            if (lane == 'h1) begin
+                                data['h40 +:64] = data_in;
+                                keep['h8 +:8] = keep_in;
+                            end
+                            else begin
+                                if (lane == 'h2) begin
+                                    data['h80 +:64] = data_in;
+                                    keep['h10 +:8] = keep_in;
+                                end
+                                else begin
+                                    data['hC0 +:64] = data_in;
+                                    keep['h18 +:8] = keep_in;
+                                end
+                            end
                         end
                     end
                 end

@@ -12,6 +12,7 @@ vivado_compat_lib="$vivado_root/lib/lnx64.o/SuSE"
 # only annotated replacements reached by these conversions are small inferred
 # RAM/storage leaf primitives; all control and packet-processing blocks remain
 # generated from their C++ modules.
+cmake -E rm -f "$repo_dir/rtl/generated/SmartNicTribeTest.sv"
 "$repo_dir/cpphdl/build/cpphdl" \
     --generated-dir "$repo_dir/rtl/generated" \
     --primary_clock clk 156250000 \

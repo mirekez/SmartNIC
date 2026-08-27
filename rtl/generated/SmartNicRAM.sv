@@ -2,7 +2,7 @@
 
 // Physical storage leaf for CppHDL SmartNicRAM. RxRAM retains all addressing,
 // allocation, arbitration and packet-lifetime control; this module only gives
-// Vivado the canonical synchronous single-port block-RAM pattern.
+// Vivado the canonical synchronous simple-dual-port block-RAM pattern.
 module SmartNicRAM #(
     parameter integer WIDTH = 320,
     parameter integer DEPTH = 4096
@@ -10,7 +10,8 @@ module SmartNicRAM #(
     input  wire                         net_clk,
     input  wire                         l2_clk,
     input  wire                         reset,
-    input  wire [$clog2(DEPTH)-1:0]     addr_in,
+    input  wire [$clog2(DEPTH)-1:0]     write_addr_in,
+    input  wire [$clog2(DEPTH)-1:0]     read_addr_in,
     input  wire [WIDTH-1:0]             data_in,
     input  wire                         wr_in,
     input  wire                         rd_in,
@@ -23,11 +24,11 @@ module SmartNicRAM #(
 
     always_ff @(posedge net_clk) begin
         if (wr_in)
-            memory[addr_in] <= data_in;
+            memory[write_addr_in] <= data_in;
         if (reset)
             read_data_reg <= '0;
         else if (rd_in)
-            read_data_reg <= memory[addr_in];
+            read_data_reg <= memory[read_addr_in];
     end
 
     assign q_out = read_data_reg;
