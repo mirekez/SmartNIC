@@ -3,7 +3,9 @@
 // Test-only aggregate Ethernet source. Beats are loaded before start and are
 // then emitted on consecutive net-clock cycles. Ethernet cannot retry a beat,
 // so downstream backpressure is counted as a wire-speed failure while the
-// source continues advancing.
+// source continues advancing. pause_in models a remote MAC that has honored
+// an IEEE 802.3x XOFF before presenting the next beat; this is distinct from
+// applying ready/backpressure to a beat already present on the wire.
 
 #include <cpphdl.h>
 #include "../Config.h"
@@ -43,6 +45,7 @@ public:
     _PORT(logic<BYTE_LANES>) sop_out;
     _PORT(logic<BYTE_LANES>) eop_out;
     _PORT(bool) ready_in;
+    _PORT(bool) pause_in;
 
     _PORT(bool) running_out;
     _PORT(bool) done_out;
@@ -88,7 +91,7 @@ public:
     {
         load_ready_out = _ASSIGN(!running_reg
             && (uint32_t)load_count_reg < DEPTH);
-        valid_out = _ASSIGN(running_reg);
+        valid_out = _ASSIGN(running_reg && !pause_in());
         data_out = _ASSIGN((logic<DATA_BITS>)read_word_comb_func().bits(
             DATA_BITS - 1, 0));
         keep_out = _ASSIGN((logic<BYTE_LANES>)read_word_comb_func().bits(
@@ -138,7 +141,7 @@ public:
                     running_reg._next = true;
                 }
             }
-            if (running_reg) {
+            if (running_reg && !pause_in()) {
                 emitted_reg._next = emitted_reg + 1;
                 if (!ready_in()) backpressure_reg._next = backpressure_reg + 1;
                 if ((uint32_t)read_index_reg + 1

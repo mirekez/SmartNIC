@@ -74,43 +74,60 @@ set_property -dict [list \
     CONFIG.CLK.FREQ_HZ {125000000}] [get_ips pcie_control_converter]
 generate_target all [get_ips {pcie_bridge pcie_control_converter}]
 
-# A single capture domain is clocked by the 156.25 MHz Ethernet/system clock.
-# Vivado Basic permits one ILA with at most five probes, so related status
-# signals are packed into buses without dropping any system-status fields.
-create_ip -vlnv xilinx.com:ip:ila:6.2 -module_name ila_system
-set_property -dict [list \
-    CONFIG.C_DATA_DEPTH {1024} \
-    CONFIG.C_NUM_OF_PROBES {5} \
-    CONFIG.C_PROBE0_WIDTH {20} \
-    CONFIG.C_PROBE1_WIDTH {16} \
-    CONFIG.C_PROBE1_TYPE {1} \
-    CONFIG.C_PROBE2_WIDTH {32} \
-    CONFIG.C_PROBE2_TYPE {1} \
-    CONFIG.C_PROBE3_WIDTH {32} \
-    CONFIG.C_PROBE3_TYPE {1} \
-    CONFIG.C_PROBE4_WIDTH {12} \
-    CONFIG.C_PROBE4_TYPE {1}] [get_ips ila_system]
-generate_target all [get_ips ila_system]
+# ChipScope/ILA IP is deliberately not created for the no-JTAG target.
 
 set generated_dir [file join $repo_dir rtl generated]
 set generated_sources [glob -directory $generated_dir *.sv]
 add_files -norecurse $generated_sources
+if {[file exists [file join $build_dir cpu_loopback.mem]]} {
+    add_files -norecurse [file join $build_dir cpu_loopback.mem]
+}
 add_files -norecurse [list \
     [file join $script_dir rtl axi_boot_bram.sv] \
     [file join $script_dir rtl pcie_system.sv] \
-    [file join $script_dir rtl klusterlab_top.sv] \
-    [file join $build_dir capture.mem]]
+    [file join $script_dir rtl uart_banner_tx.sv] \
+    [file join $script_dir rtl klusterlab_top.sv]]
 add_files -fileset constrs_1 -norecurse [list \
     [file join $script_dir klusterlab_r2.xdc] \
-    [file join $script_dir smartnic_system_cdc.xdc]]
+    [file join $script_dir smartnic_system_cdc.xdc] \
+    [file join $script_dir uart_probe_cdc.xdc]]
 # smartnic_cdc.xdc documents the constrained 2:1 CPU/L2-clock variant.  This
 # board intentionally uses one clock for Processing/L1/L2/Network, so those
 # CPU cache exceptions must not be loaded here.  System's independent PCIe
 # clock crossings are constrained by smartnic_system_cdc.xdc above.
 set_property top klusterlab_top [current_fileset]
+set top_generics {}
+if {[info exists ::env(SMARTNIC_PROCESSING_MODE)]} {
+    set processing_mode $::env(SMARTNIC_PROCESSING_MODE)
+} else {
+    set processing_mode stub
+}
+if {$processing_mode eq "stub"} {
+    lappend top_generics USE_PROCESSING_STUB=1
+} elseif {$processing_mode eq "cpu"} {
+    lappend top_generics USE_PROCESSING_STUB=0
+} else {
+    error "SMARTNIC_PROCESSING_MODE must be stub or cpu"
+}
+if {[info exists ::env(SMARTNIC_HONOR_RX_PAUSE)]} {
+    set pause_policy $::env(SMARTNIC_HONOR_RX_PAUSE)
+    if {$pause_policy ni {0 1}} {
+        error "SMARTNIC_HONOR_RX_PAUSE must be 0 or 1"
+    }
+    lappend top_generics HONOR_RX_PAUSE=$pause_policy
+    puts "HONOR_RX_PAUSE=$pause_policy"
+}
+set_property generic [join $top_generics " "] [current_fileset]
+puts "SMARTNIC_PROCESSING_MODE=$processing_mode"
 update_compile_order -fileset sources_1
 
-set_property strategy Flow_AreaOptimized_high [get_runs synth_1]
+# Flow_AreaOptimized_high entered an unbounded synthesis-time timing pass on
+# this large generated hierarchy (more than 2h30 with flat memory and no phase
+# progress).  Keep resource sharing enabled, but use the runtime-bounded
+# synthesis flow; the dedicated Performance_Explore implementation and
+# post-route physical optimization below still perform timing-driven work on
+# the mapped netlist.
+set_property strategy Flow_RuntimeOptimized [get_runs synth_1]
 set_property STEPS.SYNTH_DESIGN.ARGS.RESOURCE_SHARING on [get_runs synth_1]
 # Keep timing-driven pre-route physical optimization.  The aggressive
 # post-route pass is intentionally disabled: on a deeply failing architectural

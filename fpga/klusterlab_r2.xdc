@@ -25,40 +25,39 @@ set_property PACKAGE_PIN P18 [get_ports pcie_perst_n]
 set_property IOSTANDARD LVCMOS33 [get_ports pcie_perst_n]
 set_property PULLUP true [get_ports pcie_perst_n]
 
-# SFP+ 0 = GTX bank 115 channel 0.
-set_property PACKAGE_PIN P2 [get_ports {sfp_tx_p[0]}]
-set_property PACKAGE_PIN P1 [get_ports {sfp_tx_n[0]}]
-set_property PACKAGE_PIN R4 [get_ports {sfp_rx_p[0]}]
-set_property PACKAGE_PIN R3 [get_ports {sfp_rx_n[0]}]
+# The two logical SmartNIC ports use the cages connected to the test PCs.
+# Logical port 0 = board SFP+ 2 = GTX bank 115 channel 2 (fpga2).
+set_property PACKAGE_PIN K2 [get_ports {sfp_tx_p[0]}]
+set_property PACKAGE_PIN K1 [get_ports {sfp_tx_n[0]}]
+set_property PACKAGE_PIN L4 [get_ports {sfp_rx_p[0]}]
+set_property PACKAGE_PIN L3 [get_ports {sfp_rx_n[0]}]
 
-# SFP+ 1 = GTX bank 115 channel 1.
-set_property PACKAGE_PIN M2 [get_ports {sfp_tx_p[1]}]
-set_property PACKAGE_PIN M1 [get_ports {sfp_tx_n[1]}]
-set_property PACKAGE_PIN N4 [get_ports {sfp_rx_p[1]}]
-set_property PACKAGE_PIN N3 [get_ports {sfp_rx_n[1]}]
+# Logical port 1 = board SFP+ 3 = GTX bank 115 channel 3 (fpga1).
+set_property PACKAGE_PIN H2 [get_ports {sfp_tx_p[1]}]
+set_property PACKAGE_PIN H1 [get_ports {sfp_tx_n[1]}]
+set_property PACKAGE_PIN J4 [get_ports {sfp_rx_p[1]}]
+set_property PACKAGE_PIN J3 [get_ports {sfp_rx_n[1]}]
 
 # Direct FPGA-side SFP management nets are in 3.3 V bank 13.
-set_property PACKAGE_PIN T19 [get_ports {sfp_los[0]}]
-set_property PACKAGE_PIN M19 [get_ports {sfp_los[1]}]
-set_property PACKAGE_PIN R18 [get_ports {sfp_tx_en[0]}]
-set_property PACKAGE_PIN N18 [get_ports {sfp_tx_en[1]}]
+set_property PACKAGE_PIN R17 [get_ports {sfp_los[0]}]
+set_property PACKAGE_PIN R16 [get_ports {sfp_los[1]}]
+set_property PACKAGE_PIN N17 [get_ports {sfp_tx_en[0]}]
+set_property PACKAGE_PIN P16 [get_ports {sfp_tx_en[1]}]
 set_property IOSTANDARD LVCMOS33 [get_ports {sfp_los[*] sfp_tx_en[*]}]
 set_property PULLUP true [get_ports {sfp_los[*]}]
 
-# The retained system ILA is clocked by net_clk.  These registers are the
-# first stage of explicit two-flop synchronizers for diagnostic-only status
-# and clock-activity signals originating in startup/GTX domains.  Timing an
-# asynchronous source to the metastability-catching D pin is meaningless and
-# made the router trade setup against hold on exactly these pins.  Keep this
-# exception deliberately narrow: the second synchronizer stages and all
-# functional datapaths remain timed normally.
-set debug_cdc_first_stage_cells [get_cells -quiet -hier -filter \
-    {NAME =~ *dclk_toggle_meta_reg || \
-     NAME =~ *txusr_toggle_meta_reg || \
-     NAME =~ *ila_*_meta_reg*}]
-set debug_cdc_first_stage_pins [get_pins -quiet -of_objects \
-    $debug_cdc_first_stage_cells -filter {REF_PIN_NAME == D}]
-set_false_path -to $debug_cdc_first_stage_pins
+# On-board JTAG-SMT3 USB-UART.  Signal names are from the bridge perspective:
+# A17 drives its RXD input and F18 drives its active-low CTS input.  K15 TXD
+# and B17 RTS are bridge outputs and therefore remain FPGA inputs.  Bank 15
+# and the bridge VREF_UART share the adjustable CRUVI rail; with no VSEL pins
+# driven in this image its hardware default is 1.2 V.
+set_property PACKAGE_PIN K15 [get_ports uart_usb_txd]
+set_property PACKAGE_PIN B17 [get_ports uart_usb_rts]
+set_property PACKAGE_PIN A17 [get_ports uart_usb_rxd]
+set_property PACKAGE_PIN F18 [get_ports uart_usb_cts]
+set_property IOSTANDARD LVCMOS12 [get_ports {uart_usb_*}]
+set_property DRIVE 4 [get_ports {uart_usb_rxd uart_usb_cts}]
+set_property SLEW SLOW [get_ports {uart_usb_rxd uart_usb_cts}]
 
 # startup_reset is generated in the 50 MHz startup domain.  Its functional
 # release into net_clk is synchronized by net_reset_sync; time only the second

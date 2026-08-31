@@ -15,7 +15,9 @@ reset_run impl_1
 # worker is gone. Reset synthesis only when it is not already complete; a valid
 # completed DCP can be reused when only implementation-time XDC changed.
 set synth_status [get_property STATUS [get_runs synth_1]]
-if {![string match "*Complete*" $synth_status]} {
+set resynthesize [expr {[info exists ::env(RESYNTHESIZE)] &&
+    $::env(RESYNTHESIZE) ne "0"}]
+if {$resynthesize || ![string match "*Complete*" $synth_status]} {
     reset_run synth_1
 }
 launch_runs impl_1 -to_step write_bitstream -jobs 1
@@ -37,7 +39,7 @@ report_cdc -details \
     -file [file join $report_dir implemented_cdc.rpt]
 
 set run_dir [file join $script_dir build open_switch.runs impl_1]
-foreach extension {bit bin ltx} {
+foreach extension {bit bin} {
     set source [file join $run_dir klusterlab_top.$extension]
     set destination [file join $script_dir open_switch.$extension]
     if {![file exists $source]} {

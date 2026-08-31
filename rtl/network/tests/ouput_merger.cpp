@@ -86,7 +86,7 @@ class OutputMergerTest
     logic<STREAMS * LANE_BYTES> input_keep;
     logic<STREAMS> input_sop;
     logic<STREAMS> input_eop;
-    bool output_ready = false;
+    logic<STREAMS> output_ready = 0;
     bool error = false;
 
     template<typename T, typename V>
@@ -260,7 +260,7 @@ class OutputMergerTest
         input_keep = 0;
         input_sop = 0;
         input_eop = 0;
-        output_ready = false;
+        output_ready = 0;
         error = false;
         for (size_t reset_cycle = 0; reset_cycle < 2; ++reset_cycle) {
             eval_low(true);
@@ -295,14 +295,16 @@ class OutputMergerTest
             }
 
             if (prefill) {
-                output_ready = all_input_done;
+                output_ready = all_input_done ? ~logic<STREAMS>(0)
+                    : logic<STREAMS>(0);
             }
             else if (random_backpressure) {
                 random_state = tx_prbs_step(random_state + (uint32_t)cycle);
-                output_ready = (random_state & 7) != 0;
+                output_ready = (random_state & 7) != 0
+                    ? ~logic<STREAMS>(0) : logic<STREAMS>(0);
             }
             else {
-                output_ready = true;
+                output_ready = ~logic<STREAMS>(0);
             }
 
             eval_low(false);

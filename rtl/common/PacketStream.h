@@ -22,8 +22,9 @@ public:
 
     static_assert((SRC_WIDTH == LANE_WIDTH && DST_WIDTH == WIDE_WIDTH)
             || (SRC_WIDTH == 2 * LANE_WIDTH && DST_WIDTH == WIDE_WIDTH)
+            || (SRC_WIDTH == WIDE_WIDTH && DST_WIDTH == WIDE_WIDTH)
             || (SRC_WIDTH == WIDE_WIDTH && DST_WIDTH == LANE_WIDTH),
-        "PacketStream supports the SmartNIC 64/128->256 and 256->64 gearboxes");
+        "PacketStream supports SmartNIC 64/128->256, 256->256 and 256->64");
 
     _PORT(bool) valid_in;
     _PORT(logic<SRC_WIDTH>) data_in;
@@ -77,7 +78,7 @@ private:
     logic<DST_WIDTH>& data_comb_func()
     {
         data_comb = 0;
-        if (SRC_WIDTH < DST_WIDTH) {
+        if (SRC_WIDTH <= DST_WIDTH) {
             data_comb = data_reg;
         }
         else {
@@ -96,7 +97,7 @@ private:
     logic<DST_BYTES>& keep_comb_func()
     {
         keep_comb = 0;
-        if (SRC_WIDTH < DST_WIDTH) {
+        if (SRC_WIDTH <= DST_WIDTH) {
             keep_comb = keep_reg;
         }
         else {
@@ -114,14 +115,14 @@ private:
 
     bool& sop_comb_func()
     {
-        if (SRC_WIDTH < DST_WIDTH) sop_comb = sop_reg;
+        if (SRC_WIDTH <= DST_WIDTH) sop_comb = sop_reg;
         else sop_comb = sop_reg && (uint32_t)lane_reg == 0;
         return sop_comb;
     }
 
     bool& eop_comb_func()
     {
-        if (SRC_WIDTH < DST_WIDTH) eop_comb = eop_reg;
+        if (SRC_WIDTH <= DST_WIDTH) eop_comb = eop_reg;
         else eop_comb = eop_reg && last_output_lane();
         return eop_comb;
     }
@@ -150,7 +151,17 @@ public:
         output_fire = (bool)valid_reg && ready_in();
         input_fire = valid_in() && ready_comb_func();
 
-        if (SRC_WIDTH < DST_WIDTH) {
+        if (SRC_WIDTH == DST_WIDTH) {
+            if (output_fire) valid_reg._next = false;
+            if (input_fire) {
+                data_reg._next = data_in();
+                keep_reg._next = keep_in();
+                valid_reg._next = (uint64_t)keep_in() != 0;
+                sop_reg._next = sop_in();
+                eop_reg._next = eop_in();
+            }
+        }
+        else if (SRC_WIDTH < DST_WIDTH) {
             lane = output_fire ? 0 : (uint32_t)lane_reg;
             data = output_fire ? (logic<WIDE_WIDTH>)0 : data_reg;
             keep = output_fire ? (logic<WIDE_BYTES>)0 : keep_reg;

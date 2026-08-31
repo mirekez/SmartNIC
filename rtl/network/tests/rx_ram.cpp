@@ -82,7 +82,8 @@ class RxRAMTest
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
-    static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * 2;
+    static constexpr size_t SUBBANKS = 4;
+    static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * SUBBANKS;
     static constexpr size_t LOGICAL_ROW_BITS = clog2(LOGICAL_ROWS);
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
@@ -416,7 +417,8 @@ class RxRAMTest
             uint32_t length = (uint32_t)lengths.bits(
                 stream * FRAME_LENGTH_BITS + FRAME_LENGTH_BITS - 1,
                 stream * FRAME_LENGTH_BITS);
-            if ((handle & 7) != stream || ((handle >> 3) & 1) != 0) {
+            if ((handle & 7) != stream
+                || ((handle >> 3) & (SUBBANKS - 1)) != 0) {
                 fail("packet handle alignment/home-bank mismatch");
             }
             if (length != frame.bytes.size()) {

@@ -13,7 +13,7 @@ if {[get_property STATUS [get_runs impl_1]] ne "write_bitstream Complete!"} {
     error "Implementation did not complete: [get_property STATUS [get_runs impl_1]]"
 }
 set run_dir [file join $script_dir build open_switch.runs impl_1]
-foreach extension {bit bin ltx} {
+foreach extension {bit bin} {
     set source [file join $run_dir klusterlab_top.$extension]
     set destination [file join $script_dir open_switch.$extension]
     if {![file exists $source]} {

@@ -1,9 +1,9 @@
 #pragma once
 
-// Eight-stream receive packet store built from Tribe's synthesizable RAM.
-// Each stream owns two word-interleaved sub-banks.  A packet starts at an even
-// logical word and successive words alternate sub-banks, allowing an unaligned
-// EOP to commit both a completed word and its final partial word in one clock.
+// Two-stream receive packet store built from synthesizable dual-port RAMs.
+// Each stream owns four word-interleaved sub-banks.  Packet allocations are
+// four-word aligned, allowing a 256-bit processing read on every clock while
+// the receive side continues to commit up to two 64-bit words per clock.
 
 #include "../common/RAM.h"
 #include "../common/ClockDomains.h"
@@ -12,7 +12,8 @@ using namespace cpphdl;
 
 extern long _system_clock;
 
-#define RX_RAM_FOR_EACH_PHYSICAL_BANK(M) M(0) M(1) M(2) M(3)
+#define RX_RAM_FOR_EACH_PHYSICAL_BANK(M) \
+    M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)
 
 struct RxRAMWritePair
 {
@@ -54,7 +55,8 @@ class RxRAM : public Module
 {
 public:
     static constexpr size_t STREAMS = 2;
-    static constexpr size_t SUBBANKS = 2;
+    static constexpr size_t SUBBANKS = 4;
+    static constexpr size_t SUBBANK_BITS = clog2(SUBBANKS);
     static constexpr size_t PHYSICAL_BANKS = STREAMS * SUBBANKS;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t READ_WORDS = READ_WIDTH / LANE_WIDTH;
@@ -68,11 +70,18 @@ public:
     static constexpr size_t FRAME_LENGTH_BITS = 14;
     static constexpr size_t COMPLETION_FIFO_WORDS = 4;
     static constexpr size_t RELEASE_SLOTS = READ_PORTS * 4;
+    // Assert XOFF while only a small fraction of the packet store is occupied.
+    // At 10 Gb/s the remaining 120 KiB is about 98 us of wire data, leaving
+    // ample allowance for a remote MAC/NIC to act on a PAUSE frame.  Release
+    // only after half of that watermark has drained to avoid XOFF/XON chatter.
+    static constexpr size_t PAUSE_ASSERT_ROWS = LOGICAL_ROWS / 16;
+    static constexpr size_t PAUSE_RELEASE_ROWS = LOGICAL_ROWS / 32;
 
     static_assert(LANE_WIDTH == 64,
         "RxRAM supports 64-bit 10GbE MAC words");
-    static_assert(READ_WIDTH == LANE_WIDTH || READ_WIDTH == 2 * LANE_WIDTH,
-        "RxRAM read ports support one or two adjacent MAC words");
+    static_assert(READ_WIDTH == LANE_WIDTH || READ_WIDTH == 2 * LANE_WIDTH
+            || READ_WIDTH == 4 * LANE_WIDTH,
+        "RxRAM read ports support one, two or four adjacent MAC words");
     static_assert(READ_PORTS > 0 && READ_PORTS <= STREAMS,
         "RxRAM requires one or two read ports");
     static_assert((BANK_DEPTH & (BANK_DEPTH - 1)) == 0,
@@ -115,6 +124,10 @@ public:
 
     _PORT(bool) protocol_error_out;
     _PORT(bool) storage_full_out;
+    // Assert well before allocation must stop so an upstream 802.3x PAUSE
+    // request has time to cross the link and drain transmitter elasticity.
+    // This is live (not sticky) and is independent for each receive stream.
+    _PORT(logic<STREAMS>) almost_full_out;
 
 private:
     SmartNicRAM<LANE_WIDTH, BANK_DEPTH> banks[PHYSICAL_BANKS];
@@ -159,6 +172,7 @@ private:
     // sticky register consumes those pulses on the following clock.
     reg<u1> release_error_reg[STREAMS];
     reg<u1> ingress_error_reg[STREAMS];
+    reg<u1> pause_pressure_reg[STREAMS];
     reg<u1> protocol_error_reg;
     reg<u1> storage_full_reg;
 
@@ -169,22 +183,24 @@ private:
     logic<PHYSICAL_BANKS> bank_read_comb;
     logic<READ_PORTS> read_ready_comb;
     logic<STREAMS> input_ready_comb;
+    logic<STREAMS> almost_full_comb;
     logic<STREAMS> packet_valid_comb;
     logic<STREAMS * HANDLE_BITS> packet_handle_comb;
     logic<STREAMS * FRAME_LENGTH_BITS> packet_length_comb;
     logic<READ_PORTS * READ_WIDTH> read_data_comb;
     logic<READ_PORTS> read_valid_comb;
 
+    static constexpr uint32_t ALLOCATION_BYTES = LANE_BYTES * SUBBANKS;
     static constexpr uint32_t MAX_PACKET_ROWS =
-        (((1u << FRAME_LENGTH_BITS) - 1 + LANE_BYTES - 1) / LANE_BYTES + 1)
-            & ~1u;
+        (((1u << FRAME_LENGTH_BITS) - 1 + ALLOCATION_BYTES - 1)
+            / ALLOCATION_BYTES) * SUBBANKS;
 
     static uint16_t released_rows(uint16_t length)
     {
-        // Two 64-bit sub-bank rows are the allocation quantum.  Rounding a
-        // byte length to an even number of 8-byte rows is exactly twice the
-        // number of 16-byte blocks.
-        return (uint16_t)(((length + 15u) >> 4) << 1);
+        // A complete four-bank row is the allocation quantum.  This keeps
+        // every packet handle aligned for one 256-bit processing read.
+        return (uint16_t)(((length + ALLOCATION_BYTES - 1)
+            / ALLOCATION_BYTES) * SUBBANKS);
     }
 
     static uint32_t request_handle(logic<READ_PORTS * HANDLE_BITS> handles,
@@ -218,7 +234,7 @@ private:
         uint32_t logical;
         handle = request_handle(handles, port);
         logical = request_logical_row(handles, words, port);
-        return (handle & 7) * 2 + (logical & 1);
+        return (handle & 7) * SUBBANKS + (logical & (SUBBANKS - 1));
     }
 
     RxRAMScanEvent scan_input_for_stream(uint32_t stream)
@@ -316,8 +332,10 @@ private:
         bank_write_valid_comb = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
             pair = write_pair_for_stream(stream);
-            physical0 = stream * 2 + ((uint32_t)pair.row0 & 1);
-            physical1 = stream * 2 + ((uint32_t)pair.row1 & 1);
+            physical0 = stream * SUBBANKS
+                + ((uint32_t)pair.row0 & (SUBBANKS - 1));
+            physical1 = stream * SUBBANKS
+                + ((uint32_t)pair.row1 & (SUBBANKS - 1));
             if ((bool)pair.valid0) {
                 bank_write_valid_comb[physical0] = 1;
             }
@@ -338,8 +356,10 @@ private:
         bank_write_data_comb = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
             pair = write_pair_for_stream(stream);
-            physical0 = stream * 2 + ((uint32_t)pair.row0 & 1);
-            physical1 = stream * 2 + ((uint32_t)pair.row1 & 1);
+            physical0 = stream * SUBBANKS
+                + ((uint32_t)pair.row0 & (SUBBANKS - 1));
+            physical1 = stream * SUBBANKS
+                + ((uint32_t)pair.row1 & (SUBBANKS - 1));
             if ((bool)pair.valid0) {
                 for (bit = 0; bit < LANE_WIDTH; ++bit) {
                     bank_write_data_comb[physical0 * LANE_WIDTH + bit] =
@@ -382,11 +402,9 @@ private:
                         || response_free;
                     if (!found && pipe_free
                         && (bool)read_valid_in()[candidate]
-                        && (READ_WORDS == 1
-                            ? request_physical_bank(read_handle_in(),
-                                read_word_in(), candidate) == bank
-                            : (request_physical_bank(read_handle_in(),
-                                read_word_in(), candidate) & ~1u) == bank)) {
+                        && ((request_physical_bank(read_handle_in(),
+                                read_word_in(), candidate)
+                            & ~(READ_WORDS - 1u)) == bank)) {
                         read_ready_comb[candidate] = 1;
                         found = true;
                     }
@@ -406,9 +424,13 @@ private:
             if ((bool)read_valid_in()[port]
                 && (bool)read_ready_comb_func()[port]) {
                 bank = request_physical_bank(read_handle_in(),
-                    read_word_in(), port);
+                    read_word_in(), port) & ~(READ_WORDS - 1u);
                 bank_read_comb[bank] = 1;
-                if (READ_WORDS == 2) bank_read_comb[bank ^ 1u] = 1;
+                if (READ_WORDS >= 2) bank_read_comb[bank + 1] = 1;
+                if (READ_WORDS == 4) {
+                    bank_read_comb[bank + 2] = 1;
+                    bank_read_comb[bank + 3] = 1;
+                }
             }
         }
         return bank_read_comb;
@@ -429,17 +451,19 @@ private:
         row = 0;
         for (stream = 0; stream < STREAMS; ++stream) {
             pair = write_pair_for_stream(stream);
-            physical0 = stream * 2 + ((uint32_t)pair.row0 & 1);
-            physical1 = stream * 2 + ((uint32_t)pair.row1 & 1);
+            physical0 = stream * SUBBANKS
+                + ((uint32_t)pair.row0 & (SUBBANKS - 1));
+            physical1 = stream * SUBBANKS
+                + ((uint32_t)pair.row1 & (SUBBANKS - 1));
             if ((bool)pair.valid0) {
-                row = (uint32_t)pair.row0 >> 1;
+                row = (uint32_t)pair.row0 >> SUBBANK_BITS;
                 for (bit = 0; bit < PHYSICAL_ROW_BITS; ++bit) {
                     bank_addr_comb[physical0 * PHYSICAL_ROW_BITS + bit] =
                         (row >> bit) & 1;
                 }
             }
             if ((bool)pair.valid1) {
-                row = (uint32_t)pair.row1 >> 1;
+                row = (uint32_t)pair.row1 >> SUBBANK_BITS;
                 for (bit = 0; bit < PHYSICAL_ROW_BITS; ++bit) {
                     bank_addr_comb[physical1 * PHYSICAL_ROW_BITS + bit] =
                         (row >> bit) & 1;
@@ -454,6 +478,7 @@ private:
         uint32_t port;
         uint32_t bank;
         uint32_t bit;
+        uint32_t read_bank;
         uint32_t row;
 
         bank_read_addr_comb = 0;
@@ -463,17 +488,13 @@ private:
             if ((bool)read_valid_in()[port]
                 && (bool)read_ready_comb_func()[port]) {
                 bank = request_physical_bank(read_handle_in(),
-                    read_word_in(), port);
-                if (READ_WORDS == 2) bank &= ~1u;
+                    read_word_in(), port) & ~(READ_WORDS - 1u);
                 row = request_logical_row(read_handle_in(),
-                    read_word_in(), port) >> 1;
-                for (bit = 0; bit < PHYSICAL_ROW_BITS; ++bit) {
-                    bank_read_addr_comb[bank * PHYSICAL_ROW_BITS + bit] =
-                        (row >> bit) & 1;
-                }
-                if (READ_WORDS == 2) {
+                    read_word_in(), port) >> SUBBANK_BITS;
+                for (read_bank = 0; read_bank < READ_WORDS; ++read_bank) {
                     for (bit = 0; bit < PHYSICAL_ROW_BITS; ++bit) {
-                        bank_read_addr_comb[(bank + 1) * PHYSICAL_ROW_BITS + bit] =
+                        bank_read_addr_comb[(bank + read_bank)
+                            * PHYSICAL_ROW_BITS + bit] =
                             (row >> bit) & 1;
                     }
                 }
@@ -493,6 +514,17 @@ private:
             if (count != 0 && (bool)packet_ready_in()[stream]) {
                 --count;
             }
+            // The scanner is a registered stage.  Reserve the completion
+            // slot for its pending EOP before accepting another MAC word;
+            // otherwise two adjacent short packets can momentarily put five
+            // completions into the four-entry circular FIFO.  A completion
+            // consumed on this clock is subtracted above, so this does not
+            // add a bubble when the descriptor consumer runs at line rate.
+            if ((bool)scan_valid_reg[stream]
+                && ((bool)scan_event_reg[stream].eop0
+                    || (bool)scan_event_reg[stream].eop1)) {
+                ++count;
+            }
             // Include the registered allocation awaiting application to
             // used_rows.  Ignoring a simultaneous release is conservative
             // and prevents one-cycle overbooking at a packet boundary.
@@ -503,6 +535,20 @@ private:
                     || occupied <= LOGICAL_ROWS - MAX_PACKET_ROWS);
         }
         return input_ready_comb;
+    }
+
+    logic<STREAMS>& almost_full_comb_func()
+    {
+        uint32_t stream;
+        uint32_t occupied;
+        almost_full_comb = 0;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            occupied = (uint32_t)used_rows_reg[stream]
+                + (uint32_t)allocated_rows_reg[stream];
+            almost_full_comb[stream] = pause_pressure_reg[stream]
+                || occupied >= PAUSE_ASSERT_ROWS;
+        }
+        return almost_full_comb;
     }
 
     logic<STREAMS>& packet_valid_comb_func()
@@ -578,20 +624,26 @@ private:
         return read_valid_comb;
     }
 
-    // Fixed maximum return width keeps one generated helper valid for both
-    // 64-bit unit-test ports and the SmartNIC's 128-bit processing port.
-    logic<128> read_bank_data(uint32_t bank)
+    // Fixed maximum return width keeps one generated helper valid for 64-bit
+    // unit-test ports and the SmartNIC's 256-bit processing ports.
+    logic<256> read_bank_data(uint32_t bank)
     {
-        logic<128> value;
+        logic<256> value;
         uint32_t first;
         value = 0;
-        first = READ_WORDS == 2 ? (bank & ~1u) : bank;
+        first = bank & ~(READ_WORDS - 1u);
 #define RX_RAM_READ_BANK(number) \
         if (first == number) { \
             value.bits(LANE_WIDTH - 1, 0) = banks[number].q_out(); \
         } \
-        if (READ_WORDS == 2 && first + 1 == number) { \
+        if (READ_WORDS >= 2 && first + 1 == number) { \
             value.bits(2 * LANE_WIDTH - 1, LANE_WIDTH) = banks[number].q_out(); \
+        } \
+        if (READ_WORDS == 4 && first + 2 == number) { \
+            value.bits(3 * LANE_WIDTH - 1, 2 * LANE_WIDTH) = banks[number].q_out(); \
+        } \
+        if (READ_WORDS == 4 && first + 3 == number) { \
+            value.bits(4 * LANE_WIDTH - 1, 3 * LANE_WIDTH) = banks[number].q_out(); \
         }
         RX_RAM_FOR_EACH_PHYSICAL_BANK(RX_RAM_READ_BANK)
 #undef RX_RAM_READ_BANK
@@ -636,6 +688,7 @@ public:
         read_valid_out = _ASSIGN_COMB(read_valid_comb_func());
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
         storage_full_out = _ASSIGN_REG(storage_full_reg);
+        almost_full_out = _ASSIGN_COMB(almost_full_comb_func());
     }
 
     void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
@@ -704,6 +757,7 @@ public:
                 write_valid1_reg[stream]._next = 0;
                 release_error_reg[stream]._next = 0;
                 ingress_error_reg[stream]._next = 0;
+                pause_pressure_reg[stream]._next = 0;
                 completion_head_reg[stream]._next = 0;
                 completion_tail_reg[stream]._next = 0;
                 completion_count_reg[stream]._next = 0;
@@ -752,7 +806,9 @@ public:
             allocated_rows = 0;
             released_row_count = 0;
             rows = (uint32_t)released_rows_reg[stream];
-            if (rows > used_rows) release_error_reg[stream]._next = 1;
+            if (rows > used_rows) {
+                release_error_reg[stream]._next = 1;
+            }
             else used_rows -= rows;
             rows = (uint32_t)allocated_rows_reg[stream];
             if (used_rows + rows > LOGICAL_ROWS) {
@@ -901,8 +957,9 @@ public:
 
                     if (segment_sop) {
                         if (in_frame) ingress_error_reg[stream]._next = 1;
-                        if ((next_row_base & 1) != (row_advance & 1))
-                            ++row_advance;
+                        row_advance += (SUBBANKS - ((next_row_base
+                            + row_advance) & (SUBBANKS - 1)))
+                            & (SUBBANKS - 1);
                         pack_data = 0;
                         pack_count = 0;
                         packet_start = (next_row_base + row_advance)
@@ -958,15 +1015,26 @@ public:
                                 else ingress_error_reg[stream]._next = 1;
                                 ++row_advance;
                             }
-                            if ((next_row_base & 1) != (row_advance & 1))
-                                ++row_advance;
-                            completion_handle_reg[stream][tail]._next =
-                                (packet_start << 3) | stream;
-                            completion_length_reg[stream][tail]._next =
-                                packet_length;
-                            tail = (tail + 1)
-                                & (COMPLETION_FIFO_WORDS - 1);
-                            ++completion_count;
+                            row_advance += (SUBBANKS - ((next_row_base
+                                + row_advance) & (SUBBANKS - 1)))
+                                & (SUBBANKS - 1);
+                            if (completion_count >= COMPLETION_FIFO_WORDS) {
+                                // This must be prevented by the pending-EOP
+                                // reservation in input_ready_comb_func().
+                                // Keep the queue intact and make any future
+                                // violation visible instead of overwriting an
+                                // unread packet descriptor.
+                                ingress_error_reg[stream]._next = 1;
+                            }
+                            else {
+                                completion_handle_reg[stream][tail]._next =
+                                    (packet_start << 3) | stream;
+                                completion_length_reg[stream][tail]._next =
+                                    packet_length;
+                                tail = (tail + 1)
+                                    & (COMPLETION_FIFO_WORDS - 1);
+                                ++completion_count;
+                            }
                             allocated_rows = released_rows(packet_length);
                             pack_data = 0;
                             pack_count = 0;
@@ -986,6 +1054,16 @@ public:
 
             allocated_rows_reg[stream]._next = allocated_rows;
             released_rows_reg[stream]._next = released_row_count;
+
+            // Registered hysteresis makes the PAUSE policy independent of
+            // packet-size bursts and prevents repeated one-cycle XOFF/XON
+            // requests around a single threshold.
+            if (used_rows + allocated_rows >= PAUSE_ASSERT_ROWS)
+                pause_pressure_reg[stream]._next = 1;
+            else if (used_rows + allocated_rows <= PAUSE_RELEASE_ROWS)
+                pause_pressure_reg[stream]._next = 0;
+            else
+                pause_pressure_reg[stream]._next = pause_pressure_reg[stream];
 
             pack_data_reg[stream]._next = pack_data;
             pack_count_reg[stream]._next = pack_count;
@@ -1089,6 +1167,7 @@ public:
             write_valid1_reg[stream].strobe();
             release_error_reg[stream].strobe();
             ingress_error_reg[stream].strobe();
+            pause_pressure_reg[stream].strobe();
             completion_head_reg[stream].strobe();
             completion_tail_reg[stream].strobe();
             completion_count_reg[stream].strobe();
@@ -1134,6 +1213,7 @@ public:
             write_valid0_reg[stream].strobe(); write_valid1_reg[stream].strobe();
             release_error_reg[stream].strobe();
             ingress_error_reg[stream].strobe();
+            pause_pressure_reg[stream].strobe();
             completion_head_reg[stream].strobe();
             completion_tail_reg[stream].strobe();
             completion_count_reg[stream].strobe();

@@ -26,7 +26,10 @@ public:
     static constexpr size_t L2_BYTES = 32;
     static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t NET_BYTES = NET_BITS / 8;
-    static constexpr size_t HANDLE_BITS = 16;
+    // 4096 physical rows across four subbanks require 14 row bits; the low
+    // three bits encode the ingress stream.  Truncating this to 16 bits loses
+    // row bit 13 after half of RxRAM and prevents in-order reclamation.
+    static constexpr size_t HANDLE_BITS = 17;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
 
     static_assert(CPU_COUNT == 1,
@@ -80,7 +83,10 @@ public:
     _PORT(bool) storage_full_out;
 
 private:
-    logic<CPU_COUNT> smartnic_rx_ready_comb;
+    // SmartNIC has one RxRAM read port per Ethernet stream, while the Kintex-7
+    // Processing profile has one cluster. Unused read ports must remain
+    // explicitly deasserted instead of narrowing the bound port type.
+    logic<STREAMS> smartnic_rx_ready_comb;
     logic<STREAMS> smartnic_tx_valid_comb;
     logic<STREAMS * L2_WIDTH> smartnic_tx_data_comb;
     logic<STREAMS * L2_BYTES> smartnic_tx_keep_comb;
@@ -95,7 +101,7 @@ private:
     logic<SYSTEM_QUEUES> system_tx_ready_comb;
     bool protocol_error_comb;
 
-    logic<CPU_COUNT>& smartnic_rx_ready_comb_func()
+    logic<STREAMS>& smartnic_rx_ready_comb_func()
     {
         uint32_t index;
         smartnic_rx_ready_comb = 0;
@@ -286,6 +292,12 @@ private:
         traffic.clear_in = traffic_clear_in;
         traffic.repeat_count_in = traffic_repeat_count_in;
         traffic.ready_in = smartnic.net_rx_ready_out;
+        // Model the remote transmitters honoring MAC-generated XOFF.  The
+        // aggregate test source has one shared schedule for both ports, so a
+        // request from either symmetric lane pauses the next aggregate beat.
+        traffic.pause_in = _ASSIGN(
+            (bool)smartnic.net_rx_almost_full_out()[0]
+            || (bool)smartnic.net_rx_almost_full_out()[1]);
 
         smartnic.net_rx_valid_in = traffic.valid_out;
         smartnic.net_rx_data_in = traffic.data_out;
@@ -293,7 +305,9 @@ private:
         smartnic.net_rx_sop_in = traffic.sop_out;
         smartnic.net_rx_eop_in = traffic.eop_out;
         smartnic.net_rx_raw_in = _ASSIGN(false);
-        smartnic.net_tx_ready_in = _ASSIGN(true);
+        // A scalar true widens to binary 01 and silently stalls Ethernet port
+        // 1. Drive every physical MAC-ready bit explicitly.
+        smartnic.net_tx_ready_in = _ASSIGN((logic<STREAMS>)~0u);
 
         processing.descriptor_valid_in = smartnic.l2_descriptor_valid_out;
         processing.descriptor_data_in = smartnic.l2_descriptor_data_out;

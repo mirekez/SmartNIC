@@ -37,6 +37,7 @@ module Network #(
 ,   input wire[INPUT_BYTES-1:0] eop_in
 ,   input wire raw_in
 ,   output wire ready_out
+,   output wire[2-1:0] rx_almost_full_out
 ,   output wire descriptor_valid_out
 ,   output wire RxDescriptorWord descriptor_data_out
 ,   input wire descriptor_ready_in
@@ -62,7 +63,7 @@ module Network #(
 ,   output wire[INPUT_BYTES-1:0] tx_keep_out
 ,   output wire[INPUT_BYTES-1:0] tx_sop_out
 ,   output wire[INPUT_BYTES-1:0] tx_eop_out
-,   input wire tx_ready_in
+,   input wire[2-1:0] tx_ready_in
 ,   output wire protocol_error_out
 ,   output wire storage_full_out
 );
@@ -70,7 +71,7 @@ module Network #(
     localparam  LANE_BYTES = LANE_WIDTH/'h8;
     localparam  INPUT_BITS = STREAMS*LANE_WIDTH;
     localparam  INPUT_BYTES = STREAMS*LANE_BYTES;
-    localparam  LOGICAL_ROWS = BANK_DEPTH*'h2;
+    localparam  LOGICAL_ROWS = BANK_DEPTH*'h4;
     localparam  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
     localparam  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
     localparam  FRAME_LENGTH_BITS = 64'hE;
@@ -120,6 +121,7 @@ module Network #(
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] balancer__eop_out;
     wire[2-1:0] balancer__valid_out;
     wire[2-1:0] balancer__ready_in;
+    wire[2-1:0] balancer__almost_full_out;
     wire balancer__protocol_error_out;
     InputBalancer #(
         LANE_WIDTH
@@ -139,6 +141,7 @@ module Network #(
 ,       .eop_out(balancer__eop_out)
 ,       .valid_out(balancer__valid_out)
 ,       .ready_in(balancer__ready_in)
+,       .almost_full_out(balancer__almost_full_out)
 ,       .protocol_error_out(balancer__protocol_error_out)
     );
     wire parser__valid_in[2];
@@ -188,21 +191,22 @@ module Network #(
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] rx_ram__eop_in;
     wire[2-1:0] rx_ram__ready_out;
     wire[2-1:0] rx_ram__packet_valid_out;
-    wire[64'h2*($clog2((BANK_DEPTH*64'h2)) + 'h3)-1:0] rx_ram__packet_handle_out;
+    wire[64'h2*($clog2((BANK_DEPTH*64'h4)) + 'h3)-1:0] rx_ram__packet_handle_out;
     wire[28-1:0] rx_ram__packet_length_out;
     wire[2-1:0] rx_ram__packet_ready_in;
     wire[READ_PORTS-1:0] rx_ram__read_valid_in;
-    wire[READ_PORTS*($clog2((BANK_DEPTH*64'h2)) + 'h3)-1:0] rx_ram__read_handle_in;
-    wire[READ_PORTS*$clog2((BANK_DEPTH*64'h2))-1:0] rx_ram__read_word_in;
+    wire[READ_PORTS*($clog2((BANK_DEPTH*64'h4)) + 'h3)-1:0] rx_ram__read_handle_in;
+    wire[READ_PORTS*$clog2((BANK_DEPTH*64'h4))-1:0] rx_ram__read_word_in;
     wire[READ_PORTS-1:0] rx_ram__read_ready_out;
     wire[READ_PORTS*READ_WIDTH-1:0] rx_ram__read_data_out;
     wire[READ_PORTS-1:0] rx_ram__read_valid_out;
     wire[READ_PORTS-1:0] rx_ram__read_ready_in;
     wire[READ_PORTS-1:0] rx_ram__release_valid_in;
-    wire[READ_PORTS*($clog2((BANK_DEPTH*64'h2)) + 'h3)-1:0] rx_ram__release_handle_in;
+    wire[READ_PORTS*($clog2((BANK_DEPTH*64'h4)) + 'h3)-1:0] rx_ram__release_handle_in;
     wire[READ_PORTS*64'hE-1:0] rx_ram__release_length_in;
     wire rx_ram__protocol_error_out;
     wire rx_ram__storage_full_out;
+    wire[2-1:0] rx_ram__almost_full_out;
     RxRAM #(
         LANE_WIDTH
 ,       READ_PORTS
@@ -234,6 +238,7 @@ module Network #(
 ,       .release_length_in(rx_ram__release_length_in)
 ,       .protocol_error_out(rx_ram__protocol_error_out)
 ,       .storage_full_out(rx_ram__storage_full_out)
+,       .almost_full_out(rx_ram__almost_full_out)
     );
     wire[2-1:0] rx_fifo__valid_in;
     wire RxDescriptorWord[2-1:0] rx_fifo__data_in;
@@ -271,12 +276,12 @@ module Network #(
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] output_merger__keep_out;
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] output_merger__sop_out;
     wire[64'h2*(LANE_WIDTH/'h8)-1:0] output_merger__eop_out;
-    wire output_merger__ready_in;
+    wire[2-1:0] output_merger__ready_in;
     wire output_merger__protocol_error_out;
     OutputMerger #(
         LANE_WIDTH
 ,       TX_FIFO_WORDS
-,       'hC
+,       'h0
     ) output_merger (
         .net_clk(net_clk)
 ,       .l2_clk(l2_clk)
@@ -471,6 +476,7 @@ module Network #(
         assign output_merger__tx_eop_in = tx_eop_in;
         assign output_merger__ready_in = tx_ready_in;
         assign ready_out = balancer__ready_out;
+        assign rx_almost_full_out = balancer__almost_full_out | rx_ram__almost_full_out;
         assign descriptor_valid_out = rx_fifo__valid_out;
         assign descriptor_data_out = rx_fifo__data_out;
         assign read_ready_out = rx_ram__read_ready_out;
@@ -498,7 +504,7 @@ module Network #(
         logic parser_last;
         logic fifo_fire;
         PacketParserWord parser_word;
-        logic[32-1:0] handles;
+        logic[34-1:0] handles;
         logic[28-1:0] lengths;
         if (reset) begin
             for (stream='h0;stream < STREAMS;stream=stream+1) begin

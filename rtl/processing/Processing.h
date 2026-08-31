@@ -41,8 +41,19 @@ public:
     // A 64-entry queue absorbs the uncached-MMIO reservation latency without
     // reducing steady-state wire throughput; standalone DMA tests retain the
     // smaller default geometry.
+    // At most CMD_DEPTH packet operations and BACKING_DEPTH write-through
+    // beats can be outstanding. A 32-beat write-through FIFO still covers a
+    // full 1 KiB DDR response window and passes the sustained two-port load;
+    // doubling it adds more than 10 Kbits of heavily routed distributed state
+    // without increasing the single-beat backing master's service rate.
+    // Keeping the independent post-TX clear FIFO
+    // at the old 512-entry default needlessly implemented 448 extra 32-bit
+    // records as distributed registers on Kintex-7, exhausting slice control
+    // sets and making the otherwise valid design extremely difficult to
+    // route. A 64-entry clear queue matches the command queue and preserves
+    // the engine's maximum accepted-command throughput.
     PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS, 64, 32, 4, 256,
-        CPU::EXTERNAL_ADDR_WIDTH, 64> packet_dma[CPU_COUNT];
+        CPU::EXTERNAL_ADDR_WIDTH, 32, 64> packet_dma[CPU_COUNT];
 
     // Aggregate descriptor stream from SmartNIC on the shared clock.
     _PORT(bool) descriptor_valid_in;
@@ -100,6 +111,14 @@ public:
     _PORT(bool) external_irq_in[CPU_COUNT * CPU::CORES];
     _PORT(bool) cache_invalidate_in[CPU_COUNT];
 
+    // Compact hardware-observation interface for the no-JTAG FPGA target.
+    // These are read-only summaries and do not participate in control.
+    _PORT(logic<CPU_COUNT>) debug_dma_busy_out;
+    _PORT(logic<CPU_COUNT>) debug_dma_error_out;
+    _PORT(logic<CPU_COUNT>) debug_fetcher_error_out;
+    _PORT(logic<CPU_COUNT * 32>) debug_dma_completed_out;
+    _PORT(logic<CPU_COUNT * 4>) debug_dma_error_reason_out;
+
 private:
     Axi4RegionMux<2, 32, 4, 256> iomem_mux[CPU_COUNT];
     Axi4WriteArbiter<CPU::EXTERNAL_ADDR_WIDTH, CPU::ID_WIDTH,
@@ -138,13 +157,11 @@ private:
     {
         uint32_t index;
         uint32_t bit;
-        logic<READ_COMMAND_BITS> command;
         rx_read_handle_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            command = cat(packet_dma[index].rx_read_length_out(),
-                packet_dma[index].rx_read_handle_out());
             for (bit = 0; bit < HANDLE_BITS; ++bit) {
-                rx_read_handle_comb[index * HANDLE_BITS + bit] = command[bit];
+                rx_read_handle_comb[index * HANDLE_BITS + bit] =
+                    packet_dma[index].rx_read_handle_out()[bit];
             }
         }
         return rx_read_handle_comb;
@@ -154,14 +171,11 @@ private:
     {
         uint32_t index;
         uint32_t bit;
-        logic<READ_COMMAND_BITS> command;
         rx_read_length_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            command = cat(packet_dma[index].rx_read_length_out(),
-                packet_dma[index].rx_read_handle_out());
             for (bit = 0; bit < FRAME_LENGTH_BITS; ++bit) {
                 rx_read_length_comb[index * FRAME_LENGTH_BITS + bit] =
-                    command[HANDLE_BITS + bit];
+                    packet_dma[index].rx_read_length_out()[bit];
             }
         }
         return rx_read_length_comb;
@@ -509,6 +523,17 @@ public:
                 descriptor_fetcher[index].packet_command_cache_out;
             packet_dma[index].descriptor_command_destination_in =
                 descriptor_fetcher[index].packet_command_destination_out;
+            // CPU_COUNT is fixed to one above. Bind debug outputs only after
+            // both child modules have created their output function refs.
+            debug_dma_busy_out = _ASSIGN(packet_dma[0].busy_out());
+            debug_dma_error_out =
+                _ASSIGN(packet_dma[0].protocol_error_out());
+            debug_fetcher_error_out =
+                _ASSIGN(descriptor_fetcher[0].protocol_error_out());
+            debug_dma_completed_out =
+                _ASSIGN(packet_dma[0].command_completed_count_out());
+            debug_dma_error_reason_out =
+                _ASSIGN(packet_dma[0].protocol_error_reason_out());
         }
     }
 

@@ -22,6 +22,7 @@ module InputBalancer #(
 ,   output wire[INPUT_BYTES-1:0] eop_out
 ,   output wire[2-1:0] valid_out
 ,   input wire[2-1:0] ready_in
+,   output wire[2-1:0] almost_full_out
 ,   output wire protocol_error_out
 );
     localparam  LANES = 64'h2;
@@ -56,6 +57,8 @@ module InputBalancer #(
     logic[INPUT_BYTES-1:0] output_eop_comb;
 ;
     logic[2-1:0] output_valid_comb;
+;
+    logic[2-1:0] almost_full_comb;
 ;
 
     // members
@@ -197,6 +200,12 @@ module InputBalancer #(
         end
     end
 
+    always_comb begin : almost_full_comb_func  // almost_full_comb_func
+        almost_full_comb = 'h0;
+        almost_full_comb['h0] = fifos__afull_out['h0];
+        almost_full_comb['h1] = fifos__afull_out['h1];
+    end
+
     generate  // _assign
         assign fifos__write_in['h0] = fifo_write_0_comb;
         assign fifos__write_data_in['h0] = input_entry_0_comb;
@@ -212,6 +221,7 @@ module InputBalancer #(
         assign sop_out = output_sop_comb;
         assign eop_out = output_eop_comb;
         assign valid_out = output_valid_comb;
+        assign almost_full_out = almost_full_comb;
         assign protocol_error_out = protocol_error_reg;
     endgenerate
 

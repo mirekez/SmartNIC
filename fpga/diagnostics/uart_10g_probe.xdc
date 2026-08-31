@@ -1,0 +1,62 @@
+set_property PACKAGE_PIN AC9 [get_ports sys_clk_200_p]
+set_property PACKAGE_PIN AD9 [get_ports sys_clk_200_n]
+set_property IOSTANDARD LVDS [get_ports {sys_clk_200_p sys_clk_200_n}]
+create_clock -name sys_clk_200 -period 5.000 [get_ports sys_clk_200_p]
+
+set_property PACKAGE_PIN H6 [get_ports eth_refclk_p]
+set_property PACKAGE_PIN H5 [get_ports eth_refclk_n]
+
+set_property PACKAGE_PIN P2 [get_ports {sfp_tx_p[0]}]
+set_property PACKAGE_PIN P1 [get_ports {sfp_tx_n[0]}]
+set_property PACKAGE_PIN R4 [get_ports {sfp_rx_p[0]}]
+set_property PACKAGE_PIN R3 [get_ports {sfp_rx_n[0]}]
+set_property PACKAGE_PIN M2 [get_ports {sfp_tx_p[1]}]
+set_property PACKAGE_PIN M1 [get_ports {sfp_tx_n[1]}]
+set_property PACKAGE_PIN N4 [get_ports {sfp_rx_p[1]}]
+set_property PACKAGE_PIN N3 [get_ports {sfp_rx_n[1]}]
+set_property PACKAGE_PIN K2 [get_ports {sfp_tx_p[2]}]
+set_property PACKAGE_PIN K1 [get_ports {sfp_tx_n[2]}]
+set_property PACKAGE_PIN L4 [get_ports {sfp_rx_p[2]}]
+set_property PACKAGE_PIN L3 [get_ports {sfp_rx_n[2]}]
+set_property PACKAGE_PIN H2 [get_ports {sfp_tx_p[3]}]
+set_property PACKAGE_PIN H1 [get_ports {sfp_tx_n[3]}]
+set_property PACKAGE_PIN J4 [get_ports {sfp_rx_p[3]}]
+set_property PACKAGE_PIN J3 [get_ports {sfp_rx_n[3]}]
+
+set_property PACKAGE_PIN T19 [get_ports {sfp_los[0]}]
+set_property PACKAGE_PIN M19 [get_ports {sfp_los[1]}]
+set_property PACKAGE_PIN R17 [get_ports {sfp_los[2]}]
+set_property PACKAGE_PIN R16 [get_ports {sfp_los[3]}]
+set_property PACKAGE_PIN R18 [get_ports {sfp_tx_en[0]}]
+set_property PACKAGE_PIN N18 [get_ports {sfp_tx_en[1]}]
+set_property PACKAGE_PIN N17 [get_ports {sfp_tx_en[2]}]
+set_property PACKAGE_PIN P16 [get_ports {sfp_tx_en[3]}]
+set_property IOSTANDARD LVCMOS33 [get_ports {sfp_los[*] sfp_tx_en[*]}]
+set_property PULLUP true [get_ports {sfp_los[*]}]
+
+set_property PACKAGE_PIN K15 [get_ports uart_usb_txd]
+set_property PACKAGE_PIN B17 [get_ports uart_usb_rts]
+set_property PACKAGE_PIN A17 [get_ports uart_usb_rxd]
+set_property PACKAGE_PIN F18 [get_ports uart_usb_cts]
+set_property IOSTANDARD LVCMOS12 [get_ports {uart_usb_*}]
+set_property DRIVE 4 [get_ports {uart_usb_rxd uart_usb_cts}]
+set_property SLEW SLOW [get_ports {uart_usb_rxd uart_usb_cts}]
+
+# FPGA-owned main management I2C bus and TCA9548A reset (Bank 12, 1.8 V).
+set_property PACKAGE_PIN V21 [get_ports main_i2c_scl]
+set_property PACKAGE_PIN AE21 [get_ports main_i2c_sda]
+set_property PACKAGE_PIN W21 [get_ports main_i2c_mux_reset_n]
+set_property IOSTANDARD LVCMOS18 [get_ports {main_i2c_scl main_i2c_sda main_i2c_mux_reset_n}]
+set_property PULLUP true [get_ports {main_i2c_scl main_i2c_sda}]
+set_property DRIVE 4 [get_ports main_i2c_mux_reset_n]
+set_property SLEW SLOW [get_ports main_i2c_mux_reset_n]
+
+set startup_reset_source [get_cells -quiet -hier -filter \
+    {IS_SEQUENTIAL == 1 && NAME =~ *por_shift_reg[7]}]
+set net_reset_first_d [get_pins -quiet -hier -filter \
+    {NAME =~ *net_reset_sync_reg[0]/D}]
+set_false_path -from $startup_reset_source -to $net_reset_first_d
+
+set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
+set_property CONFIG_VOLTAGE 1.8 [current_design]
+set_property CFGBVS GND [current_design]

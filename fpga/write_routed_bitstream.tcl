@@ -8,11 +8,9 @@ if {![file exists $checkpoint]} {
 
 open_checkpoint $checkpoint
 set bitstream [file join $run_dir klusterlab_top.bit]
-set probes [file join $run_dir klusterlab_top.ltx]
 write_bitstream -force -bin_file $bitstream
-write_debug_probes -force $probes
 
-foreach extension {bit bin ltx} {
+foreach extension {bit bin} {
     set source [file join $run_dir klusterlab_top.$extension]
     set destination [file join $script_dir open_switch.$extension]
     if {![file exists $source]} {

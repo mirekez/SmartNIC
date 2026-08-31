@@ -47,7 +47,7 @@ static constexpr size_t NET_BYTES = NET_BITS / 8;
 static constexpr size_t MAC_BYTES = LANE_WIDTH / 8;
 static constexpr size_t L2_WIDTH = 256;
 static constexpr size_t L2_BYTES = L2_WIDTH / 8;
-static constexpr size_t READ_PORTS = 1;
+static constexpr size_t READ_PORTS = SmartNIC<LANE_WIDTH>::READ_PORTS;
 static constexpr size_t HANDLE_BITS = SmartNIC<LANE_WIDTH>::HANDLE_BITS;
 static constexpr size_t FRAME_LENGTH_BITS = 14;
 
@@ -518,7 +518,7 @@ public:
     logic<NET_BYTES> net_rx_keep{};
     logic<NET_BYTES> net_rx_sop{};
     logic<NET_BYTES> net_rx_eop{};
-    bool net_tx_ready = true;
+    logic<STREAMS> net_tx_ready = ~logic<STREAMS>(0);
     logic<READ_PORTS> read_valid{};
     logic<READ_PORTS * HANDLE_BITS> read_handle{};
     logic<READ_PORTS * FRAME_LENGTH_BITS> read_length{};
@@ -965,7 +965,8 @@ class SmartNicPcsTest
                 frames[index]);
         }
         reset();
-        dut.net_tx_ready = true; // PCS tx_ready_out is permanently asserted.
+        // Both PCS transmit ports are independently ready.
+        dut.net_tx_ready = ~logic<STREAMS>(0);
 
         for (size_t tick = 1; tick < 800000 && ok; ++tick) {
             if (tick % l2_period == 0) {

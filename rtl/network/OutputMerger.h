@@ -23,7 +23,12 @@ public:
     static constexpr size_t OUTPUT_BYTES = STREAMS * LANE_BYTES;
     static constexpr size_t IPG_CYCLES =
         (MIN_IPG_BYTES + LANE_BYTES - 1) / LANE_BYTES;
-    static constexpr size_t IPG_COUNT_BITS = clog2(IPG_CYCLES + 1);
+    // A zero delay is used when this AXI stream feeds an Ethernet MAC: the
+    // MAC owns FCS/IFG generation and advertises any required pause through
+    // ready_in.  Keep a real one-bit register in that configuration because
+    // zero-width C++/SV integers are not portable.
+    static constexpr size_t IPG_COUNT_BITS = IPG_CYCLES == 0
+        ? 1 : clog2(IPG_CYCLES + 1);
 
     static_assert(LANE_WIDTH == 64,
         "OutputMerger supports two 64-bit 10GbE MAC ports");
@@ -44,7 +49,9 @@ public:
     _PORT(logic<OUTPUT_BYTES>) keep_out;
     _PORT(logic<OUTPUT_BYTES>) sop_out;
     _PORT(logic<OUTPUT_BYTES>) eop_out;
-    _PORT(bool) ready_in;
+    // The two MACs are independent AXI streams.  A pause or IFG on one port
+    // must never prevent the other port from draining its own TxFifo.
+    _PORT(logic<STREAMS>) ready_in;
     _PORT(bool) protocol_error_out;
 
 private:
@@ -185,7 +192,7 @@ private:
     u<4> read_count_##number##_comb; \
     u<4>& read_count_##number##_comb_func() \
     { \
-        read_count_##number##_comb = ready_in() \
+        read_count_##number##_comb = (bool)ready_in()[number] \
             && (bool)lane_valid_comb_func()[number] ? 1 : 0; \
         return read_count_##number##_comb; \
     }
@@ -236,11 +243,12 @@ public:
             if (reset) {
                 ipg_cycles_reg[stream].clr();
             }
-            else if (ready_in() && (bool)lane_valid_comb_func()[stream]
+            else if ((bool)ready_in()[stream]
+                && (bool)lane_valid_comb_func()[stream]
                 && (bool)fifos[stream].eop_out()[0]) {
                 ipg_cycles_reg[stream]._next = IPG_CYCLES;
             }
-            else if (ready_in()
+            else if ((bool)ready_in()[stream]
                 && (uint32_t)ipg_cycles_reg[stream] != 0) {
                 ipg_cycles_reg[stream]._next = ipg_cycles_reg[stream] - 1;
             }

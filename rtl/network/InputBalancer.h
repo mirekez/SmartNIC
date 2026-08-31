@@ -49,6 +49,10 @@ public:
     _PORT(logic<INPUT_BYTES>) eop_out;
     _PORT(logic<LANES>) valid_out;
     _PORT(logic<LANES>) ready_in;
+    // Per-lane high-water indication.  The backing FIFO asserts this at
+    // half capacity, leaving enough bytes for an in-flight maximum Ethernet
+    // frame while a remote transmitter reacts to an 802.3x PAUSE frame.
+    _PORT(logic<LANES>) almost_full_out;
     _PORT(bool) protocol_error_out;
 
 private:
@@ -183,6 +187,13 @@ private:
         return output_valid_comb;
     }
 
+    _LAZY_COMB(almost_full_comb, logic<LANES>)
+        almost_full_comb = 0;
+        almost_full_comb[0] = fifos[0].afull_out();
+        almost_full_comb[1] = fifos[1].afull_out();
+        return almost_full_comb;
+    }
+
 public:
 #ifndef SYNTHESIS
     uint32_t debug_total_words() const
@@ -218,6 +229,7 @@ public:
         sop_out = _ASSIGN_COMB(output_sop_comb_func());
         eop_out = _ASSIGN_COMB(output_eop_comb_func());
         valid_out = _ASSIGN_COMB(output_valid_comb_func());
+        almost_full_out = _ASSIGN_COMB(almost_full_comb_func());
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
     }
 

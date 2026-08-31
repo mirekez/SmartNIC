@@ -264,7 +264,7 @@ class NetworkBasicTest
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
-    static constexpr size_t LOGICAL_ROW_BITS = clog2(BANK_DEPTH * 2);
+    static constexpr size_t LOGICAL_ROW_BITS = clog2(BANK_DEPTH * 4);
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
 
@@ -293,7 +293,7 @@ class NetworkBasicTest
     logic<INPUT_BYTES> tx_input_keep;
     logic<STREAMS> tx_input_sop;
     logic<STREAMS> tx_input_eop;
-    bool tx_output_ready = true;
+    logic<STREAMS> tx_output_ready = ~logic<STREAMS>(0);
     bool error = false;
 
     template<typename T, typename V>
@@ -701,7 +701,7 @@ class NetworkBasicTest
         tx_input_keep = 0;
         tx_input_sop = 0;
         tx_input_eop = 0;
-        tx_output_ready = true;
+        tx_output_ready = ~logic<STREAMS>(0);
         for (size_t cycle = 0; cycle < 3; ++cycle) {
             eval_low(true);
             rising_edge(true);
@@ -827,7 +827,7 @@ class NetworkBasicTest
         tx_input_keep = 0;
         tx_input_sop = 0;
         tx_input_eop = 0;
-        tx_output_ready = false;
+        tx_output_ready = 0;
         for (size_t reset_cycle = 0; reset_cycle < 3; ++reset_cycle) {
             eval_low(true);
             rising_edge(true);
@@ -856,7 +856,8 @@ class NetworkBasicTest
                     tx_input_keep[stream * LANE_BYTES + byte] = 1;
                 }
             }
-            tx_output_ready = all_written;
+            tx_output_ready = all_written ? ~logic<STREAMS>(0)
+                : logic<STREAMS>(0);
             eval_low(false);
             logic<STREAMS> ready = tx_input_ready_value();
             for (size_t stream = 0; stream < STREAMS; ++stream) {
@@ -892,10 +893,11 @@ class NetworkBasicTest
                             continue;
                         }
                         if ((bool)sop[byte]) {
-                            if (in_frame[stream]
-                                || (saw_frame[stream]
-                                    && idle_bytes[stream] < 12)) {
-                                fail("Network TX violated the minimum IPG");
+                            // Network emits AXI frames. The downstream 10G
+                            // MAC, not this interface, inserts the physical
+                            // Ethernet IFG and uses ready to throttle us.
+                            if (in_frame[stream]) {
+                                fail("Network TX nested packet SOP");
                                 break;
                             }
                             assembling[stream].clear();

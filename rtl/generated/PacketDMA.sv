@@ -1,14 +1,14 @@
 `default_nettype none
 
 import Predef_pkg::*;
-import PacketDMA16_14_64_Command_pkg::*;
-import PacketDMA16_14_64_BackingBeat_pkg::*;
-import PacketDMA16_14_64_Register_pkg::*;
+import PacketDMA16_14_64_32_4_256_31_64_64_Command_pkg::*;
+import PacketDMA16_14_64_32_4_256_31_64_64_BackingBeat_pkg::*;
+import PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::*;
 import PacketDmaState_pkg::*;
 import PacketDmaError_pkg::*;
 import PacketDmaOperation_pkg::*;
 import PacketDmaPrefetchState_pkg::*;
-import PacketDMA16_14_64_BackingState_pkg::*;
+import PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::*;
 import PacketDMA_Command_pkg::*;
 import PacketDMA_BackingBeat_pkg::*;
 import PacketDMA_Register_pkg::*;
@@ -167,7 +167,7 @@ module PacketDMA #(
 
 
     // regs and combs
-    PacketDMA16_14_64_Command command_reg[CMD_DEPTH];
+    PacketDMA16_14_64_32_4_256_31_64_64_Command command_reg[CMD_DEPTH];
     reg[CMD_PTR_BITS-1:0] command_head_reg;
     reg[CMD_PTR_BITS-1:0] command_tail_reg;
     reg[CMD_COUNT_BITS-1:0] command_count_reg;
@@ -221,7 +221,7 @@ module PacketDMA #(
     reg read_pending_reg;
     reg[AXI_DATA_WIDTH-1:0] read_data_reg;
     reg read_valid_reg;
-    PacketDMA16_14_64_BackingBeat backing_reg[BACKING_DEPTH];
+    PacketDMA16_14_64_32_4_256_31_64_64_BackingBeat backing_reg[BACKING_DEPTH];
     reg[BACKING_PTR_BITS-1:0] backing_head_reg;
     reg[BACKING_PTR_BITS-1:0] backing_tail_reg;
     reg[BACKING_COUNT_BITS-1:0] backing_count_reg;
@@ -242,7 +242,7 @@ module PacketDMA #(
     // members
 
     // tmp variables
-    PacketDMA16_14_64_Command command_reg_tmp[CMD_DEPTH];
+    PacketDMA16_14_64_32_4_256_31_64_64_Command command_reg_tmp[CMD_DEPTH];
     logic[CMD_PTR_BITS-1:0] command_head_reg_tmp;
     logic[CMD_PTR_BITS-1:0] command_tail_reg_tmp;
     logic[CMD_COUNT_BITS-1:0] command_count_reg_tmp;
@@ -296,7 +296,7 @@ module PacketDMA #(
     logic read_pending_reg_tmp;
     logic[AXI_DATA_WIDTH-1:0] read_data_reg_tmp;
     logic read_valid_reg_tmp;
-    PacketDMA16_14_64_BackingBeat backing_reg_tmp[BACKING_DEPTH];
+    PacketDMA16_14_64_32_4_256_31_64_64_BackingBeat backing_reg_tmp[BACKING_DEPTH];
     logic[BACKING_PTR_BITS-1:0] backing_head_reg_tmp;
     logic[BACKING_PTR_BITS-1:0] backing_tail_reg_tmp;
     logic[BACKING_COUNT_BITS-1:0] backing_count_reg_tmp;
@@ -308,8 +308,8 @@ module PacketDMA #(
     logic[CLEAR_COUNT_BITS-1:0] post_clear_count_reg_tmp;
 
 
-    function PacketDMA16_14_64_Command current_command ();
-        PacketDMA16_14_64_Command command;
+    function PacketDMA16_14_64_32_4_256_31_64_64_Command current_command ();
+        PacketDMA16_14_64_32_4_256_31_64_64_Command command;
         command = 0;
         if (unsigned'(32'(command_count_reg)) != 'h0) begin
             command = command_reg[unsigned'(32'(command_head_reg))];
@@ -340,52 +340,52 @@ module PacketDMA #(
     end
 
     function logic[31:0] register_value (input logic[31:0] address);
-        if (address == PacketDMA16_14_64_Register_pkg::REG_RX_HANDLE) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_RX_HANDLE) begin
             return unsigned'(32'(stage_handle_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_LENGTH) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_LENGTH) begin
             return unsigned'(32'(stage_length_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_DESTINATION) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_DESTINATION) begin
             return unsigned'(32'(stage_destination_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_SOURCE) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_SOURCE) begin
             return unsigned'(32'(stage_source_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_FLAGS) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_FLAGS) begin
             return unsigned'(32'(stage_flags_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_NETWORK_PORT) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_NETWORK_PORT) begin
             return unsigned'(32'(stage_network_port_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_STATUS) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_STATUS) begin
             return (((((unsigned'(32'(state_reg)) != PacketDmaState_pkg::PACKET_DMA_IDLE)) ? (STATUS_BUSY) : ('h0)) | (((unsigned'(32'(command_count_reg)) < CMD_DEPTH)) ? (STATUS_CMD_READY) : ('h0))) | ((protocol_error_reg) ? (STATUS_ERROR) : ('h0))) | ((unsigned'(32'(command_count_reg)) <<< 'h8));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_COMPLETED) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_COMPLETED) begin
             return unsigned'(32'(completed_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_CACHE_COMPLETED) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_CACHE_COMPLETED) begin
             return unsigned'(32'(cache_completed_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_COMMAND_COMPLETED) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_COMMAND_COMPLETED) begin
             return unsigned'(32'(command_completed_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_COMMAND_ISSUED) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_COMMAND_ISSUED) begin
             return unsigned'(32'(command_issued_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_COMMAND_LOCK) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_COMMAND_LOCK) begin
             return unsigned'(32'(command_lock_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_CLEAR_COMPLETED) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_CLEAR_COMPLETED) begin
             return unsigned'(32'(clear_completed_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_CLEAR_ADDRESS) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_CLEAR_ADDRESS) begin
             return unsigned'(32'(clear_address_reg));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_CLEAR_STATUS) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_CLEAR_STATUS) begin
             return (((unsigned'(32'(backing_count_reg)) < (BACKING_DEPTH - 'h1))) ? ('h1) : ('h0)) | ((unsigned'(32'(backing_count_reg)) <<< 'h8));
         end
-        if (address == PacketDMA16_14_64_Register_pkg::REG_LAST_OPERATION) begin
+        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_LAST_OPERATION) begin
             return unsigned'(32'(last_operation_reg));
         end
         return 'h0;
@@ -478,7 +478,7 @@ module PacketDMA #(
 
     generate  // _assign
         assign mmio__awready_out = (!write_addr_valid_reg && !write_response_valid_reg) && (((!write_aw_seen_reg || (mmio__awaddr_in != write_aw_seen_addr_reg)) || (mmio__awid_in != write_aw_seen_id_reg)));
-        assign mmio__wready_out = ((write_addr_valid_reg && !write_response_valid_reg) && ((((((unsigned'(32'(write_addr_reg)) & ~'h3)) != PacketDMA16_14_64_Register_pkg::REG_COMMAND)) || (unsigned'(32'(command_count_reg)) < CMD_DEPTH)))) && ((((((unsigned'(32'(write_addr_reg)) & ~'h3)) != PacketDMA16_14_64_Register_pkg::REG_CLEAR_NOTIFY)) || (((unsigned'(32'(backing_count_reg)) < BACKING_DEPTH) && !((l2_line_valid_out && l2_line_ready_in))))));
+        assign mmio__wready_out = ((write_addr_valid_reg && !write_response_valid_reg) && ((((((unsigned'(32'(write_addr_reg)) & ~'h3)) != PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_COMMAND)) || (unsigned'(32'(command_count_reg)) < CMD_DEPTH)))) && ((((((unsigned'(32'(write_addr_reg)) & ~'h3)) != PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_CLEAR_NOTIFY)) || (((unsigned'(32'(backing_count_reg)) < BACKING_DEPTH) && !((l2_line_valid_out && l2_line_ready_in))))));
         assign mmio__bvalid_out = write_response_valid_reg;
         assign mmio__bid_out = write_id_reg;
         assign mmio__arready_out = !read_pending_reg && !read_valid_reg;
@@ -531,14 +531,14 @@ module PacketDMA #(
         assign protocol_error_reason_out = protocol_error_reason_reg;
         assign backing_pending_count_out = backing_count_reg;
         assign backing_completed_beat_count_out = backing_completed_reg;
-        assign backing_dma__awvalid_out = (unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_BackingState_pkg::BACKING_ADDRESS) && (unsigned'(32'(backing_count_reg)) != 'h0);
+        assign backing_dma__awvalid_out = (unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_ADDRESS) && (unsigned'(32'(backing_count_reg)) != 'h0);
         assign backing_dma__awaddr_out = unsigned'(BACKING_ADDR_WIDTH'(unsigned'(BACKING_ADDR_WIDTH'(backing_reg[unsigned'(32'(backing_head_reg))].address))));
         assign backing_dma__awid_out = unsigned'(AXI_ID_WIDTH'(unsigned'(AXI_ID_WIDTH'('h0))));
-        assign backing_dma__wvalid_out = (((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_BackingState_pkg::BACKING_ADDRESS) || (unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_BackingState_pkg::BACKING_DATA))) && (unsigned'(32'(backing_count_reg)) != 'h0);
+        assign backing_dma__wvalid_out = (((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_ADDRESS) || (unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_DATA))) && (unsigned'(32'(backing_count_reg)) != 'h0);
         assign backing_dma__wdata_out = backing_reg[unsigned'(32'(backing_head_reg))].data;
         assign backing_dma__wstrb_out = backing_reg[unsigned'(32'(backing_head_reg))].keep;
         assign backing_dma__wlast_out = 1;
-        assign backing_dma__bready_out = unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_BackingState_pkg::BACKING_RESPONSE;
+        assign backing_dma__bready_out = unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_RESPONSE;
         assign backing_dma__arvalid_out = ((unsigned'(32'(state_reg)) == PacketDmaState_pkg::PACKET_DMA_READ_ADDRESS) && (unsigned'(32'(operation_reg)) == PacketDmaOperation_pkg::DMA_CPU_NETWORK)) && (((unsigned'(32'(active_flags_reg)) & FLAG_RING_SOURCE)) != 'h0);
         assign backing_dma__araddr_out = unsigned'(BACKING_ADDR_WIDTH'(unsigned'(BACKING_ADDR_WIDTH'(source_reg))));
         assign backing_dma__arid_out = unsigned'(AXI_ID_WIDTH'(unsigned'(AXI_ID_WIDTH'('h0))));
@@ -564,8 +564,8 @@ module PacketDMA #(
         logic[31:0] post_clear_count;
         logic[256-1:0] input_data;
         logic[32-1:0] input_keep;
-        PacketDMA16_14_64_Command command;
-        PacketDMA16_14_64_Command staged;
+        PacketDMA16_14_64_32_4_256_31_64_64_Command command;
+        PacketDMA16_14_64_32_4_256_31_64_64_Command staged;
         count=unsigned'(32'(command_count_reg));
         push=0;
         pop=0;
@@ -587,20 +587,20 @@ module PacketDMA #(
                 --post_clear_count;
             end
         end
-        if ((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_BackingState_pkg::BACKING_IDLE) && (backing_count != 'h0)) begin
-            backing_state_reg_tmp = PacketDMA16_14_64_BackingState_pkg::BACKING_ADDRESS;
+        if ((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_IDLE) && (backing_count != 'h0)) begin
+            backing_state_reg_tmp = PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_ADDRESS;
         end
         else begin
-            if (((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_BackingState_pkg::BACKING_ADDRESS) && backing_dma__awvalid_out) && backing_dma__awready_in) begin
-                backing_state_reg_tmp = (backing_dma__wvalid_out && backing_dma__wready_in) ? (PacketDMA16_14_64_BackingState_pkg::BACKING_RESPONSE) : (PacketDMA16_14_64_BackingState_pkg::BACKING_DATA);
+            if (((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_ADDRESS) && backing_dma__awvalid_out) && backing_dma__awready_in) begin
+                backing_state_reg_tmp = (backing_dma__wvalid_out && backing_dma__wready_in) ? (PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_RESPONSE) : (PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_DATA);
             end
             else begin
-                if (((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_BackingState_pkg::BACKING_DATA) && backing_dma__wvalid_out) && backing_dma__wready_in) begin
-                    backing_state_reg_tmp = PacketDMA16_14_64_BackingState_pkg::BACKING_RESPONSE;
+                if (((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_DATA) && backing_dma__wvalid_out) && backing_dma__wready_in) begin
+                    backing_state_reg_tmp = PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_RESPONSE;
                 end
                 else begin
-                    if (((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_BackingState_pkg::BACKING_RESPONSE) && backing_dma__bvalid_in) && backing_dma__bready_out) begin
-                        backing_state_reg_tmp = (backing_count > 'h1) ? (PacketDMA16_14_64_BackingState_pkg::BACKING_ADDRESS) : (PacketDMA16_14_64_BackingState_pkg::BACKING_IDLE);
+                    if (((unsigned'(32'(backing_state_reg)) == PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_RESPONSE) && backing_dma__bvalid_in) && backing_dma__bready_out) begin
+                        backing_state_reg_tmp = (backing_count > 'h1) ? (PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_ADDRESS) : (PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::BACKING_IDLE);
                         backing_head_reg_tmp = ((unsigned'(32'(backing_head_reg)) + 'h1)) & ((BACKING_DEPTH - 'h1));
                         backing_pop=1;
                         backing_completed_reg_tmp = backing_completed_reg + 'h1;
@@ -679,48 +679,48 @@ module PacketDMA #(
         if (mmio__wvalid_in && mmio__wready_out) begin
             address=unsigned'(32'(write_addr_reg)) & ~'h3;
             value=write_value();
-            if (address == PacketDMA16_14_64_Register_pkg::REG_RX_HANDLE) begin
+            if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_RX_HANDLE) begin
                 stage_handle_reg_tmp = value;
                 stage_command_armed_reg_tmp = unsigned'(1'(1));
             end
             else begin
-                if (address == PacketDMA16_14_64_Register_pkg::REG_LENGTH) begin
+                if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_LENGTH) begin
                     stage_length_reg_tmp = value;
                     stage_command_armed_reg_tmp = unsigned'(1'(1));
                 end
                 else begin
-                    if (address == PacketDMA16_14_64_Register_pkg::REG_SOURCE) begin
+                    if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_SOURCE) begin
                         stage_source_reg_tmp = unsigned'(32'(value));
                         stage_command_armed_reg_tmp = unsigned'(1'(1));
                     end
                     else begin
-                        if (address == PacketDMA16_14_64_Register_pkg::REG_DESTINATION) begin
+                        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_DESTINATION) begin
                             stage_destination_reg_tmp = unsigned'(32'(value));
                             stage_command_armed_reg_tmp = unsigned'(1'(1));
                         end
                         else begin
-                            if (address == PacketDMA16_14_64_Register_pkg::REG_FLAGS) begin
+                            if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_FLAGS) begin
                                 stage_flags_reg_tmp = unsigned'(8'(value));
                                 stage_command_armed_reg_tmp = unsigned'(1'(1));
                             end
                             else begin
-                                if (address == PacketDMA16_14_64_Register_pkg::REG_NETWORK_PORT) begin
+                                if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_NETWORK_PORT) begin
                                     stage_network_port_reg_tmp = value;
                                     stage_command_armed_reg_tmp = unsigned'(1'(1));
                                 end
                                 else begin
-                                    if (address == PacketDMA16_14_64_Register_pkg::REG_COMMAND_LOCK) begin
+                                    if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_COMMAND_LOCK) begin
                                         if (((value == 'h0) || (unsigned'(32'(command_lock_reg)) == 'h0)) || (unsigned'(32'(command_lock_reg)) == ((value & 'hFF)))) begin
                                             command_lock_reg_tmp = value & 'hFF;
                                         end
                                     end
                                     else begin
-                                        if (address == PacketDMA16_14_64_Register_pkg::REG_CLEAR_ADDRESS) begin
+                                        if (address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_CLEAR_ADDRESS) begin
                                             clear_address_reg_tmp = value & ~((AXI_BYTES - 'h1));
                                             clear_notify_armed_reg_tmp = unsigned'(1'(1));
                                         end
                                         else begin
-                                            if (((address == PacketDMA16_14_64_Register_pkg::REG_CLEAR_NOTIFY) && (value != 'h0)) && clear_notify_armed_reg) begin
+                                            if (((address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_CLEAR_NOTIFY) && (value != 'h0)) && clear_notify_armed_reg) begin
                                                 if ((backing_count < BACKING_DEPTH) && !backing_push) begin
                                                     backing_reg_tmp[unsigned'(32'(backing_tail_reg))].address = clear_address_reg;
                                                     backing_reg_tmp[unsigned'(32'(backing_tail_reg))].data = 'h0;
@@ -737,7 +737,7 @@ module PacketDMA #(
                                                 end
                                             end
                                             else begin
-                                                if (((address == PacketDMA16_14_64_Register_pkg::REG_COMMAND) && (((value & COMMAND_PUSH)) != 'h0)) && stage_command_armed_reg) begin
+                                                if (((address == PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::REG_COMMAND) && (((value & COMMAND_PUSH)) != 'h0)) && stage_command_armed_reg) begin
                                                     push=count < CMD_DEPTH;
                                                     if (!push) begin
                                                         protocol_error_reg_tmp = unsigned'(1'(1));

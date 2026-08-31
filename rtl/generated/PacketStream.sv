@@ -27,8 +27,8 @@ module PacketStream #(
     localparam  SRC_BYTES = SRC_WIDTH/'h8;
     localparam  DST_BYTES = DST_WIDTH/'h8;
     localparam  WIDE_WIDTH = 64'h100;
-    localparam  WIDE_BYTES = 64'h20;
     localparam  LANE_WIDTH = 64'h40;
+    localparam  WIDE_BYTES = 64'h20;
     localparam  LANE_BYTES = 64'h8;
     localparam  LANES = (SRC_WIDTH < DST_WIDTH) ? (DST_WIDTH/SRC_WIDTH) : (SRC_WIDTH/DST_WIDTH);
 
@@ -77,7 +77,7 @@ module PacketStream #(
 
     always_comb begin : data_comb_func  // data_comb_func
         data_comb = 'h0;
-        if (SRC_WIDTH < DST_WIDTH) begin
+        if (SRC_WIDTH<=DST_WIDTH) begin
             data_comb = data_reg;
         end
         else begin
@@ -102,7 +102,7 @@ module PacketStream #(
 
     always_comb begin : keep_comb_func  // keep_comb_func
         keep_comb = 'h0;
-        if (SRC_WIDTH < DST_WIDTH) begin
+        if (SRC_WIDTH<=DST_WIDTH) begin
             keep_comb = keep_reg;
         end
         else begin
@@ -126,7 +126,7 @@ module PacketStream #(
     end
 
     always_comb begin : sop_comb_func  // sop_comb_func
-        if (SRC_WIDTH < DST_WIDTH) begin
+        if (SRC_WIDTH<=DST_WIDTH) begin
             sop_comb=sop_reg;
         end
         else begin
@@ -135,7 +135,7 @@ module PacketStream #(
     end
 
     always_comb begin : eop_comb_func  // eop_comb_func
-        if (SRC_WIDTH < DST_WIDTH) begin
+        if (SRC_WIDTH<=DST_WIDTH) begin
             eop_comb=eop_reg;
         end
         else begin
@@ -163,95 +163,109 @@ module PacketStream #(
         logic[32-1:0] keep;
         output_fire=valid_reg && ready_in;
         input_fire=valid_in && ready_comb;
-        if (SRC_WIDTH < DST_WIDTH) begin
-            lane=(output_fire) ? ('h0) : (unsigned'(32'(lane_reg)));
-            data = (output_fire) ? ('h0) : (data_reg);
-            keep = (output_fire) ? ('h0) : (keep_reg);
+        if (SRC_WIDTH == DST_WIDTH) begin
             if (output_fire) begin
                 valid_reg_tmp = unsigned'(1'(0));
-                sop_reg_tmp = unsigned'(1'(0));
-                eop_reg_tmp = unsigned'(1'(0));
             end
             if (input_fire) begin
-                if ((SRC_WIDTH == 'h80) && (lane == 'h0)) begin
-                    data['h0 +:128] = data_in;
-                    keep['h0 +:16] = keep_in;
-                end
-                else begin
-                    if (SRC_WIDTH == 'h80) begin
-                        data['h80 +:128] = data_in;
-                        keep['h10 +:16] = keep_in;
-                    end
-                    else begin
-                        if (lane == 'h0) begin
-                            data['h0 +:64] = data_in;
-                            keep['h0 +:8] = keep_in;
-                        end
-                        else begin
-                            if (lane == 'h1) begin
-                                data['h40 +:64] = data_in;
-                                keep['h8 +:8] = keep_in;
-                            end
-                            else begin
-                                if (lane == 'h2) begin
-                                    data['h80 +:64] = data_in;
-                                    keep['h10 +:8] = keep_in;
-                                end
-                                else begin
-                                    data['hC0 +:64] = data_in;
-                                    keep['h18 +:8] = keep_in;
-                                end
-                            end
-                        end
-                    end
-                end
-                if (sop_in) begin
-                    sop_reg_tmp = unsigned'(1'(1));
-                end
-                word_complete=eop_in || (lane == (LANES - 'h1));
-                if (word_complete) begin
-                    valid_reg_tmp = unsigned'(1'(1));
-                    eop_reg_tmp = unsigned'(1'(eop_in));
-                    lane_reg_tmp = 'h0;
-                end
-                else begin
-                    lane_reg_tmp = lane + 'h1;
-                end
-                data_reg_tmp = data;
-                keep_reg_tmp = keep;
-            end
-        end
-        else begin
-            if (output_fire) begin
-                if (last_output_lane()) begin
-                    valid_reg_tmp = unsigned'(1'(0));
-                end
-                else begin
-                    lane_reg_tmp = lane_reg + 'h1;
-                end
-            end
-            if (input_fire) begin
-                last_lane='h0;
-                if (unsigned'(64'(keep_in['h18 +:8])) != 'h0) begin
-                    last_lane='h3;
-                end
-                else begin
-                    if (unsigned'(64'(keep_in['h10 +:8])) != 'h0) begin
-                        last_lane='h2;
-                    end
-                    else begin
-                        if (unsigned'(64'(keep_in['h8 +:8])) != 'h0) begin
-                            last_lane='h1;
-                        end
-                    end
-                end
                 data_reg_tmp = data_in;
                 keep_reg_tmp = keep_in;
-                lane_reg_tmp = 'h0;
-                last_lane_reg_tmp = last_lane;
                 valid_reg_tmp = unsigned'(1'(unsigned'(64'(keep_in)) != 'h0));
                 sop_reg_tmp = unsigned'(1'(sop_in));
                 eop_reg_tmp = unsigned'(1'(eop_in));
+            end
+        end
+        else begin
+            if (SRC_WIDTH < DST_WIDTH) begin
+                lane=(output_fire) ? ('h0) : (unsigned'(32'(lane_reg)));
+                data = (output_fire) ? ('h0) : (data_reg);
+                keep = (output_fire) ? ('h0) : (keep_reg);
+                if (output_fire) begin
+                    valid_reg_tmp = unsigned'(1'(0));
+                    sop_reg_tmp = unsigned'(1'(0));
+                    eop_reg_tmp = unsigned'(1'(0));
+                end
+                if (input_fire) begin
+                    if ((SRC_WIDTH == 'h80) && (lane == 'h0)) begin
+                        data['h0 +:128] = data_in;
+                        keep['h0 +:16] = keep_in;
+                    end
+                    else begin
+                        if (SRC_WIDTH == 'h80) begin
+                            data['h80 +:128] = data_in;
+                            keep['h10 +:16] = keep_in;
+                        end
+                        else begin
+                            if (lane == 'h0) begin
+                                data['h0 +:64] = data_in;
+                                keep['h0 +:8] = keep_in;
+                            end
+                            else begin
+                                if (lane == 'h1) begin
+                                    data['h40 +:64] = data_in;
+                                    keep['h8 +:8] = keep_in;
+                                end
+                                else begin
+                                    if (lane == 'h2) begin
+                                        data['h80 +:64] = data_in;
+                                        keep['h10 +:8] = keep_in;
+                                    end
+                                    else begin
+                                        data['hC0 +:64] = data_in;
+                                        keep['h18 +:8] = keep_in;
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    if (sop_in) begin
+                        sop_reg_tmp = unsigned'(1'(1));
+                    end
+                    word_complete=eop_in || (lane == (LANES - 'h1));
+                    if (word_complete) begin
+                        valid_reg_tmp = unsigned'(1'(1));
+                        eop_reg_tmp = unsigned'(1'(eop_in));
+                        lane_reg_tmp = 'h0;
+                    end
+                    else begin
+                        lane_reg_tmp = lane + 'h1;
+                    end
+                    data_reg_tmp = data;
+                    keep_reg_tmp = keep;
+                end
+            end
+            else begin
+                if (output_fire) begin
+                    if (last_output_lane()) begin
+                        valid_reg_tmp = unsigned'(1'(0));
+                    end
+                    else begin
+                        lane_reg_tmp = lane_reg + 'h1;
+                    end
+                end
+                if (input_fire) begin
+                    last_lane='h0;
+                    if (unsigned'(64'(keep_in['h18 +:8])) != 'h0) begin
+                        last_lane='h3;
+                    end
+                    else begin
+                        if (unsigned'(64'(keep_in['h10 +:8])) != 'h0) begin
+                            last_lane='h2;
+                        end
+                        else begin
+                            if (unsigned'(64'(keep_in['h8 +:8])) != 'h0) begin
+                                last_lane='h1;
+                            end
+                        end
+                    end
+                    data_reg_tmp = data_in;
+                    keep_reg_tmp = keep_in;
+                    lane_reg_tmp = 'h0;
+                    last_lane_reg_tmp = last_lane;
+                    valid_reg_tmp = unsigned'(1'(unsigned'(64'(keep_in)) != 'h0));
+                    sop_reg_tmp = unsigned'(1'(sop_in));
+                    eop_reg_tmp = unsigned'(1'(eop_in));
+                end
             end
         end
         if (reset) begin

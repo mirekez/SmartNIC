@@ -9,7 +9,7 @@
 using namespace cpphdl;
 
 #define SMARTNIC_FOR_EACH_RX_PORT(M) \
-    M(0)
+    M(0) M(1)
 #define SMARTNIC_FOR_EACH_TX_STREAM(M) \
     M(0) M(1)
 
@@ -20,16 +20,16 @@ class SmartNIC : public Module
 {
 public:
     static constexpr size_t STREAMS = 2;
-    static constexpr size_t READ_PORTS = 1;
+    static constexpr size_t READ_PORTS = 2;
     static constexpr size_t L2_WIDTH = 256;
     static constexpr size_t L2_BYTES = L2_WIDTH / 8;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
-    static constexpr size_t RX_READ_WIDTH = LANE_WIDTH * 2;
+    static constexpr size_t RX_READ_WIDTH = LANE_WIDTH * 4;
     static constexpr size_t RX_READ_BYTES = RX_READ_WIDTH / 8;
     static constexpr size_t RX_READ_WORDS = RX_READ_WIDTH / LANE_WIDTH;
     static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t NET_BYTES = STREAMS * LANE_BYTES;
-    static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * 2;
+    static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * 4;
     static constexpr size_t LOGICAL_ROW_BITS = clog2(LOGICAL_ROWS);
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
@@ -47,6 +47,7 @@ public:
     _PORT(logic<NET_BYTES>) net_rx_eop_in;
     _PORT(bool) net_rx_raw_in;
     _PORT(bool) net_rx_ready_out;
+    _PORT(logic<STREAMS>) net_rx_almost_full_out;
 
     // Ordered Ethernet transmit output, passed directly from Network.
     _PORT(bool) net_tx_valid_out;
@@ -54,7 +55,7 @@ public:
     _PORT(logic<NET_BYTES>) net_tx_keep_out;
     _PORT(logic<NET_BYTES>) net_tx_sop_out;
     _PORT(logic<NET_BYTES>) net_tx_eop_out;
-    _PORT(bool) net_tx_ready_in;
+    _PORT(logic<STREAMS>) net_tx_ready_in;
 
     // Receive descriptors are five consecutive 256-bit words.
     _PORT(bool) l2_descriptor_valid_out;
@@ -64,8 +65,9 @@ public:
     _PORT(bool) l2_descriptor_eop_out;
     _PORT(bool) l2_descriptor_ready_in;
 
-    // One packet read engine.  A command supplies the RxRAM handle from the
-    // descriptor and exact packet length; output is a framed 256-bit stream.
+    // One packet read engine per Ethernet ingress. A command supplies the
+    // RxRAM handle from the descriptor and exact packet length; each output is
+    // an independent framed 256-bit stream.
     _PORT(logic<READ_PORTS>) l2_rx_read_valid_in;
     _PORT(logic<READ_PORTS * HANDLE_BITS>) l2_rx_read_handle_in;
     _PORT(logic<READ_PORTS * FRAME_LENGTH_BITS>) l2_rx_read_length_in;
@@ -526,6 +528,7 @@ public:
 #undef SMARTNIC_BIND_TX_STREAM
 
         net_rx_ready_out = _ASSIGN(network.ready_out());
+        net_rx_almost_full_out = _ASSIGN(network.rx_almost_full_out());
         net_tx_valid_out = _ASSIGN(network.tx_valid_out());
         net_tx_data_out = _ASSIGN(network.tx_data_out());
         net_tx_keep_out = _ASSIGN(network.tx_keep_out());
@@ -582,7 +585,8 @@ public:
             command_fire = (bool)l2_rx_read_valid_in()[port]
                 && (bool)l2_read_command_ready_comb_func()[port];
             if (command_fire) {
-                command = read_command_0_comb_func();
+                if (port == 0) command = read_command_0_comb_func();
+                else command = read_command_1_comb_func();
                 read_handle_reg[port]._next =
                     command.bits(HANDLE_BITS - 1, 0);
                 read_length_reg[port]._next = command.bits(

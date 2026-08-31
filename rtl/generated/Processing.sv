@@ -58,14 +58,14 @@ import CacheResponse_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 import DescriptorFetcher_Register_pkg::*;
-import PacketDMA16_14_64_Command_pkg::*;
-import PacketDMA16_14_64_BackingBeat_pkg::*;
-import PacketDMA16_14_64_Register_pkg::*;
+import PacketDMA16_14_64_32_4_256_31_64_64_Command_pkg::*;
+import PacketDMA16_14_64_32_4_256_31_64_64_BackingBeat_pkg::*;
+import PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::*;
 import PacketDmaState_pkg::*;
 import PacketDmaError_pkg::*;
 import PacketDmaOperation_pkg::*;
 import PacketDmaPrefetchState_pkg::*;
-import PacketDMA16_14_64_BackingState_pkg::*;
+import PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::*;
 import PacketDMA_Command_pkg::*;
 import PacketDMA_BackingBeat_pkg::*;
 import PacketDMA_Register_pkg::*;
@@ -143,6 +143,11 @@ module Processing #(
 ,   input wire timer_irq_in[CPU_COUNT*CPU_pkg::CORES]
 ,   input wire external_irq_in[CPU_COUNT*CPU_pkg::CORES]
 ,   input wire cache_invalidate_in[CPU_COUNT]
+,   output wire[CPU_COUNT-1:0] debug_dma_busy_out
+,   output wire[CPU_COUNT-1:0] debug_dma_error_out
+,   output wire[CPU_COUNT-1:0] debug_fetcher_error_out
+,   output wire[CPU_COUNT*'h20-1:0] debug_dma_completed_out
+,   output wire[CPU_COUNT*'h4-1:0] debug_dma_error_reason_out
 );
     localparam  READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
     localparam  RX_STREAM_BITS = 64'h122;
@@ -558,7 +563,7 @@ module Processing #(
 ,       'h100
 ,       CPU_pkg::EXTERNAL_ADDR_WIDTH
 ,       'h40
-,       512
+,       'h40
         ) packet_dma (
             .clk(clk)
         ,           .l2_clock(l2_clock)
@@ -938,12 +943,10 @@ module Processing #(
     always_comb begin : rx_read_handle_comb_func  // rx_read_handle_comb_func
         logic[31:0] index;
         logic[31:0] _bit;
-        logic[30-1:0] command;
         rx_read_handle_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
-            command = {packet_dma__rx_read_length_out[index], packet_dma__rx_read_handle_out[index]};
             for (_bit='h0;_bit < HANDLE_BITS;_bit=_bit+1) begin
-                rx_read_handle_comb[(index*HANDLE_BITS) + _bit] = command[_bit];
+                rx_read_handle_comb[(index*HANDLE_BITS) + _bit] = packet_dma__rx_read_handle_out[index][_bit];
             end
         end
     end
@@ -951,12 +954,10 @@ module Processing #(
     always_comb begin : rx_read_length_comb_func  // rx_read_length_comb_func
         logic[31:0] index;
         logic[31:0] _bit;
-        logic[30-1:0] command;
         rx_read_length_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
-            command = {packet_dma__rx_read_length_out[index], packet_dma__rx_read_handle_out[index]};
             for (_bit='h0;_bit < FRAME_LENGTH_BITS;_bit=_bit+1) begin
-                rx_read_length_comb[(index*FRAME_LENGTH_BITS) + _bit] = command[HANDLE_BITS + _bit];
+                rx_read_length_comb[(index*FRAME_LENGTH_BITS) + _bit] = packet_dma__rx_read_length_out[index][_bit];
             end
         end
     end
@@ -1479,6 +1480,11 @@ module Processing #(
             assign packet_dma__descriptor_command_system_in[gindex] = descriptor_fetcher__packet_command_system_out[gindex];
             assign packet_dma__descriptor_command_cache_in[gindex] = descriptor_fetcher__packet_command_cache_out[gindex];
             assign packet_dma__descriptor_command_destination_in[gindex] = descriptor_fetcher__packet_command_destination_out[gindex];
+            assign debug_dma_busy_out = packet_dma__busy_out['h0];
+            assign debug_dma_error_out = packet_dma__protocol_error_out['h0];
+            assign debug_fetcher_error_out = descriptor_fetcher__protocol_error_out['h0];
+            assign debug_dma_completed_out = unsigned'(32'(packet_dma__command_completed_count_out['h0]));
+            assign debug_dma_error_reason_out = unsigned'(4'(packet_dma__protocol_error_reason_out['h0]));
         end
     endgenerate
 

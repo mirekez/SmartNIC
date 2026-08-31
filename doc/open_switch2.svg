@@ -1,0 +1,277 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#edf2f7"/>
+    </linearGradient>
+    <linearGradient id="network" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eef8ff"/>
+      <stop offset="1" stop-color="#dceeff"/>
+    </linearGradient>
+    <linearGradient id="processing" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#faf5ff"/>
+      <stop offset="1" stop-color="#eee5fb"/>
+    </linearGradient>
+    <linearGradient id="system" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#effcf8"/>
+      <stop offset="1" stop-color="#dcf4ed"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#17324d" flood-opacity=".16"/>
+    </filter>
+    <marker id="rxArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 8,4 0,8Z" fill="#1684e8"/>
+    </marker>
+    <marker id="txArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 8,4 0,8Z" fill="#eb6415"/>
+    </marker>
+    <marker id="sysArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 8,4 0,8Z" fill="#138b7f"/>
+    </marker>
+    <marker id="axiArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 8,4 0,8Z" fill="#7652b5"/>
+    </marker>
+    <style>
+      text{font-family:"DejaVu Sans",Arial,sans-serif;fill:#112c49}
+      .title{font-size:25px;font-weight:800}.subtitle{font-size:10px;font-weight:700;fill:#52677e}
+      .section{font-size:13px;font-weight:800;fill:#fff;letter-spacing:.35px}
+      .blockTitle{font-size:11px;font-weight:800}.label{font-size:9px;font-weight:700}
+      .small{font-size:8px;font-weight:600}.tiny{font-size:7px;font-weight:600}
+      .domain{stroke:#183b5d;stroke-width:1.7}.portBox{fill:#fff;stroke:#49637c;stroke-width:1.4}
+      .rxBox{fill:#f8fcff;stroke:#176cb8;stroke-width:1.45}.txBox{fill:#fff8f2;stroke:#d65a12;stroke-width:1.45}
+      .cpuBox{fill:#fcfaff;stroke:#7652b5;stroke-width:1.4}.sysBox{fill:#f7fffc;stroke:#13796f;stroke-width:1.4}
+      .memoryBox{fill:#fffdf5;stroke:#a57614;stroke-width:1.45}.optional{fill:#fff;stroke:#718096;stroke-width:1.2;stroke-dasharray:4 3}
+      .rxLine{fill:none;stroke:#1684e8;stroke-width:2.4;marker-end:url(#rxArrow)}
+      .txLine{fill:none;stroke:#eb6415;stroke-width:2.4;marker-end:url(#txArrow)}
+      .sysLine{fill:none;stroke:#138b7f;stroke-width:2.4;marker-end:url(#sysArrow)}
+      .axiLine{fill:none;stroke:#7652b5;stroke-width:2.2;marker-end:url(#axiArrow)}
+      .controlLine{fill:none;stroke:#7652b5;stroke-width:1.5;stroke-dasharray:4 3;marker-end:url(#axiArrow)}
+    </style>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#page)"/>
+  <text x="640" y="27" text-anchor="middle" class="title">OpenSwitch2 SmartNIC RTL Architecture</text>
+  <text x="640" y="44" text-anchor="middle" class="subtitle">current open_switch2 profile • two 10GbE ports • one four-core Tribe cluster • one PCIe queue pair</text>
+
+  <!-- Clock-domain containers. -->
+  <rect x="10" y="58" width="104" height="554" rx="7" fill="#f8fafc" class="domain" filter="url(#shadow)"/>
+  <path d="M17,58H107Q114,58 114,65V87H10V65Q10,58 17,58" fill="#425d78"/>
+  <text x="62" y="78" text-anchor="middle" class="section">10GbE MACs</text>
+
+  <rect x="124" y="58" width="374" height="554" rx="7" fill="url(#network)" class="domain" filter="url(#shadow)"/>
+  <path d="M131,58H491Q498,58 498,65V87H124V65Q124,58 131,58" fill="#0b63ad"/>
+  <text x="311" y="78" text-anchor="middle" class="section">SMARTNIC / NETWORK — 156.25 MHz</text>
+
+  <rect x="508" y="58" width="395" height="554" rx="7" fill="url(#processing)" class="domain" filter="url(#shadow)"/>
+  <path d="M515,58H896Q903,58 903,65V87H508V65Q508,58 515,58" fill="#6842a7"/>
+  <text x="705" y="78" text-anchor="middle" class="section">PROCESSING — 156.25 MHz • 1 CLUSTER</text>
+
+  <rect x="913" y="58" width="244" height="554" rx="7" fill="url(#system)" class="domain" filter="url(#shadow)"/>
+  <path d="M920,58H1150Q1157,58 1157,65V87H913V65Q913,58 920,58" fill="#087970"/>
+  <text x="1035" y="78" text-anchor="middle" class="section">SYSTEM — 125 MHz</text>
+
+  <rect x="1167" y="58" width="103" height="554" rx="7" fill="#f8fafc" class="domain" filter="url(#shadow)"/>
+  <path d="M1174,58H1263Q1270,58 1270,65V87H1167V65Q1167,58 1174,58" fill="#425d78"/>
+  <text x="1218" y="78" text-anchor="middle" class="section">PCIe / HOST</text>
+
+  <!-- Interconnects are behind module boxes. -->
+  <path d="M99,128H143" class="rxLine"/><path d="M99,200H143" class="rxLine"/>
+  <path d="M244,156H269" class="rxLine"/><path d="M244,185H252V214H407" class="rxLine"/>
+  <path d="M326,193V229" class="rxLine"/><path d="M445,271V295H407" class="rxLine"/>
+  <path d="M445,271V318" class="rxLine"/>
+  <path d="M491,348H524" class="rxLine"/>
+  <path d="M407,260H500V131H524" class="rxLine"/>
+  <path d="M658,306H714" class="rxLine"/>
+
+  <path d="M702,349H658" class="txLine"/>
+  <path d="M524,371H488V457H463" class="txLine"/>
+  <path d="M403,457H374" class="txLine"/>
+  <path d="M261,457H224V484H99" class="txLine"/>
+  <path d="M261,472H237V556H99" class="txLine"/>
+
+  <path d="M658,329H684V95H903V135H927" class="sysLine"/>
+  <path d="M984,135H1011" class="sysLine"/>
+  <path d="M1092,135H1113V292H1074" class="sysLine"/>
+  <path d="M1074,309H1113V459H1092" class="sysLine"/>
+  <path d="M1011,459H984" class="sysLine"/>
+  <path d="M927,459H895V505H686V365H658" class="sysLine"/>
+
+  <path d="M792,384V420" class="axiLine"/><path d="M792,476V521" class="axiLine"/>
+  <path d="M639,388V448H704" class="axiLine"/>
+  <path d="M866,359H889V142H658" class="controlLine"/>
+  <path d="M889,270H658" class="controlLine"/>
+  <path d="M1035,372V337" class="controlLine"/>
+  <path d="M1094,288H1181" class="axiLine"/><path d="M1094,405H1181" class="controlLine"/>
+
+  <!-- External MAC interface. -->
+  <rect x="22" y="101" width="77" height="54" rx="5" class="rxBox"/>
+  <text x="60" y="122" text-anchor="middle" class="blockTitle">PORT 0 RX</text>
+  <text x="60" y="139" text-anchor="middle" class="small">64b AXI stream</text>
+  <rect x="22" y="173" width="77" height="54" rx="5" class="rxBox"/>
+  <text x="60" y="194" text-anchor="middle" class="blockTitle">PORT 1 RX</text>
+  <text x="60" y="211" text-anchor="middle" class="small">64b AXI stream</text>
+  <text x="62" y="268" text-anchor="middle" class="small">Xilinx 10G MAC</text>
+  <text x="62" y="281" text-anchor="middle" class="small">PCS / GT external</text>
+  <text x="62" y="303" text-anchor="middle" class="tiny">PAUSE / ready</text>
+  <text x="62" y="314" text-anchor="middle" class="tiny">backpressure</text>
+  <rect x="22" y="457" width="77" height="54" rx="5" class="txBox"/>
+  <text x="60" y="478" text-anchor="middle" class="blockTitle" style="fill:#bd4b0d">PORT 0 TX</text>
+  <text x="60" y="495" text-anchor="middle" class="small">64b AXI stream</text>
+  <rect x="22" y="529" width="77" height="54" rx="5" class="txBox"/>
+  <text x="60" y="550" text-anchor="middle" class="blockTitle" style="fill:#bd4b0d">PORT 1 TX</text>
+  <text x="60" y="567" text-anchor="middle" class="small">64b AXI stream</text>
+
+  <!-- Network receive pipeline. -->
+  <rect x="143" y="112" width="101" height="88" rx="6" class="rxBox"/>
+  <text x="193" y="133" text-anchor="middle" class="blockTitle">INPUT BALANCER</text>
+  <text x="193" y="150" text-anchor="middle" class="small">lane FIFO ×2</text>
+  <text x="193" y="164" text-anchor="middle" class="tiny">independent frames</text>
+  <text x="193" y="176" text-anchor="middle" class="tiny">2048 words / lane</text>
+  <text x="193" y="188" text-anchor="middle" class="tiny">high-water PAUSE</text>
+
+  <rect x="269" y="112" width="115" height="81" rx="6" class="rxBox"/>
+  <text x="326" y="132" text-anchor="middle" class="blockTitle">PACKET PARSER ×2</text>
+  <text x="326" y="149" text-anchor="middle" class="small">Ethernet • VLAN • MPLS</text>
+  <text x="326" y="162" text-anchor="middle" class="small">IPv4/6 • TCP/UDP</text>
+  <text x="326" y="179" text-anchor="middle" class="tiny">RAW or dissected header view</text>
+
+  <rect x="407" y="103" width="77" height="168" rx="6" class="rxBox"/>
+  <text x="445" y="125" text-anchor="middle" class="blockTitle">RX RAM</text>
+  <text x="445" y="142" text-anchor="middle" class="small">2 streams</text>
+  <text x="445" y="155" text-anchor="middle" class="small">× 4 banks</text>
+  <text x="445" y="177" text-anchor="middle" class="tiny">circular allocate</text>
+  <text x="445" y="189" text-anchor="middle" class="tiny">ordered release</text>
+  <text x="445" y="214" text-anchor="middle" class="tiny">2 read ports</text>
+  <text x="445" y="226" text-anchor="middle" class="tiny">256b assembly</text>
+  <text x="445" y="250" text-anchor="middle" class="tiny">payload storage</text>
+
+  <rect x="256" y="229" width="151" height="82" rx="6" class="rxBox"/>
+  <text x="331" y="249" text-anchor="middle" class="blockTitle">RX FIFO ×2 + RR MUX</text>
+  <text x="331" y="266" text-anchor="middle" class="small">160-byte descriptor</text>
+  <text x="331" y="280" text-anchor="middle" class="tiny">handle • length • source port</text>
+  <text x="331" y="292" text-anchor="middle" class="tiny">32B metadata + 128B view</text>
+  <text x="331" y="304" text-anchor="middle" class="tiny">serialized as 5 × 256b</text>
+
+  <rect x="407" y="318" width="77" height="60" rx="6" class="rxBox"/>
+  <text x="445" y="339" text-anchor="middle" class="blockTitle">RX PACK</text>
+  <text x="445" y="355" text-anchor="middle" class="small">4 × 64b → 256b</text>
+  <text x="445" y="368" text-anchor="middle" class="tiny">same clock</text>
+
+  <!-- Network transmit pipeline. -->
+  <rect x="403" y="427" width="81" height="60" rx="6" class="txBox"/>
+  <text x="443" y="448" text-anchor="middle" class="blockTitle" style="fill:#bd4b0d">TX SPLIT ×2</text>
+  <text x="443" y="464" text-anchor="middle" class="small">256b → 64b</text>
+  <text x="443" y="477" text-anchor="middle" class="tiny">same clock</text>
+
+  <rect x="261" y="418" width="113" height="78" rx="6" class="txBox"/>
+  <text x="317" y="438" text-anchor="middle" class="blockTitle" style="fill:#bd4b0d">TX FIFO ×2</text>
+  <text x="317" y="454" text-anchor="middle" class="small">packet commit at EOP</text>
+  <text x="317" y="468" text-anchor="middle" class="small">per-port IPG</text>
+  <text x="317" y="483" text-anchor="middle" class="tiny">OutputMerger • 2048 words</text>
+
+  <!-- Processing level. -->
+  <rect x="524" y="102" width="134" height="80" rx="6" class="cpuBox"/>
+  <text x="591" y="123" text-anchor="middle" class="blockTitle">DESCRIPTOR FETCHER</text>
+  <text x="591" y="140" text-anchor="middle" class="small">prefetch + CPU IOMEM</text>
+  <text x="591" y="154" text-anchor="middle" class="tiny">fields / full descriptor / skip</text>
+  <text x="591" y="168" text-anchor="middle" class="tiny">issues automatic packet command</text>
+
+  <rect x="524" y="240" width="134" height="148" rx="6" class="cpuBox"/>
+  <text x="591" y="261" text-anchor="middle" class="blockTitle">PACKET DMA</text>
+  <text x="591" y="279" text-anchor="middle" class="small">command FIFO + prefetch</text>
+  <text x="591" y="296" text-anchor="middle" class="tiny">NETWORK → CPU</text>
+  <text x="591" y="308" text-anchor="middle" class="tiny">CPU → NETWORK</text>
+  <text x="591" y="320" text-anchor="middle" class="tiny">SYSTEM → CPU</text>
+  <text x="591" y="332" text-anchor="middle" class="tiny">CPU → SYSTEM</text>
+  <text x="591" y="350" text-anchor="middle" class="tiny">coherent 256b L2 line ingress</text>
+  <text x="591" y="362" text-anchor="middle" class="tiny">DDR write-through backing FIFO</text>
+  <text x="591" y="376" text-anchor="middle" class="tiny">destination port carried per packet</text>
+
+  <rect x="701" y="102" width="178" height="282" rx="8" class="cpuBox"/>
+  <text x="790" y="122" text-anchor="middle" class="blockTitle">TRIBE CPU CLUSTER</text>
+  <text x="790" y="137" text-anchor="middle" class="tiny">RV32IM + Zicsr/traps • no A / ISR / MMU-TLB</text>
+  <rect x="714" y="150" width="70" height="50" rx="4" class="cpuBox"/>
+  <text x="749" y="167" text-anchor="middle" class="label">CORE 0</text><text x="749" y="181" text-anchor="middle" class="tiny">L1I 2KiB</text><text x="749" y="191" text-anchor="middle" class="tiny">L1D 1KiB</text>
+  <rect x="796" y="150" width="70" height="50" rx="4" class="cpuBox"/>
+  <text x="831" y="167" text-anchor="middle" class="label">CORE 1</text><text x="831" y="181" text-anchor="middle" class="tiny">L1I 2KiB</text><text x="831" y="191" text-anchor="middle" class="tiny">L1D 1KiB</text>
+  <rect x="714" y="211" width="70" height="50" rx="4" class="cpuBox"/>
+  <text x="749" y="228" text-anchor="middle" class="label">CORE 2</text><text x="749" y="242" text-anchor="middle" class="tiny">L1I 2KiB</text><text x="749" y="252" text-anchor="middle" class="tiny">L1D 1KiB</text>
+  <rect x="796" y="211" width="70" height="50" rx="4" class="cpuBox"/>
+  <text x="831" y="228" text-anchor="middle" class="label">CORE 3</text><text x="831" y="242" text-anchor="middle" class="tiny">L1I 2KiB</text><text x="831" y="252" text-anchor="middle" class="tiny">L1D 1KiB</text>
+  <rect x="714" y="277" width="152" height="59" rx="5" class="cpuBox"/>
+  <text x="790" y="298" text-anchor="middle" class="blockTitle">SHARED L2 CACHE</text>
+  <text x="790" y="314" text-anchor="middle" class="small">64 KiB • 4-way • 256-bit</text>
+  <text x="790" y="327" text-anchor="middle" class="tiny">coherent DMA port + private L1 invalidation</text>
+  <rect x="714" y="346" width="152" height="26" rx="4" class="cpuBox"/>
+  <text x="790" y="363" text-anchor="middle" class="small">uncached IOMEM mux: Fetcher + DMA</text>
+
+  <rect x="704" y="420" width="176" height="56" rx="6" class="memoryBox"/>
+  <text x="792" y="441" text-anchor="middle" class="blockTitle">AXI DDR WRITE ARBITER</text>
+  <text x="792" y="457" text-anchor="middle" class="small">CPU/L2 memory + PacketDMA backing</text>
+  <text x="792" y="469" text-anchor="middle" class="tiny">one exported 256-bit AXI master</text>
+
+  <rect x="704" y="521" width="176" height="57" rx="6" class="memoryBox"/>
+  <text x="792" y="541" text-anchor="middle" class="blockTitle">EXTERNAL CPU MEMORY</text>
+  <text x="792" y="557" text-anchor="middle" class="small">AXI DDR controller / simulation DDR4</text>
+  <text x="792" y="570" text-anchor="middle" class="tiny">FPGA profile currently uses 128 KiB boot BRAM</text>
+
+  <rect x="524" y="529" width="155" height="49" rx="5" class="optional"/>
+  <text x="601" y="547" text-anchor="middle" class="label">OPTIONAL FPGA DIAGNOSTIC</text>
+  <text x="601" y="561" text-anchor="middle" class="tiny">ProcessingStub loopback + UARTProbe</text>
+  <text x="601" y="572" text-anchor="middle" class="tiny">selected instead of the CPU cluster</text>
+
+  <!-- System level and host. -->
+  <rect x="927" y="105" width="57" height="60" rx="5" class="sysBox"/>
+  <text x="955" y="125" text-anchor="middle" class="blockTitle">RX CDC</text>
+  <text x="955" y="141" text-anchor="middle" class="tiny">290b ×16</text>
+  <text x="955" y="153" text-anchor="middle" class="tiny">L2 → SYS</text>
+  <rect x="1011" y="105" width="81" height="60" rx="5" class="sysBox"/>
+  <text x="1051" y="126" text-anchor="middle" class="blockTitle">RX QUEUE</text>
+  <text x="1051" y="142" text-anchor="middle" class="small">256 entries</text>
+  <text x="1051" y="154" text-anchor="middle" class="tiny">Processing → host</text>
+
+  <rect x="974" y="259" width="120" height="78" rx="6" class="sysBox"/>
+  <text x="1034" y="280" text-anchor="middle" class="blockTitle">MASTER DMA</text>
+  <text x="1034" y="297" text-anchor="middle" class="small">64-bit host AXI</text>
+  <text x="1034" y="311" text-anchor="middle" class="tiny">queue ↔ host memory</text>
+  <text x="1034" y="324" text-anchor="middle" class="tiny">one shared command engine</text>
+
+  <rect x="974" y="372" width="120" height="70" rx="6" class="sysBox"/>
+  <text x="1034" y="392" text-anchor="middle" class="blockTitle">CONTROLLER</text>
+  <text x="1034" y="408" text-anchor="middle" class="small">RX ring 1024</text>
+  <text x="1034" y="421" text-anchor="middle" class="small">TX SG ring 1024</text>
+  <text x="1034" y="434" text-anchor="middle" class="tiny">registers • doorbells • completion</text>
+
+  <rect x="1011" y="429" width="81" height="60" rx="5" class="sysBox"/>
+  <text x="1051" y="450" text-anchor="middle" class="blockTitle">TX QUEUE</text>
+  <text x="1051" y="466" text-anchor="middle" class="small">256 entries</text>
+  <text x="1051" y="478" text-anchor="middle" class="tiny">host → Processing</text>
+  <rect x="927" y="429" width="57" height="60" rx="5" class="sysBox"/>
+  <text x="955" y="449" text-anchor="middle" class="blockTitle">TX CDC</text>
+  <text x="955" y="465" text-anchor="middle" class="tiny">290b ×16</text>
+  <text x="955" y="477" text-anchor="middle" class="tiny">SYS → L2</text>
+
+  <text x="1035" y="539" text-anchor="middle" class="small">one RX/TX queue pair</text>
+  <text x="1035" y="554" text-anchor="middle" class="tiny">CDC is the only asynchronous packet boundary</text>
+  <text x="1035" y="567" text-anchor="middle" class="tiny">156.25 MHz processing ↔ 125 MHz PCIe</text>
+
+  <rect x="1181" y="256" width="75" height="64" rx="6" class="portBox"/>
+  <text x="1218" y="277" text-anchor="middle" class="blockTitle">DMA PORT</text>
+  <text x="1218" y="294" text-anchor="middle" class="small">host memory</text>
+  <text x="1218" y="307" text-anchor="middle" class="tiny">AXI master</text>
+  <rect x="1181" y="373" width="75" height="64" rx="6" class="portBox"/>
+  <text x="1218" y="394" text-anchor="middle" class="blockTitle">CONTROL</text>
+  <text x="1218" y="411" text-anchor="middle" class="small">register ABI</text>
+  <text x="1218" y="424" text-anchor="middle" class="tiny">AXI slave</text>
+  <rect x="1181" y="500" width="75" height="65" rx="6" class="portBox"/>
+  <text x="1218" y="522" text-anchor="middle" class="blockTitle">PCIe ×1</text>
+  <text x="1218" y="539" text-anchor="middle" class="small">64b @ 125 MHz</text>
+  <text x="1218" y="552" text-anchor="middle" class="tiny">Kintex-7 bridge</text>
+
+  <!-- Short bus labels. -->
+  <text x="500" y="340" class="tiny" fill="#126bb2">256b</text>
+  <text x="670" y="297" class="tiny" fill="#126bb2">coherent lines</text>
+  <text x="670" y="359" class="tiny" fill="#c6500f">CPU→network</text>
+  <text x="798" y="91" class="tiny" fill="#087970">CPU→system • 256b framed</text>
+  <text x="753" y="502" class="tiny" fill="#087970">system→CPU • 256b framed</text>
+</svg>

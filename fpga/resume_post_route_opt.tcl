@@ -25,7 +25,7 @@ report_timing_summary -max_paths 100 -report_unconstrained \
     -file [file join $run_dir klusterlab_top_timing_summary_postroute_physopt.rpt]
 report_drc -file [file join $run_dir klusterlab_top_drc_postroute_physopt.rpt]
 
-foreach extension {bit bin ltx} {
+foreach extension {bit bin} {
     set source [file join $run_dir klusterlab_top.$extension]
     set destination [file join $script_dir open_switch.$extension]
     if {![file exists $source]} {

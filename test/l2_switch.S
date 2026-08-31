@@ -361,6 +361,12 @@ _start:
     lw      t0, DMA_STATUS(s1)
     andi    t0, t0, DMA_CMD_READY
     beqz    t0, .Lsustained_dma_locked
+    /* Snapshot the accepted-command counter while holding the staging lock.
+       Tribe may retire stores into its registered memory path before another
+       hart can observe the final PacketDMA doorbell.  Waiting for this
+       counter makes the ownership handoff explicit and prevents the next
+       hart from mixing its port with the previous hart's source address. */
+    lw      t2, DMA_COMMAND_ISSUED(s1)
     sw      s4, DMA_LENGTH(s1)
     sw      s3, DMA_SOURCE(s1)
     sw      s11, DMA_NETWORK_PORT(s1)
@@ -368,6 +374,9 @@ _start:
     sw      t0, DMA_FLAGS(s1)
     li      t0, 1
     sw      t0, DMA_COMMAND(s1)
+ .Lsustained_wait_issued:
+    lw      t3, DMA_COMMAND_ISSUED(s1)
+    beq     t3, t2, .Lsustained_wait_issued
     /* The complete command is now owned by the hardware FIFO. Release the
        shared staging bank immediately: keeping this lock through the
        1,516-byte transfer serialized all four harts and left the 64-entry

@@ -25,7 +25,7 @@ module OutputMerger #(
 ,   output wire[OUTPUT_BYTES-1:0] keep_out
 ,   output wire[OUTPUT_BYTES-1:0] sop_out
 ,   output wire[OUTPUT_BYTES-1:0] eop_out
-,   input wire ready_in
+,   input wire[2-1:0] ready_in
 ,   output wire protocol_error_out
 );
     localparam  STREAMS = 64'h2;
@@ -33,7 +33,7 @@ module OutputMerger #(
     localparam  OUTPUT_BITS = STREAMS*LANE_WIDTH;
     localparam  OUTPUT_BYTES = STREAMS*LANE_BYTES;
     localparam  IPG_CYCLES = (((MIN_IPG_BYTES + LANE_BYTES) - 'h1))/LANE_BYTES;
-    localparam  IPG_COUNT_BITS = $clog2(IPG_CYCLES + 'h1);
+    localparam  IPG_COUNT_BITS = (IPG_CYCLES == 'h0) ? ('h1) : ($clog2(IPG_CYCLES + 'h1));
 
 
     // regs and combs
@@ -206,11 +206,11 @@ module OutputMerger #(
     end
 
     always_comb begin : read_count_0_comb_func  // read_count_0_comb_func
-        read_count_0_comb = (ready_in && lane_valid_comb['h0]) ? ('h1) : ('h0);
+        read_count_0_comb = (ready_in['h0] && lane_valid_comb['h0]) ? ('h1) : ('h0);
     end
 
     always_comb begin : read_count_1_comb_func  // read_count_1_comb_func
-        read_count_1_comb = (ready_in && lane_valid_comb['h1]) ? ('h1) : ('h0);
+        read_count_1_comb = (ready_in['h1] && lane_valid_comb['h1]) ? ('h1) : ('h0);
     end
 
     always_comb begin : error_comb_func  // error_comb_func
@@ -251,11 +251,11 @@ module OutputMerger #(
                 ipg_cycles_reg_tmp[stream] = '0;
             end
             else begin
-                if ((ready_in && lane_valid_comb[stream]) && fifos__eop_out[stream]['h0]) begin
+                if ((ready_in[stream] && lane_valid_comb[stream]) && fifos__eop_out[stream]['h0]) begin
                     ipg_cycles_reg_tmp[stream] = IPG_CYCLES;
                 end
                 else begin
-                    if (ready_in && (unsigned'(32'(ipg_cycles_reg[stream])) != 'h0)) begin
+                    if (ready_in[stream] && (unsigned'(32'(ipg_cycles_reg[stream])) != 'h0)) begin
                         ipg_cycles_reg_tmp[stream] = ipg_cycles_reg[stream] - 'h1;
                     end
                 end

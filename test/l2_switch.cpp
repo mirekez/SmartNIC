@@ -29,6 +29,9 @@ namespace
 #ifndef SUSTAINED_SWITCH
 #define SUSTAINED_SWITCH 0
 #endif
+#ifndef CPU_LOOPBACK_TEST
+#define CPU_LOOPBACK_TEST 0
+#endif
 #ifndef DEMO_TRAFFIC_REPEATS
 #define DEMO_TRAFFIC_REPEATS 10
 #endif
@@ -342,6 +345,20 @@ class L2SwitchTest
     {
         std::vector<std::vector<uint8_t>> frames;
         uint32_t sequence = 20;
+#if CPU_LOOPBACK_TEST
+        for (uint32_t transfer = 0; transfer < 8; ++transfer) {
+            const uint32_t ingress = transfer & 1u;
+            const std::array<uint8_t, 6> destination =
+                {0x02, 0x31, 0, (uint8_t)(ingress ^ 1u), 0x55,
+                    (uint8_t)transfer};
+            auto frame = packet(destination,
+                mac(ingress, transfer % 10u), sequence++);
+            // cpu_loopback.S always swaps the physical ingress port.
+            expected.push_back({frame, ingress ^ 1u});
+            frames.push_back(std::move(frame));
+        }
+        return frames;
+#else
 #if !SUSTAINED_SWITCH
         frames = make_learning_traffic();
 #endif
@@ -359,6 +376,7 @@ class L2SwitchTest
             frames.push_back(std::move(frame));
         }
         return frames;
+#endif
     }
 
     static std::vector<std::vector<uint8_t>> repeat_traffic(
@@ -496,8 +514,8 @@ public:
         wait_net();
         start = false;
 
-        const uint64_t timeout = ticks
-            + (SUSTAINED_SWITCH ? 2000000ull : 30000000ull);
+        const uint64_t timeout = ticks + (SUSTAINED_SWITCH ? 2000000ull
+            : (CPU_LOOPBACK_TEST ? 5000000ull : 30000000ull));
         uint32_t expected_backing_beats = 0;
 #if SUSTAINED_SWITCH
         for (const auto& frame : frames)
@@ -518,6 +536,30 @@ public:
                 )
             && !failed) {
             cycle();
+            if constexpr (CPU_LOOPBACK_TEST) {
+                if (ticks >= next_progress) {
+                    std::cerr << std::format(
+                        "cpu_loopback: ticks={} descriptors={} dma={} "
+                        "busy={} rx_read={}/{} rx={}/{} tx={}/{} port={} "
+                        "forwarded={}/{}\n",
+                        ticks,
+                        (uint32_t)dut.processing.descriptor_fetcher[0]
+                            .descriptor_count_out(),
+                        (uint32_t)dut.processing.packet_dma[0]
+                            .command_completed_count_out(),
+                        dut.processing.packet_dma[0].busy_out(),
+                        dut.processing.packet_dma[0].rx_read_valid_out(),
+                        dut.processing.packet_dma[0].rx_read_ready_in(),
+                        dut.processing.packet_dma[0].rx_valid_in(),
+                        dut.processing.packet_dma[0].rx_ready_out(),
+                        dut.processing.packet_dma[0].network_tx_valid_out(),
+                        dut.processing.packet_dma[0].network_tx_ready_in(),
+                        (uint32_t)dut.processing.packet_dma[0]
+                            .network_tx_port_out(),
+                        forwarded.size(), expected.size());
+                    next_progress += 100000;
+                }
+            }
             if constexpr (SUSTAINED_SWITCH) {
                 if (ticks >= next_progress) {
                     std::cerr << std::format(
@@ -541,8 +583,20 @@ public:
                 }
             }
             if (dut.protocol_error_out()) {
-                fail(std::format("RTL protocol_error asserted (PacketDMA "
-                    "reason={})", (uint32_t)dut.processing.packet_dma[0]
+                fail(std::format("RTL protocol_error asserted: smartnic={} "
+                    "network{{balancer={},parser={},rxram={},join={}}} "
+                    "system={} traffic={} host={} fetcher={} dma={} "
+                    "dma_reason={}", dut.smartnic.protocol_error_out(),
+                    dut.smartnic.debug_network_balancer_error(),
+                    dut.smartnic.debug_network_parser_error(),
+                    dut.smartnic.debug_network_rx_ram_error(),
+                    dut.smartnic.debug_network_join_error(),
+                    dut.system.protocol_error_out(),
+                    dut.traffic.protocol_error_out(),
+                    dut.host.protocol_error_out(),
+                    dut.processing.descriptor_fetcher[0].protocol_error_out(),
+                    dut.processing.packet_dma[0].protocol_error_out(),
+                    (uint32_t)dut.processing.packet_dma[0]
                         .protocol_error_reason_out()));
             }
             // Full occupancy is legal after accepting the tail of a finite
@@ -632,7 +686,7 @@ public:
         if (!std::all_of(matched.begin(), matched.end(), [](bool value) {
                 return value;
             })) fail("one or more expected packets never reached MAC TX");
-#if !SUSTAINED_SWITCH
+#if !SUSTAINED_SWITCH && !CPU_LOOPBACK_TEST
         // The final known packet was installed dirty by PacketDMA, evicted by
         // firmware, and then refilled for TX. Its byte-exact DDR image proves
         // that the writeback path was exercised rather than only an L2 hit.

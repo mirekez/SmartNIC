@@ -26,7 +26,7 @@ public:
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
     static constexpr size_t INPUT_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
-    static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * 2;
+    static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * 4;
     static constexpr size_t LOGICAL_ROW_BITS = clog2(LOGICAL_ROWS);
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
@@ -39,6 +39,7 @@ public:
     _PORT(logic<INPUT_BYTES>) eop_in;
     _PORT(bool) raw_in;
     _PORT(bool) ready_out;
+    _PORT(logic<STREAMS>) rx_almost_full_out;
 
     // Completed receive descriptors from RxFifo.
     _PORT(bool) descriptor_valid_out;
@@ -73,7 +74,7 @@ public:
     _PORT(logic<INPUT_BYTES>) tx_keep_out;
     _PORT(logic<INPUT_BYTES>) tx_sop_out;
     _PORT(logic<INPUT_BYTES>) tx_eop_out;
-    _PORT(bool) tx_ready_in;
+    _PORT(logic<STREAMS>) tx_ready_in;
 
     _PORT(bool) protocol_error_out;
     _PORT(bool) storage_full_out;
@@ -83,7 +84,10 @@ private:
     PacketParser<LANE_WIDTH, ENABLE_RAW> parser[STREAMS];
     RxRAM<LANE_WIDTH, READ_PORTS, BANK_DEPTH, READ_WIDTH> rx_ram;
     RxFifo<RX_FIFO_DEPTH> rx_fifo;
-    OutputMerger<LANE_WIDTH, TX_FIFO_WORDS, 12> output_merger;
+    // The Xilinx 10G MAC inserts the IEEE minimum IFG and deasserts AXI
+    // tready while doing so.  Adding another 12 bytes here lowers forwarding
+    // capacity below wire rate for minimum-gap traffic.
+    OutputMerger<LANE_WIDTH, TX_FIFO_WORDS, 0> output_merger;
 
     // Per-channel elastic boundary between the balancer BRAMs and the two
     // independent consumers.  Without this register, the synchronous BRAM
@@ -371,6 +375,11 @@ public:
         output_merger._assign();
 
         ready_out = _ASSIGN(balancer.ready_out());
+        // Pause for either immediate ingress elasticity or packet-store
+        // pressure.  Waiting until RxRAM actually refuses a new packet is too
+        // late for a remote transmitter with substantial internal buffering.
+        rx_almost_full_out = _ASSIGN(
+            balancer.almost_full_out() | rx_ram.almost_full_out());
         descriptor_valid_out = _ASSIGN(rx_fifo.valid_out());
         descriptor_data_out = _ASSIGN(rx_fifo.data_out());
         read_ready_out = _ASSIGN(rx_ram.read_ready_out());
