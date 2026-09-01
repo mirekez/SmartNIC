@@ -54,16 +54,19 @@ cd fpga
 ```
 
 To build the real Tribe/DescriptorFetcher/PacketDMA path instead, select CPU
-mode. The build compiles `test/cpu_loopback.S`, converts its ELF load segment
-to `fpga/build/cpu_loopback.mem`, and initializes the 128 KiB boot/scratch BRAM
-before synthesis. Core 0 copies each packet coherently and transmits it on
-`ingress XOR 1`; the other three harts park in `wfi`.
+mode. The build compiles the four-hart form of `test/cpu_loopback.S`, converts
+its ELF load segment to `fpga/build/cpu_loopback.mem`, and initializes the 128
+KiB boot BRAM before synthesis. Each hart claims a descriptor under a short
+hardware lock, then PacketDMA streams its packet directly from RxRAM to TxFIFO
+`ingress XOR 1` after the lock has been released.
 
 ```sh
 SMARTNIC_PROCESSING_MODE=cpu ./build.sh
 ```
 
-`SMARTNIC_PROCESSING_MODE` accepts only `stub` (the default) or `cpu`.
+`SMARTNIC_PROCESSING_MODE` accepts only `stub` (the default) or `cpu`. CPU mode
+defaults to `SMARTNIC_CPU_FIRMWARE=multicore`; set it to `single` to reproduce
+the measured one-core copy-through-cache baseline.
 
 Normal bitstreams honor received IEEE 802.3x PAUSE frames and generate PAUSE
 independently for each ingress when its packet store crosses the hysteretic
@@ -118,10 +121,13 @@ engine. While idle it transmits `UART_PROBE_READY` approximately once per
 second. Start the host receiver before injecting a packet; `--wait-trigger`
 deliberately sends neither RTS nor `DUMP`, so it cannot freeze an empty trace.
 
-The CPU image uses schema `PCPU` and samples cumulative descriptor, RxRAM,
-PacketDMA TX-word, and TX-packet counters every 100 us. It also records live
-ready/valid state, DMA busy/error/reason, QPLL, and both PCS links. Because it
-is a continuous circular capture, initiate its dump after traffic:
+The CPU image uses release-diagnostic schema `PCRL` and samples the last RxRAM
+release handle/length, live allocated-row and release-row positions, and the
+release-event counter every 100 us. It also records live ready/valid state,
+DMA busy/error/reason, PAUSE pressure, QPLL, and both PCS links. The text
+decoder checks whether the last release advanced the allocator to the expected
+row and whether the packet store drained after traffic. Because it is a
+continuous circular capture, initiate its dump during or just after traffic:
 
 ```sh
 python3 fpga/uart_probe.py --port /dev/ttyUSB1 --timeout 30 \

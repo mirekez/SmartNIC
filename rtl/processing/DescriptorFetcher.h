@@ -6,13 +6,15 @@
 // it explicitly, so speculative/cacheable loads cannot consume queue state.
 
 #include "../network/RxFifo.h"
+#include "../common/AsyncReadRam.h"
 #include "../../cpphdl/tribe_cpu/common/Axi4.h"
+#include "../../Config.h"
 
 using namespace cpphdl;
 
 template<size_t DEPTH = 4, size_t AXI_ADDR_WIDTH = 32,
     size_t AXI_ID_WIDTH = 4, size_t AXI_DATA_WIDTH = 256,
-    size_t HANDLE_BITS = 16>
+    size_t HANDLE_BITS = PACKET_HANDLE_BITS>
 class DescriptorFetcher : public Module
 {
 public:
@@ -52,7 +54,16 @@ public:
         REG_PORTS = 0x138,
         REG_PROTOCOL = 0x13c,
         // Logical MAC-side ingress port, independent of parsed L4 ports.
-        REG_SOURCE_PORT = 0x140
+        REG_SOURCE_PORT = 0x140,
+        // Per-action coherent destination.  Unlike AUTO_BASE this is selected
+        // by the hart that atomically claims the current descriptor.
+        REG_ACTION_DESTINATION = 0x144,
+        // The autonomous DDR packet ring has one authoritative destination
+        // MAC record per slot.  Low words occupy 2 KiB.  Two adjacent high
+        // half-words share each word in the remaining 1 KiB, fitting all 512
+        // records in this device's existing 4 KiB MMIO aperture.
+        REG_AUTO_DESTINATION_LO_BASE = 0x400,
+        REG_AUTO_DESTINATION_HI_BASE = 0xc00
     };
 
     static constexpr uint32_t CONTROL_ENABLE = 1u << 0;
@@ -60,6 +71,8 @@ public:
     static constexpr uint32_t ACTION_NEXT = 1u << 0;
     static constexpr uint32_t ACTION_DMA_DISCARD = 1u << 1;
     static constexpr uint32_t ACTION_DMA_SYSTEM = 1u << 2;
+    static constexpr uint32_t ACTION_DMA_CACHE = 1u << 3;
+    static constexpr uint32_t ACTION_DMA_NETWORK = 1u << 4;
     static constexpr uint32_t STATUS_AVAILABLE = 1u << 0;
     static constexpr uint32_t STATUS_PREFETCH_ENABLED = 1u << 1;
     static constexpr uint32_t STATUS_PROTOCOL_ERROR = 1u << 2;
@@ -81,6 +94,8 @@ public:
     _PORT(u<14>) packet_command_length_out;
     _PORT(bool) packet_command_system_out;
     _PORT(bool) packet_command_cache_out;
+    _PORT(bool) packet_command_network_out;
+    _PORT(u<8>) packet_command_network_port_out;
     _PORT(u32) packet_command_destination_out;
 
     Axi4If<AXI_ADDR_WIDTH, AXI_ID_WIDTH, AXI_DATA_WIDTH> mmio;
@@ -92,10 +107,14 @@ public:
     _PORT(bool) protocol_error_out;
 
 private:
-    reg<logic<DESCRIPTOR_BITS>> queue_reg[DEPTH];
-    // Duplicate the queue head so MMIO reads do not put a 4:1 mux across all
-    // 1,280 descriptor bits in front of address decode.
-    reg<logic<DESCRIPTOR_BITS>> current_descriptor_reg;
+    // Keep payload storage as an actual memory. A reg<> array makes CppHDL
+    // preserve a whole-array next value, which synthesized as thousands of
+    // flops plus a 1,280-bit circular-head mux. The queue count makes stale
+    // memory contents unobservable after reset, so the payload RAM itself
+    // deliberately has no reset.
+    AsyncReadRam<DESCRIPTOR_BITS, DEPTH> queue_mem;
+    AsyncReadRam<32, 512> auto_destination_low_mem;
+    AsyncReadRam<32, 256> auto_destination_high_mem;
     reg<u<PTR_BITS>> head_reg;
     reg<u<PTR_BITS>> tail_reg;
     reg<u<COUNT_BITS>> count_reg;
@@ -116,7 +135,17 @@ private:
     reg<u<14>> packet_command_length_reg;
     reg<u1> packet_command_system_reg;
     reg<u1> packet_command_cache_reg;
+    reg<u1> packet_command_network_reg;
+    reg<u<8>> packet_command_network_port_reg;
     reg<u32> packet_command_destination_reg;
+    reg<u32> action_destination_reg;
+    reg<u1> auto_metadata_write_reg;
+    reg<u<9>> auto_metadata_slot_reg;
+    reg<u32> auto_metadata_low_reg;
+    reg<u16> auto_metadata_high_even_reg;
+    reg<u1> auto_metadata_high_write_reg;
+    reg<u<8>> auto_metadata_high_addr_reg;
+    reg<u32> auto_metadata_high_data_reg;
 
     reg<u<AXI_ADDR_WIDTH>> write_addr_reg;
     reg<u<AXI_ID_WIDTH>> write_id_reg;
@@ -132,15 +161,31 @@ private:
     reg<u1> read_valid_reg;
 
     logic<DESCRIPTOR_BITS> current_descriptor_comb;
+    logic<DESCRIPTOR_BITS> queue_write_data_comb;
     logic<AXI_DATA_WIDTH> register_read_comb;
 
     logic<DESCRIPTOR_BITS>& current_descriptor_comb_func()
     {
         current_descriptor_comb = 0;
         if ((uint32_t)count_reg != 0) {
-            current_descriptor_comb = current_descriptor_reg;
+            current_descriptor_comb = queue_mem.read_data_out();
         }
         return current_descriptor_comb;
+    }
+
+    logic<DESCRIPTOR_BITS>& queue_write_data_comb_func()
+    {
+        uint32_t bit;
+        uint32_t word_index;
+        queue_write_data_comb = assembly_reg;
+        word_index = (uint32_t)descriptor_word_in();
+        if (word_index >= DESCRIPTOR_WORDS) word_index = 0;
+        if (descriptor_sop_in()) queue_write_data_comb = 0;
+        for (bit = 0; bit < DESCRIPTOR_WORD_BITS; ++bit) {
+            queue_write_data_comb[word_index * DESCRIPTOR_WORD_BITS + bit] =
+                descriptor_data_in()[bit];
+        }
+        return queue_write_data_comb;
     }
 
     uint32_t descriptor_bits32(uint32_t bit_offset)
@@ -169,7 +214,8 @@ private:
             return ((uint32_t)count_reg != 0 ? STATUS_AVAILABLE : 0)
                 | ((bool)enabled_reg ? STATUS_PREFETCH_ENABLED : 0)
                 | ((bool)protocol_error_reg ? STATUS_PROTOCOL_ERROR : 0)
-                | (packet_command_ready_in() ? STATUS_DMA_READY : 0)
+                | (packet_command_ready_in()
+                    && !packet_command_valid_reg ? STATUS_DMA_READY : 0)
                 | ((uint32_t)count_reg << 8);
         }
         if (address == REG_AUTO_SLOT_MASK)
@@ -196,6 +242,17 @@ private:
         if (address == REG_PORTS) return descriptor_bits32(608);
         if (address == REG_PROTOCOL) return descriptor_bits32(640);
         if (address == REG_SOURCE_PORT) return descriptor_bits32(64) & 0xffu;
+        if (address == REG_ACTION_DESTINATION)
+            return (uint32_t)action_destination_reg;
+        if (address >= REG_AUTO_DESTINATION_LO_BASE
+            && address < REG_AUTO_DESTINATION_HI_BASE
+            && (address & 3u) == 0) {
+            return (uint32_t)auto_destination_low_mem.read_data_out();
+        }
+        if (address >= REG_AUTO_DESTINATION_HI_BASE
+            && address < 0x1000 && (address & 3u) == 0) {
+            return (uint32_t)auto_destination_high_mem.read_data_out();
+        }
         return 0;
     }
 
@@ -234,8 +291,50 @@ private:
     }
 
 public:
+#ifndef SYNTHESIS
+    uint64_t debug_auto_destination(uint32_t slot)
+    {
+        const uint32_t low = (uint32_t)
+            auto_destination_low_mem.debug_read(slot);
+        const uint32_t high_pair = (uint32_t)
+            auto_destination_high_mem.debug_read(slot >> 1);
+        const uint32_t high = (high_pair >> ((slot & 1u) * 16u)) & 0xffffu;
+        return low | ((uint64_t)high << 32);
+    }
+#endif
+
     void _assign()
     {
+        queue_mem.write_addr_in = _ASSIGN_REG(tail_reg);
+        queue_mem.write_in = _ASSIGN(descriptor_valid_in()
+            && descriptor_ready_out() && descriptor_eop_in());
+        queue_mem.write_data_in =
+            _ASSIGN_COMB(queue_write_data_comb_func());
+        queue_mem.read_addr_in = _ASSIGN_REG(head_reg);
+        queue_mem._assign();
+
+        auto_destination_low_mem.write_addr_in =
+            _ASSIGN_REG(auto_metadata_slot_reg);
+        auto_destination_low_mem.write_in =
+            _ASSIGN_REG(auto_metadata_write_reg);
+        auto_destination_low_mem.write_data_in =
+            _ASSIGN((logic<32>)auto_metadata_low_reg);
+        auto_destination_low_mem.read_addr_in = _ASSIGN(
+            (u<9>)(((uint32_t)read_addr_reg
+                - REG_AUTO_DESTINATION_LO_BASE) >> 2));
+        auto_destination_low_mem._assign();
+
+        auto_destination_high_mem.write_addr_in =
+            _ASSIGN_REG(auto_metadata_high_addr_reg);
+        auto_destination_high_mem.write_in =
+            _ASSIGN_REG(auto_metadata_high_write_reg);
+        auto_destination_high_mem.write_data_in =
+            _ASSIGN((logic<32>)auto_metadata_high_data_reg);
+        auto_destination_high_mem.read_addr_in = _ASSIGN(
+            (u<8>)(((uint32_t)read_addr_reg
+                - REG_AUTO_DESTINATION_HI_BASE) >> 2));
+        auto_destination_high_mem._assign();
+
         descriptor_ready_out = _ASSIGN((bool)enabled_reg
             && (uint32_t)count_reg < DEPTH);
         descriptor_available_out = _ASSIGN((uint32_t)count_reg != 0);
@@ -248,6 +347,10 @@ public:
         packet_command_length_out = _ASSIGN_REG(packet_command_length_reg);
         packet_command_system_out = _ASSIGN_REG(packet_command_system_reg);
         packet_command_cache_out = _ASSIGN_REG(packet_command_cache_reg);
+        packet_command_network_out =
+            _ASSIGN_REG(packet_command_network_reg);
+        packet_command_network_port_out =
+            _ASSIGN_REG(packet_command_network_port_reg);
         packet_command_destination_out =
             _ASSIGN((u32)packet_command_destination_reg);
 
@@ -267,21 +370,31 @@ public:
 
     void _work(bool reset)
     {
-        uint32_t slot;
         uint32_t count;
         uint32_t address;
         uint32_t value;
         uint32_t bit;
         uint32_t word_index;
         uint32_t next_head;
+        uint32_t mac_low_raw;
+        uint32_t mac_high_raw;
         bool input_fire;
         bool pop;
         logic<DESCRIPTOR_BITS> assembly;
 
         count = (uint32_t)count_reg;
+        queue_mem._work(reset);
+        auto_destination_low_mem._work(reset);
+        auto_destination_high_mem._work(reset);
+        auto_metadata_write_reg._next = false;
+        auto_metadata_high_write_reg._next = false;
         pop = false;
         input_fire = descriptor_valid_in() && descriptor_ready_out();
-        packet_command_valid_reg._next = false;
+        // Hold the command until PacketDMA accepts it.  A one-cycle pulse can
+        // lose a descriptor when ready changes after the MMIO action was
+        // accepted but before registered valid reaches the consumer.
+        if (packet_command_valid_reg && packet_command_ready_in())
+            packet_command_valid_reg._next = false;
 
         if (mmio.awvalid_in() && mmio.awready_out()) {
             write_addr_reg._next = mmio.awaddr_in();
@@ -302,19 +415,33 @@ public:
             else if (address == REG_AUTO_BASE) {
                 auto_base_reg._next = value & ~0x7ffu;
             }
+            else if (address == REG_ACTION_DESTINATION) {
+                action_destination_reg._next = value;
+            }
             else if (address == REG_ACTION && (value & ACTION_NEXT) != 0) {
-                if ((value & (ACTION_DMA_DISCARD | ACTION_DMA_SYSTEM)) == 0) {
+                if ((value & (ACTION_DMA_DISCARD | ACTION_DMA_SYSTEM
+                        | ACTION_DMA_CACHE | ACTION_DMA_NETWORK)) == 0) {
                     pop = count != 0;
                 }
                 else if (count != 0 && packet_command_ready_in()
-                    && !((value & ACTION_DMA_DISCARD) != 0
-                        && (value & ACTION_DMA_SYSTEM) != 0)) {
+                    && !packet_command_valid_reg
+                    && (((value & ACTION_DMA_DISCARD) != 0)
+                        + ((value & ACTION_DMA_SYSTEM) != 0)
+                        + ((value & ACTION_DMA_CACHE) != 0)
+                        + ((value & ACTION_DMA_NETWORK) != 0)) == 1) {
                     packet_command_handle_reg._next = descriptor_bits32(0);
                     packet_command_length_reg._next = descriptor_bits32(32);
                     packet_command_system_reg._next =
                         (value & ACTION_DMA_SYSTEM) != 0;
-                    packet_command_cache_reg._next = false;
-                    packet_command_destination_reg._next = 0;
+                    packet_command_cache_reg._next =
+                        (value & ACTION_DMA_CACHE) != 0;
+                    packet_command_network_reg._next =
+                        (value & ACTION_DMA_NETWORK) != 0;
+                    packet_command_network_port_reg._next =
+                        (descriptor_bits32(64) & 1u) ^ 1u;
+                    packet_command_destination_reg._next =
+                        (value & ACTION_DMA_CACHE) != 0
+                            ? action_destination_reg : (u32)0;
                     packet_command_valid_reg._next = true;
                     pop = true;
                 }
@@ -365,9 +492,42 @@ public:
             packet_command_length_reg._next = descriptor_bits32(32);
             packet_command_system_reg._next = false;
             packet_command_cache_reg._next = true;
+            packet_command_network_reg._next = false;
+            packet_command_network_port_reg._next = 0;
             packet_command_destination_reg._next = auto_base_reg
                 + (((uint32_t)auto_sequence_reg
                     & (uint32_t)auto_slot_mask_reg) << 11);
+            // Bind the parsed MAC to the same sequence number as the packet
+            // destination.  The CPU reads this uncached table instead of a
+            // private-L1 copy that may predate an autonomous DMA refill.
+            auto_metadata_slot_reg._next = (uint32_t)auto_sequence_reg
+                & (uint32_t)auto_slot_mask_reg;
+            // Parser MAC fields are 48-bit network-order integers. Expose
+            // them in the same little-endian word layout produced by RV32
+            // loads from packet bytes 0..5.
+            mac_low_raw = descriptor_bits32(256);
+            mac_high_raw = descriptor_bits32(288) & 0xffffu;
+            auto_metadata_low_reg._next =
+                ((mac_high_raw >> 8) & 0xffu)
+                | ((mac_high_raw & 0xffu) << 8)
+                | (((mac_low_raw >> 24) & 0xffu) << 16)
+                | (((mac_low_raw >> 16) & 0xffu) << 24);
+            auto_metadata_write_reg._next = true;
+            if (((uint32_t)auto_sequence_reg & 1u) == 0) {
+                auto_metadata_high_even_reg._next =
+                    ((mac_low_raw >> 8) & 0xffu)
+                    | ((mac_low_raw & 0xffu) << 8);
+            }
+            else {
+                auto_metadata_high_addr_reg._next =
+                    (((uint32_t)auto_sequence_reg
+                        & (uint32_t)auto_slot_mask_reg) >> 1);
+                auto_metadata_high_data_reg._next =
+                    (uint32_t)auto_metadata_high_even_reg
+                    | ((((mac_low_raw >> 8) & 0xffu)
+                        | ((mac_low_raw & 0xffu) << 8)) << 16);
+                auto_metadata_high_write_reg._next = true;
+            }
             packet_command_valid_reg._next = true;
             auto_sequence_reg._next = auto_sequence_reg + 1;
             pop = true;
@@ -377,12 +537,10 @@ public:
             next_head = ((uint32_t)head_reg + 1) & (DEPTH - 1);
             head_reg._next = next_head;
             --count;
-            if (count != 0)
-                current_descriptor_reg._next = queue_reg[next_head];
         }
 
         if (input_fire) {
-            assembly = assembly_reg;
+            assembly = queue_write_data_comb_func();
             word_index = (uint32_t)descriptor_word_in();
             if (word_index >= DESCRIPTOR_WORDS) {
                 word_index = 0;
@@ -392,7 +550,6 @@ public:
                 if (assembly_active_reg || (uint32_t)descriptor_word_in() != 0) {
                     protocol_error_reg._next = true;
                 }
-                assembly = 0;
                 assembly_active_reg._next = true;
                 assembly_word_reg._next = 0;
             }
@@ -405,17 +562,11 @@ public:
             // A loop keeps the generated part-select width constant; cpphdl's
             // dynamic `.bits(high, low)` lowering otherwise makes Verilator
             // treat the width expression as non-constant.
-            for (bit = 0; bit < 256; ++bit) {
-                assembly[word_index * 256 + bit] = descriptor_data_in()[bit];
-            }
             assembly_reg._next = assembly;
             if (descriptor_eop_in()) {
                 if ((uint32_t)descriptor_word_in() != DESCRIPTOR_WORDS - 1) {
                     protocol_error_reg._next = true;
                 }
-                queue_reg[(uint32_t)tail_reg]._next = assembly;
-                if (count == 0)
-                    current_descriptor_reg._next = assembly;
                 tail_reg._next = ((uint32_t)tail_reg + 1) & (DEPTH - 1);
                 ++count;
                 assembly_active_reg._next = false;
@@ -431,7 +582,6 @@ public:
             head_reg.clr();
             tail_reg.clr();
             count_reg.clr();
-            current_descriptor_reg.clr();
             assembly_reg.clr();
             assembly_word_reg.clr();
             assembly_active_reg.clr();
@@ -446,7 +596,17 @@ public:
             packet_command_length_reg.clr();
             packet_command_system_reg.clr();
             packet_command_cache_reg.clr();
+            packet_command_network_reg.clr();
+            packet_command_network_port_reg.clr();
             packet_command_destination_reg.clr();
+            action_destination_reg.clr();
+            auto_metadata_write_reg.clr();
+            auto_metadata_slot_reg.clr();
+            auto_metadata_low_reg.clr();
+            auto_metadata_high_even_reg.clr();
+            auto_metadata_high_write_reg.clr();
+            auto_metadata_high_addr_reg.clr();
+            auto_metadata_high_data_reg.clr();
             write_addr_reg.clr();
             write_id_reg.clr();
             write_addr_valid_reg.clr();
@@ -459,18 +619,17 @@ public:
             read_format_pending_reg.clr();
             read_data_reg.clr();
             read_valid_reg.clr();
-            for (slot = 0; slot < DEPTH; ++slot) queue_reg[slot].clr();
         }
     }
 
     void _strobe()
     {
-        uint32_t slot;
-        for (slot = 0; slot < DEPTH; ++slot) queue_reg[slot].strobe();
+        queue_mem._strobe();
+        auto_destination_low_mem._strobe();
+        auto_destination_high_mem._strobe();
         head_reg.strobe();
         tail_reg.strobe();
         count_reg.strobe();
-        current_descriptor_reg.strobe();
         assembly_reg.strobe();
         assembly_word_reg.strobe();
         assembly_active_reg.strobe();
@@ -485,7 +644,17 @@ public:
         packet_command_length_reg.strobe();
         packet_command_system_reg.strobe();
         packet_command_cache_reg.strobe();
+        packet_command_network_reg.strobe();
+        packet_command_network_port_reg.strobe();
         packet_command_destination_reg.strobe();
+        action_destination_reg.strobe();
+        auto_metadata_write_reg.strobe();
+        auto_metadata_slot_reg.strobe();
+        auto_metadata_low_reg.strobe();
+        auto_metadata_high_even_reg.strobe();
+        auto_metadata_high_write_reg.strobe();
+        auto_metadata_high_addr_reg.strobe();
+        auto_metadata_high_data_reg.strobe();
         write_addr_reg.strobe();
         write_id_reg.strobe();
         write_addr_valid_reg.strobe();
@@ -501,4 +670,4 @@ public:
     }
 };
 
-template class DescriptorFetcher<4, 32, 4, 256, 16>;
+template class DescriptorFetcher<4, 32, 4, 256, PACKET_HANDLE_BITS>;

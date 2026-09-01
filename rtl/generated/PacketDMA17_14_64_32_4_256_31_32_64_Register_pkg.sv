@@ -1,4 +1,4 @@
-package PacketDMA_Register_pkg;
+package PacketDMA17_14_64_32_4_256_31_32_64_Register_pkg;
 
 typedef enum logic[32-1:0] {
     REG_RX_HANDLE = 'h0,
@@ -20,7 +20,7 @@ typedef enum logic[32-1:0] {
     REG_COMMAND_ISSUED = 'h40,
     REG_CLEAR_STATUS = 'h44,
     REG_BACKING_COMPLETED = 'h48
-} PacketDMA_Register;
+} PacketDMA17_14_64_32_4_256_31_32_64_Register;
 
 
 endpackage

@@ -34,16 +34,16 @@ module SmartNIC #(
 ,   output wire l2_descriptor_sop_out
 ,   output wire l2_descriptor_eop_out
 ,   input wire l2_descriptor_ready_in
-,   input wire[2-1:0] l2_rx_read_valid_in
+,   input wire[1-1:0] l2_rx_read_valid_in
 ,   input wire[READ_PORTS*HANDLE_BITS-1:0] l2_rx_read_handle_in
-,   input wire[28-1:0] l2_rx_read_length_in
-,   output wire[2-1:0] l2_rx_read_ready_out
-,   output wire[2-1:0] l2_rx_valid_out
-,   output wire[512-1:0] l2_rx_data_out
-,   output wire[64-1:0] l2_rx_keep_out
-,   output wire[2-1:0] l2_rx_sop_out
-,   output wire[2-1:0] l2_rx_eop_out
-,   input wire[2-1:0] l2_rx_ready_in
+,   input wire[14-1:0] l2_rx_read_length_in
+,   output wire[1-1:0] l2_rx_read_ready_out
+,   output wire[1-1:0] l2_rx_valid_out
+,   output wire[256-1:0] l2_rx_data_out
+,   output wire[32-1:0] l2_rx_keep_out
+,   output wire[1-1:0] l2_rx_sop_out
+,   output wire[1-1:0] l2_rx_eop_out
+,   input wire[1-1:0] l2_rx_ready_in
 ,   input wire[2-1:0] l2_tx_valid_in
 ,   input wire[512-1:0] l2_tx_data_in
 ,   input wire[64-1:0] l2_tx_keep_in
@@ -52,9 +52,14 @@ module SmartNIC #(
 ,   output wire[2-1:0] l2_tx_ready_out
 ,   output wire protocol_error_out
 ,   output wire storage_full_out
+,   output wire[1-1:0] debug_release_valid_out
+,   output wire[READ_PORTS*HANDLE_BITS-1:0] debug_release_handle_out
+,   output wire[14-1:0] debug_release_length_out
+,   output wire[STREAMS*USED_ROW_BITS-1:0] debug_rx_used_rows_out
+,   output wire[STREAMS*LOGICAL_ROW_BITS-1:0] debug_rx_release_row_out
 );
     localparam  STREAMS = 64'h2;
-    localparam  READ_PORTS = 64'h2;
+    localparam  READ_PORTS = 64'h1;
     localparam  L2_WIDTH = 64'h100;
     localparam  L2_BYTES = 64'h20;
     localparam  LANE_BYTES = LANE_WIDTH/'h8;
@@ -65,6 +70,7 @@ module SmartNIC #(
     localparam  NET_BYTES = STREAMS*LANE_BYTES;
     localparam  LOGICAL_ROWS = BANK_DEPTH*'h4;
     localparam  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
+    localparam  USED_ROW_BITS = $clog2(LOGICAL_ROWS + 'h1);
     localparam  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
     localparam  FRAME_LENGTH_BITS = 64'hE;
     localparam  READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
@@ -72,50 +78,50 @@ module SmartNIC #(
 
 
     // regs and combs
-    reg read_active_reg[2];
-    reg[HANDLE_BITS-1:0] read_handle_reg[2];
-    reg[14-1:0] read_length_reg[2];
-    reg[14-1:0] read_remaining_reg[2];
-    reg[LOGICAL_ROW_BITS-1:0] read_word_reg[2];
-    reg[6-1:0] meta_bytes_reg[2][8];
-    reg meta_sop_reg[2][8];
-    reg meta_eop_reg[2][8];
-    reg[HANDLE_BITS-1:0] meta_handle_reg[2][8];
-    reg[14-1:0] meta_length_reg[2][8];
-    reg[3-1:0] meta_head_reg[2];
-    reg[3-1:0] meta_tail_reg[2];
-    reg[4-1:0] meta_count_reg[2];
+    reg read_active_reg[1];
+    reg[HANDLE_BITS-1:0] read_handle_reg[1];
+    reg[14-1:0] read_length_reg[1];
+    reg[14-1:0] read_remaining_reg[1];
+    reg[LOGICAL_ROW_BITS-1:0] read_word_reg[1];
+    reg[6-1:0] meta_bytes_reg[1][8];
+    reg meta_sop_reg[1][8];
+    reg meta_eop_reg[1][8];
+    reg[3-1:0] meta_head_reg[1];
+    reg[3-1:0] meta_tail_reg[1];
+    reg[4-1:0] meta_count_reg[1];
     reg[1280-1:0] descriptor_hold_reg;
     reg[3-1:0] descriptor_word_reg;
     reg descriptor_valid_reg;
-    logic[2-1:0] network_read_valid_comb;
+    logic[1-1:0] network_read_valid_comb;
     logic[READ_PORTS*HANDLE_BITS-1:0] network_read_handle_comb;
     logic[READ_PORTS*LOGICAL_ROW_BITS-1:0] network_read_word_comb;
-    logic[2-1:0] network_read_ready_comb;
-    logic[2-1:0] network_release_valid_comb;
+    logic[1-1:0] network_read_ready_comb;
+    logic[1-1:0] network_release_valid_comb;
     logic[READ_PORTS*HANDLE_BITS-1:0] network_release_handle_comb;
-    logic[28-1:0] network_release_length_comb;
+    logic[14-1:0] network_release_length_comb;
+    reg[1-1:0] release_event_valid_reg;
+    reg[READ_PORTS*HANDLE_BITS-1:0] release_event_handle_reg;
+    reg[14-1:0] release_event_length_reg;
+    reg[1-1:0] network_release_valid_reg;
+    reg[READ_PORTS*HANDLE_BITS-1:0] network_release_handle_reg;
+    reg[14-1:0] network_release_length_reg;
     logic[2-1:0] network_tx_valid_comb;
     logic[NET_BITS-1:0] network_tx_data_comb;
     logic[NET_BYTES-1:0] network_tx_keep_comb;
     logic[2-1:0] network_tx_sop_comb;
     logic[2-1:0] network_tx_eop_comb;
-    logic[2-1:0] l2_read_command_ready_comb;
-    logic[2-1:0] l2_rx_valid_comb;
-    logic[512-1:0] l2_rx_data_comb;
-    logic[64-1:0] l2_rx_keep_comb;
-    logic[2-1:0] l2_rx_sop_comb;
-    logic[2-1:0] l2_rx_eop_comb;
+    logic[1-1:0] l2_read_command_ready_comb;
+    logic[1-1:0] l2_rx_valid_comb;
+    logic[256-1:0] l2_rx_data_comb;
+    logic[32-1:0] l2_rx_keep_comb;
+    logic[1-1:0] l2_rx_sop_comb;
+    logic[1-1:0] l2_rx_eop_comb;
     logic[2-1:0] l2_tx_ready_comb;
     logic[256-1:0] descriptor_word_comb;
     logic[READ_COMMAND_BITS-1:0] read_command_0_comb;
     logic read_command_pop_0_comb;
     logic[RX_READ_WIDTH-1:0] rx_input_data_0_comb;
     logic[RX_READ_BYTES-1:0] rx_input_keep_0_comb;
-    logic[READ_COMMAND_BITS-1:0] read_command_1_comb;
-    logic read_command_pop_1_comb;
-    logic[RX_READ_WIDTH-1:0] rx_input_data_1_comb;
-    logic[RX_READ_BYTES-1:0] rx_input_keep_1_comb;
 
     // members
     genvar __i;
@@ -155,6 +161,8 @@ module SmartNIC #(
     wire[2-1:0] network__tx_ready_in;
     wire network__protocol_error_out;
     wire network__storage_full_out;
+    wire[64'h2*$clog2(((BANK_DEPTH*'h4) + 'h1))-1:0] network__debug_rx_used_rows_out;
+    wire[64'h2*$clog2((BANK_DEPTH*'h4))-1:0] network__debug_rx_release_row_out;
     Network #(
         LANE_WIDTH
 ,       READ_PORTS
@@ -203,21 +211,23 @@ module SmartNIC #(
 ,       .tx_ready_in(network__tx_ready_in)
 ,       .protocol_error_out(network__protocol_error_out)
 ,       .storage_full_out(network__storage_full_out)
+,       .debug_rx_used_rows_out(network__debug_rx_used_rows_out)
+,       .debug_rx_release_row_out(network__debug_rx_release_row_out)
     );
-    wire rx_stream__valid_in[2];
-    wire[RX_READ_WIDTH-1:0] rx_stream__data_in[2];
-    wire[RX_READ_WIDTH/'h8-1:0] rx_stream__keep_in[2];
-    wire rx_stream__sop_in[2];
-    wire rx_stream__eop_in[2];
-    wire rx_stream__ready_out[2];
-    wire rx_stream__valid_out[2];
-    wire[L2_WIDTH-1:0] rx_stream__data_out[2];
-    wire[L2_WIDTH/'h8-1:0] rx_stream__keep_out[2];
-    wire rx_stream__sop_out[2];
-    wire rx_stream__eop_out[2];
-    wire rx_stream__ready_in[2];
+    wire rx_stream__valid_in[1];
+    wire[RX_READ_WIDTH-1:0] rx_stream__data_in[1];
+    wire[RX_READ_WIDTH/'h8-1:0] rx_stream__keep_in[1];
+    wire rx_stream__sop_in[1];
+    wire rx_stream__eop_in[1];
+    wire rx_stream__ready_out[1];
+    wire rx_stream__valid_out[1];
+    wire[L2_WIDTH-1:0] rx_stream__data_out[1];
+    wire[L2_WIDTH/'h8-1:0] rx_stream__keep_out[1];
+    wire rx_stream__sop_out[1];
+    wire rx_stream__eop_out[1];
+    wire rx_stream__ready_in[1];
     generate
-    for (__i=0; __i < 2; __i = __i + 1) begin
+    for (__i=0; __i < 1; __i = __i + 1) begin
         PacketStream #(
         RX_READ_WIDTH
 ,       L2_WIDTH
@@ -278,22 +288,26 @@ module SmartNIC #(
     endgenerate
 
     // tmp variables
-    logic read_active_reg_tmp[2];
-    logic[HANDLE_BITS-1:0] read_handle_reg_tmp[2];
-    logic[14-1:0] read_length_reg_tmp[2];
-    logic[14-1:0] read_remaining_reg_tmp[2];
-    logic[LOGICAL_ROW_BITS-1:0] read_word_reg_tmp[2];
-    logic[6-1:0] meta_bytes_reg_tmp[2][8];
-    logic meta_sop_reg_tmp[2][8];
-    logic meta_eop_reg_tmp[2][8];
-    logic[HANDLE_BITS-1:0] meta_handle_reg_tmp[2][8];
-    logic[14-1:0] meta_length_reg_tmp[2][8];
-    logic[3-1:0] meta_head_reg_tmp[2];
-    logic[3-1:0] meta_tail_reg_tmp[2];
-    logic[4-1:0] meta_count_reg_tmp[2];
+    logic read_active_reg_tmp[1];
+    logic[HANDLE_BITS-1:0] read_handle_reg_tmp[1];
+    logic[14-1:0] read_length_reg_tmp[1];
+    logic[14-1:0] read_remaining_reg_tmp[1];
+    logic[LOGICAL_ROW_BITS-1:0] read_word_reg_tmp[1];
+    logic[6-1:0] meta_bytes_reg_tmp[1][8];
+    logic meta_sop_reg_tmp[1][8];
+    logic meta_eop_reg_tmp[1][8];
+    logic[3-1:0] meta_head_reg_tmp[1];
+    logic[3-1:0] meta_tail_reg_tmp[1];
+    logic[4-1:0] meta_count_reg_tmp[1];
     logic[1280-1:0] descriptor_hold_reg_tmp;
     logic[3-1:0] descriptor_word_reg_tmp;
     logic descriptor_valid_reg_tmp;
+    logic[1-1:0] release_event_valid_reg_tmp;
+    logic[READ_PORTS*HANDLE_BITS-1:0] release_event_handle_reg_tmp;
+    logic[14-1:0] release_event_length_reg_tmp;
+    logic[1-1:0] network_release_valid_reg_tmp;
+    logic[READ_PORTS*HANDLE_BITS-1:0] network_release_handle_reg_tmp;
+    logic[14-1:0] network_release_length_reg_tmp;
 
 
     always_comb begin : descriptor_word_comb_func  // descriptor_word_comb_func
@@ -360,7 +374,7 @@ module SmartNIC #(
         network_release_handle_comb = 'h0;
         for (port='h0;port < READ_PORTS;port=port+1) begin
             for (_bit='h0;_bit < HANDLE_BITS;_bit=_bit+1) begin
-                network_release_handle_comb[(port*HANDLE_BITS) + _bit] = meta_handle_reg[port][unsigned'(32'(meta_head_reg[port]))][_bit];
+                network_release_handle_comb[(port*HANDLE_BITS) + _bit] = read_handle_reg[port][_bit];
             end
         end
     end
@@ -371,7 +385,7 @@ module SmartNIC #(
         network_release_length_comb = 'h0;
         for (port='h0;port < READ_PORTS;port=port+1) begin
             for (_bit='h0;_bit < FRAME_LENGTH_BITS;_bit=_bit+1) begin
-                network_release_length_comb[(port*FRAME_LENGTH_BITS) + _bit] = meta_length_reg[port][unsigned'(32'(meta_head_reg[port]))][_bit];
+                network_release_length_comb[(port*FRAME_LENGTH_BITS) + _bit] = read_length_reg[port][_bit];
             end
         end
     end
@@ -508,30 +522,6 @@ module SmartNIC #(
         end
     end
 
-    always_comb begin : read_command_1_comb_func  // read_command_1_comb_func
-        read_command_1_comb = 'h0;
-        read_command_1_comb['h0 +:HANDLE_BITS - 'h1 - 'h0 + 1] = l2_rx_read_handle_in['h1*HANDLE_BITS +:(0 + HANDLE_BITS) - 'h1 - 0 + 1];
-        read_command_1_comb[HANDLE_BITS +:READ_COMMAND_BITS - 'h1 - HANDLE_BITS + 1] = l2_rx_read_length_in['h1*FRAME_LENGTH_BITS +:(0 + FRAME_LENGTH_BITS) - 'h1 - 0 + 1];
-    end
-
-    always_comb begin : read_command_pop_1_comb_func  // read_command_pop_1_comb_func
-        read_command_pop_1_comb=!read_active_reg['h1] && (unsigned'(32'(meta_count_reg['h1])) == 'h0);
-    end
-
-    always_comb begin : rx_input_data_1_comb_func  // rx_input_data_1_comb_func
-        rx_input_data_1_comb = network__read_data_out['h1*RX_READ_WIDTH +:(0 + RX_READ_WIDTH) - 'h1 - 0 + 1];
-    end
-
-    always_comb begin : rx_input_keep_1_comb_func  // rx_input_keep_1_comb_func
-        logic[31:0] _byte;
-        logic[31:0] head;
-        rx_input_keep_1_comb = 'h0;
-        head=unsigned'(32'(meta_head_reg['h1]));
-        for (_byte='h0;_byte < RX_READ_BYTES;_byte=_byte+1) begin
-            rx_input_keep_1_comb[_byte] = _byte < unsigned'(32'(meta_bytes_reg['h1][head]));
-        end
-    end
-
     generate  // _assign
         assign network__valid_in = net_rx_valid_in;
         assign network__data_in = net_rx_data_in;
@@ -544,9 +534,9 @@ module SmartNIC #(
         assign network__read_handle_in = network_read_handle_comb;
         assign network__read_word_in = network_read_word_comb;
         assign network__read_ready_in = network_read_ready_comb;
-        assign network__release_valid_in = network_release_valid_comb;
-        assign network__release_handle_in = network_release_handle_comb;
-        assign network__release_length_in = network_release_length_comb;
+        assign network__release_valid_in = network_release_valid_reg;
+        assign network__release_handle_in = network_release_handle_reg;
+        assign network__release_length_in = network_release_length_reg;
         assign network__tx_valid_in = network_tx_valid_comb;
         assign network__tx_data_in = network_tx_data_comb;
         assign network__tx_keep_in = network_tx_keep_comb;
@@ -559,12 +549,6 @@ module SmartNIC #(
         assign rx_stream__sop_in['h0] = meta_sop_reg['h0][unsigned'(32'(meta_head_reg['h0]))];
         assign rx_stream__eop_in['h0] = meta_eop_reg['h0][unsigned'(32'(meta_head_reg['h0]))];
         assign rx_stream__ready_in['h0] = l2_rx_ready_in['h0];
-        assign rx_stream__valid_in['h1] = network__read_valid_out['h1] && (unsigned'(32'(meta_count_reg['h1])) != 'h0);
-        assign rx_stream__data_in['h1] = rx_input_data_1_comb;
-        assign rx_stream__keep_in['h1] = rx_input_keep_1_comb;
-        assign rx_stream__sop_in['h1] = meta_sop_reg['h1][unsigned'(32'(meta_head_reg['h1]))];
-        assign rx_stream__eop_in['h1] = meta_eop_reg['h1][unsigned'(32'(meta_head_reg['h1]))];
-        assign rx_stream__ready_in['h1] = l2_rx_ready_in['h1];
         assign tx_stream__valid_in['h0] = l2_tx_valid_in['h0];
         assign tx_stream__data_in['h0] = l2_tx_data_in['h0*L2_WIDTH +:(0 + L2_WIDTH) - 'h1 - 0 + 1];
         assign tx_stream__keep_in['h0] = l2_tx_keep_in['h0*L2_BYTES +:(0 + L2_BYTES) - 'h1 - 0 + 1];
@@ -598,6 +582,11 @@ module SmartNIC #(
         assign l2_tx_ready_out = l2_tx_ready_comb;
         assign protocol_error_out = network__protocol_error_out;
         assign storage_full_out = network__storage_full_out;
+        assign debug_release_valid_out = network_release_valid_reg;
+        assign debug_release_handle_out = network_release_handle_reg;
+        assign debug_release_length_out = network_release_length_reg;
+        assign debug_rx_used_rows_out = network__debug_rx_used_rows_out;
+        assign debug_rx_release_row_out = network__debug_rx_release_row_out;
     endgenerate
 
     task _work_net_clk (input logic reset);
@@ -613,18 +602,19 @@ module SmartNIC #(
         logic request_fire;
         logic response_fire;
         logic[31-1:0] command;
+        network_release_valid_reg_tmp = release_event_valid_reg;
+        network_release_handle_reg_tmp = release_event_handle_reg;
+        network_release_length_reg_tmp = release_event_length_reg;
+        release_event_valid_reg_tmp = network_release_valid_comb;
+        release_event_handle_reg_tmp = network_release_handle_comb;
+        release_event_length_reg_tmp = network_release_length_comb;
         for (port='h0;port < READ_PORTS;port=port+1) begin
             head=unsigned'(32'(meta_head_reg[port]));
             tail=unsigned'(32'(meta_tail_reg[port]));
             count=unsigned'(32'(meta_count_reg[port]));
             command_fire=l2_rx_read_valid_in[port] && l2_read_command_ready_comb[port];
             if (command_fire) begin
-                if (port == 'h0) begin
-                    command = read_command_0_comb;
-                end
-                else begin
-                    command = read_command_1_comb;
-                end
+                command = read_command_0_comb;
                 read_handle_reg_tmp[port] = command['h0 +:HANDLE_BITS - 'h1 - 'h0 + 1];
                 read_length_reg_tmp[port] = command[HANDLE_BITS +:READ_COMMAND_BITS - 'h1 - HANDLE_BITS + 1];
                 read_remaining_reg_tmp[port] = command[HANDLE_BITS +:READ_COMMAND_BITS - 'h1 - HANDLE_BITS + 1];
@@ -643,8 +633,6 @@ module SmartNIC #(
                 meta_bytes_reg_tmp[port][tail] = bytes;
                 meta_sop_reg_tmp[port][tail] = unsigned'(1'(unsigned'(32'(read_word_reg[port])) == 'h0));
                 meta_eop_reg_tmp[port][tail] = unsigned'(1'(remaining<=RX_READ_BYTES));
-                meta_handle_reg_tmp[port][tail] = read_handle_reg[port];
-                meta_length_reg_tmp[port][tail] = read_length_reg[port];
                 tail=((tail + 'h1)) & ((READ_META_DEPTH - 'h1));
                 count=count+1;
                 read_word_reg_tmp[port] = read_word_reg[port] + RX_READ_WORDS;
@@ -675,6 +663,12 @@ module SmartNIC #(
             descriptor_valid_reg_tmp = unsigned'(1'h1);
         end
         if (reset) begin
+            release_event_valid_reg_tmp = '0;
+            release_event_handle_reg_tmp = '0;
+            release_event_length_reg_tmp = '0;
+            network_release_valid_reg_tmp = '0;
+            network_release_handle_reg_tmp = '0;
+            network_release_length_reg_tmp = '0;
             for (port='h0;port < READ_PORTS;port=port+1) begin
                 read_active_reg_tmp[port] = '0;
                 read_handle_reg_tmp[port] = '0;
@@ -688,8 +682,6 @@ module SmartNIC #(
                     meta_bytes_reg_tmp[port][slot] = '0;
                     meta_sop_reg_tmp[port][slot] = '0;
                     meta_eop_reg_tmp[port][slot] = '0;
-                    meta_handle_reg_tmp[port][slot] = '0;
-                    meta_length_reg_tmp[port][slot] = '0;
                 end
             end
             descriptor_hold_reg_tmp = '0;
@@ -713,14 +705,18 @@ module SmartNIC #(
         meta_bytes_reg_tmp = meta_bytes_reg;
         meta_sop_reg_tmp = meta_sop_reg;
         meta_eop_reg_tmp = meta_eop_reg;
-        meta_handle_reg_tmp = meta_handle_reg;
-        meta_length_reg_tmp = meta_length_reg;
         meta_head_reg_tmp = meta_head_reg;
         meta_tail_reg_tmp = meta_tail_reg;
         meta_count_reg_tmp = meta_count_reg;
         descriptor_hold_reg_tmp = descriptor_hold_reg;
         descriptor_word_reg_tmp = descriptor_word_reg;
         descriptor_valid_reg_tmp = descriptor_valid_reg;
+        release_event_valid_reg_tmp = release_event_valid_reg;
+        release_event_handle_reg_tmp = release_event_handle_reg;
+        release_event_length_reg_tmp = release_event_length_reg;
+        network_release_valid_reg_tmp = network_release_valid_reg;
+        network_release_handle_reg_tmp = network_release_handle_reg;
+        network_release_length_reg_tmp = network_release_length_reg;
 
         _work_net_clk(reset);
 
@@ -732,14 +728,18 @@ module SmartNIC #(
         meta_bytes_reg <= meta_bytes_reg_tmp;
         meta_sop_reg <= meta_sop_reg_tmp;
         meta_eop_reg <= meta_eop_reg_tmp;
-        meta_handle_reg <= meta_handle_reg_tmp;
-        meta_length_reg <= meta_length_reg_tmp;
         meta_head_reg <= meta_head_reg_tmp;
         meta_tail_reg <= meta_tail_reg_tmp;
         meta_count_reg <= meta_count_reg_tmp;
         descriptor_hold_reg <= descriptor_hold_reg_tmp;
         descriptor_word_reg <= descriptor_word_reg_tmp;
         descriptor_valid_reg <= descriptor_valid_reg_tmp;
+        release_event_valid_reg <= release_event_valid_reg_tmp;
+        release_event_handle_reg <= release_event_handle_reg_tmp;
+        release_event_length_reg <= release_event_length_reg_tmp;
+        network_release_valid_reg <= network_release_valid_reg_tmp;
+        network_release_handle_reg <= network_release_handle_reg_tmp;
+        network_release_length_reg <= network_release_length_reg_tmp;
     end
 
     always_ff @(posedge l2_clk) begin

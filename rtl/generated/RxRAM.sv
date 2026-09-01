@@ -38,6 +38,8 @@ module RxRAM #(
 ,   output wire protocol_error_out
 ,   output wire storage_full_out
 ,   output wire[2-1:0] almost_full_out
+,   output wire[STREAMS*USED_ROW_BITS-1:0] debug_used_rows_out
+,   output wire[STREAMS*LOGICAL_ROW_BITS-1:0] debug_release_row_out
 );
     localparam  STREAMS = 64'h2;
     localparam  SUBBANKS = 64'h4;
@@ -50,6 +52,7 @@ module RxRAM #(
     localparam  LOGICAL_ROWS = BANK_DEPTH*SUBBANKS;
     localparam  PHYSICAL_ROW_BITS = $clog2(BANK_DEPTH);
     localparam  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
+    localparam  USED_ROW_BITS = $clog2(LOGICAL_ROWS + 'h1);
     localparam  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
     localparam  READ_RR_BITS = (READ_PORTS<='h1) ? ('h1) : ($clog2(READ_PORTS));
     localparam  FRAME_LENGTH_BITS = 64'hE;
@@ -58,7 +61,7 @@ module RxRAM #(
     localparam  PAUSE_ASSERT_ROWS = LOGICAL_ROWS/'h10;
     localparam  ALLOCATION_BYTES = LANE_BYTES*SUBBANKS;
     localparam  MAX_PACKET_ROWS = (((((((('h1 <<< FRAME_LENGTH_BITS)) - 'h1) + ALLOCATION_BYTES) - 'h1))/ALLOCATION_BYTES))*SUBBANKS;
-    localparam  PAUSE_RELEASE_ROWS = LOGICAL_ROWS/'h20;
+    localparam  PAUSE_RELEASE_ROWS = PAUSE_ASSERT_ROWS - 'h1;
 
 
     // regs and combs
@@ -107,6 +110,8 @@ module RxRAM #(
     logic[READ_PORTS-1:0] read_ready_comb;
     logic[2-1:0] input_ready_comb;
     logic[2-1:0] almost_full_comb;
+    logic[STREAMS*USED_ROW_BITS-1:0] debug_used_rows_comb;
+    logic[STREAMS*LOGICAL_ROW_BITS-1:0] debug_release_row_comb;
     logic[2-1:0] packet_valid_comb;
     logic[STREAMS*HANDLE_BITS-1:0] packet_handle_comb;
     logic[28-1:0] packet_length_comb;
@@ -183,30 +188,30 @@ module RxRAM #(
 
 
     function logic[31:0] request_handle (
-        input logic[34-1:0] handles
+        input logic[17-1:0] handles
 ,       input logic[31:0] port
     );
         return unsigned'(32'(handles[port*HANDLE_BITS +:(0 + HANDLE_BITS) - 'h1 - 0 + 1]));
     endfunction
 
     function logic[31:0] request_word (
-        input logic[28-1:0] words
+        input logic[14-1:0] words
 ,       input logic[31:0] port
     );
         return unsigned'(32'(words[port*LOGICAL_ROW_BITS +:(0 + LOGICAL_ROW_BITS) - 'h1 - 0 + 1]));
     endfunction
 
     function logic[31:0] request_logical_row (
-        input logic[34-1:0] handles
-,       input logic[28-1:0] words
+        input logic[17-1:0] handles
+,       input logic[14-1:0] words
 ,       input logic[31:0] port
     );
         return ((request_handle(handles, port) >>> 'h3)) + request_word(words, port);
     endfunction
 
     function logic[31:0] request_physical_bank (
-        input logic[34-1:0] handles
-,       input logic[28-1:0] words
+        input logic[17-1:0] handles
+,       input logic[14-1:0] words
 ,       input logic[31:0] port
     );
         logic[31:0] handle;
@@ -380,6 +385,9 @@ module RxRAM #(
             if ((count != 'h0) && packet_ready_in[stream]) begin
                 --count;
             end
+            if (scan_valid_reg[stream] && ((scan_event_reg[stream].eop0 || scan_event_reg[stream].eop1))) begin
+                count=count+1;
+            end
             occupied=unsigned'(32'(used_rows_reg[stream])) + unsigned'(32'(allocated_rows_reg[stream]));
             input_ready_comb[stream] = (count < COMPLETION_FIFO_WORDS) && ((scan_in_frame_reg[stream] || occupied<=(LOGICAL_ROWS - MAX_PACKET_ROWS)));
         end
@@ -392,6 +400,28 @@ module RxRAM #(
         for (stream='h0;stream < STREAMS;stream=stream+1) begin
             occupied=unsigned'(32'(used_rows_reg[stream])) + unsigned'(32'(allocated_rows_reg[stream]));
             almost_full_comb[stream] = pause_pressure_reg[stream] || occupied>=PAUSE_ASSERT_ROWS;
+        end
+    end
+
+    always_comb begin : debug_used_rows_comb_func  // debug_used_rows_comb_func
+        logic[31:0] stream;
+        logic[31:0] _bit;
+        debug_used_rows_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            for (_bit='h0;_bit < USED_ROW_BITS;_bit=_bit+1) begin
+                debug_used_rows_comb[(stream*USED_ROW_BITS) + _bit] = used_rows_reg[stream][_bit];
+            end
+        end
+    end
+
+    always_comb begin : debug_release_row_comb_func  // debug_release_row_comb_func
+        logic[31:0] stream;
+        logic[31:0] _bit;
+        debug_release_row_comb = 'h0;
+        for (stream='h0;stream < STREAMS;stream=stream+1) begin
+            for (_bit='h0;_bit < LOGICAL_ROW_BITS;_bit=_bit+1) begin
+                debug_release_row_comb[(stream*LOGICAL_ROW_BITS) + _bit] = release_row_reg[stream][_bit];
+            end
         end
     end
 
@@ -513,6 +543,8 @@ module RxRAM #(
         assign protocol_error_out = protocol_error_reg;
         assign storage_full_out = storage_full_reg;
         assign almost_full_out = almost_full_comb;
+        assign debug_used_rows_out = debug_used_rows_comb;
+        assign debug_release_row_out = debug_release_row_comb;
     endgenerate
 
     function logic[15:0] released_rows (input logic[15:0] length);
@@ -980,10 +1012,15 @@ module RxRAM #(
                                 row_advance=row_advance+1;
                             end
                             row_advance+=((SUBBANKS - ((((next_row_base + row_advance)) & ((SUBBANKS - 'h1)))))) & ((SUBBANKS - 'h1));
-                            completion_handle_reg_tmp[stream][tail] = ((packet_start <<< 'h3)) | stream;
-                            completion_length_reg_tmp[stream][tail] = packet_length;
-                            tail=((tail + 'h1)) & ((COMPLETION_FIFO_WORDS - 'h1));
-                            completion_count=completion_count+1;
+                            if (completion_count>=COMPLETION_FIFO_WORDS) begin
+                                ingress_error_reg_tmp[stream] = unsigned'(1'h1);
+                            end
+                            else begin
+                                completion_handle_reg_tmp[stream][tail] = ((packet_start <<< 'h3)) | stream;
+                                completion_length_reg_tmp[stream][tail] = packet_length;
+                                tail=((tail + 'h1)) & ((COMPLETION_FIFO_WORDS - 'h1));
+                                completion_count=completion_count+1;
+                            end
                             allocated_rows=released_rows(packet_length);
                             pack_data = 'h0;
                             pack_count='h0;

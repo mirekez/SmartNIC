@@ -3,10 +3,18 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 vivado_root="${VIVADO_ROOT:-/tools/2026.1/Vivado}"
 processing_mode="${SMARTNIC_PROCESSING_MODE:-stub}"
+cpu_firmware="${SMARTNIC_CPU_FIRMWARE:-multicore}"
 case "$processing_mode" in
     stub|cpu) ;;
     *)
         echo "SMARTNIC_PROCESSING_MODE must be 'stub' or 'cpu'" >&2
+        exit 2
+        ;;
+esac
+case "$cpu_firmware" in
+    single|multicore) ;;
+    *)
+        echo "SMARTNIC_CPU_FIRMWARE must be 'single' or 'multicore'" >&2
         exit 2
         ;;
 esac
@@ -36,8 +44,8 @@ if [[ "$processing_mode" == stub ]]; then
         -I "$repo_dir/fpga" \
         -I "$repo_dir"
 else
-    # Real one-cluster/four-hart Processing image. Core 0 boots from BRAM and
-    # controls DescriptorFetcher plus PacketDMA through uncached AXI MMIO.
+    # Real one-cluster/four-hart Processing image. All harts boot from BRAM and
+    # control DescriptorFetcher plus PacketDMA through uncached AXI MMIO.
     "$repo_dir/cpphdl/build/cpphdl" \
         --generated-dir "$repo_dir/rtl/generated" \
         --primary_clock clk 156250000 \
@@ -53,9 +61,16 @@ else
         -I "$repo_dir/rtl/processing" \
         -I "$repo_dir"
 
-    cmake --build "$repo_dir/build" --target cpu_loopback_firmware
+    if [[ "$cpu_firmware" == multicore ]]; then
+        firmware_target=cpu_loopback_multicore_firmware
+        firmware_elf="$repo_dir/build/test/cpu_loopback_multicore.elf"
+    else
+        firmware_target=cpu_loopback_firmware
+        firmware_elf="$repo_dir/build/test/cpu_loopback.elf"
+    fi
+    cmake --build "$repo_dir/build" --target "$firmware_target"
     python3 "$repo_dir/fpga/elf_to_bram.py" \
-        "$repo_dir/build/test/cpu_loopback.elf" \
+        "$firmware_elf" \
         "$repo_dir/fpga/build/cpu_loopback.mem" \
         --size 131072 --word-bytes 32
 fi
@@ -68,6 +83,10 @@ fi
 network_generated_dir="$repo_dir/fpga/build/generated_network"
 cmake -E rm -rf "$network_generated_dir"
 cmake -E make_directory "$network_generated_dir"
+network_generation_args=()
+if [[ "$processing_mode" == cpu ]]; then
+    network_generation_args+=("-DSMARTNIC_READ_PORTS=1")
+fi
 "$repo_dir/cpphdl/build/cpphdl" \
     --generated-dir "$network_generated_dir" \
     --primary_clock net_clk 156250000 \
@@ -77,7 +96,8 @@ cmake -E make_directory "$network_generated_dir"
     -I "$repo_dir/rtl/common" \
     -I "$repo_dir/rtl/network" \
     -I "$repo_dir/rtl" \
-    -I "$repo_dir"
+    -I "$repo_dir" \
+    "${network_generation_args[@]}"
 cmake -E copy_directory "$network_generated_dir" "$repo_dir/rtl/generated"
 "$repo_dir/cpphdl/build/cpphdl" \
     --generated-dir "$repo_dir/rtl/generated" \
@@ -105,6 +125,9 @@ cmake -E copy_if_different \
 cmake -E copy_if_different \
     "$repo_dir/rtl/common/SystemMemoryPrimitive.sv" \
     "$repo_dir/rtl/generated/SystemMemory.sv"
+cmake -E copy_if_different \
+    "$repo_dir/rtl/common/AsyncReadRamPrimitive.sv" \
+    "$repo_dir/rtl/generated/AsyncReadRam.sv"
 
 # Generate the command-driven UART logic analyzer from its CppHDL source.
 # This replaces ChipScope on boards where the JTAG pins are not accessible.
@@ -118,7 +141,7 @@ cmake -E copy_if_different \
     "$repo_dir/rtl/generated/UARTProbeMemory.sv"
 
 if [[ "${SMARTNIC_PREPARE_ONLY:-0}" == 1 ]]; then
-    echo "Prepared generated RTL for SMARTNIC_PROCESSING_MODE=$processing_mode"
+    echo "Prepared generated RTL for SMARTNIC_PROCESSING_MODE=$processing_mode SMARTNIC_CPU_FIRMWARE=$cpu_firmware"
     exit 0
 fi
 

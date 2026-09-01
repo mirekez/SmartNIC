@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -32,14 +33,36 @@ namespace
 #ifndef CPU_LOOPBACK_TEST
 #define CPU_LOOPBACK_TEST 0
 #endif
+#ifndef CPU_LOOPBACK_TRANSFERS
+#define CPU_LOOPBACK_TRANSFERS 256
+#endif
+#ifndef CPU_LOOPBACK_PERFORMANCE_TEST
+#define CPU_LOOPBACK_PERFORMANCE_TEST 0
+#endif
+#ifndef CPU_LOOPBACK_MULTICORE_TEST
+#define CPU_LOOPBACK_MULTICORE_TEST 0
+#endif
+#ifndef CPU_LOOPBACK_ENFORCE_BASELINE
+#define CPU_LOOPBACK_ENFORCE_BASELINE (!CPU_LOOPBACK_MULTICORE_TEST)
+#endif
 #ifndef DEMO_TRAFFIC_REPEATS
 #define DEMO_TRAFFIC_REPEATS 10
 #endif
 #ifndef DEMO_VIDEO_DECIMATION
 #define DEMO_VIDEO_DECIMATION 48
 #endif
+#ifndef L2_SWITCH_FRAME_BYTES
+#define L2_SWITCH_FRAME_BYTES 1516
+#endif
+#ifndef L2_SWITCH_PER_CORE_PERF
+#define L2_SWITCH_PER_CORE_PERF 0
+#endif
 
-constexpr size_t TRAFFIC_DEPTH = SUSTAINED_SWITCH ? 16384 : 4096;
+static_assert(L2_SWITCH_FRAME_BYTES >= 40,
+    "the L2 switch firmware reads the first 40 packet bytes");
+
+constexpr size_t TRAFFIC_DEPTH = SUSTAINED_SWITCH ? 16384
+    : (CPU_LOOPBACK_TEST ? 32768 : 4096);
 using Dut = SmartNICTest<NET_LANE_WIDTH, CPUS_USED, TRAFFIC_DEPTH>;
 using Generator = GenEthStream<NET_LANE_WIDTH>;
 #if DEMO_VIDEO
@@ -107,6 +130,33 @@ class L2SwitchTest
     std::vector<uint32_t> descriptor_ports;
     std::array<std::vector<uint8_t>, NETWORK_PORTS> assembling;
     std::array<bool, NETWORK_PORTS> tx_in_frame{};
+    uint64_t first_forward_tick = 0;
+    uint64_t last_forward_tick = 0;
+    uint64_t measured_forward_mac_bytes = 0;
+    uint64_t measured_forward_udp_bytes = 0;
+    uint64_t measured_forward_wire_bytes = 0;
+    uint32_t release_count = 0;
+    uint32_t last_release_handle = 0;
+    struct CorePerformance
+    {
+        uint32_t issued = 0;
+        uint32_t forwarded = 0;
+        uint64_t first_issue_tick = 0;
+        uint64_t last_issue_tick = 0;
+        uint64_t first_forward_tick = 0;
+        uint64_t last_forward_tick = 0;
+        uint64_t issued_wire_bytes = 0;
+        uint64_t forwarded_wire_bytes = 0;
+    };
+    std::array<CorePerformance, CPU::CORES> core_performance{};
+    std::deque<uint32_t> forwarding_owners;
+    uint32_t last_command_issued = 0;
+    bool measure_core_performance = false;
+    std::array<bool, NETWORK_PORTS> expected_handle_valid{};
+    std::array<uint32_t, NETWORK_PORTS> expected_handle_row{};
+    std::array<bool, NETWORK_PORTS> expected_descriptor_handle_valid{};
+    std::array<uint32_t, NETWORK_PORTS> expected_descriptor_handle_row{};
+    std::array<bool, 400> issued_ring_slots{};
 #if DEMO_VIDEO
     uint32_t video_decimation_phase = 0;
     std::vector<uint8_t> firmware_image;
@@ -164,6 +214,43 @@ class L2SwitchTest
                     byte * 8 + 7, byte * 8));
                 if (eop[byte]) {
                     forwarded.push_back({assembling[port], port});
+                    if constexpr (L2_SWITCH_PER_CORE_PERF) {
+                        if (forwarding_owners.empty()) {
+                            fail("forwarded packet has no hart attribution");
+                            return;
+                        }
+                        const uint32_t core = forwarding_owners.front();
+                        forwarding_owners.pop_front();
+                        auto& performance = core_performance[core];
+                        if (performance.forwarded == 0) {
+                            performance.first_forward_tick = ticks;
+                        }
+                        else {
+                            performance.forwarded_wire_bytes +=
+                                assembling[port].size() + 4 + 8 + 12;
+                        }
+                        performance.last_forward_tick = ticks;
+                        ++performance.forwarded;
+                    }
+                    if constexpr (CPU_LOOPBACK_PERFORMANCE_TEST) {
+                        if (first_forward_tick == 0) {
+                            first_forward_tick = ticks;
+                        }
+                        else {
+                            measured_forward_mac_bytes +=
+                                assembling[port].size();
+                            // Hardware was measured with untagged IPv4/UDP:
+                            // subtract its 14+20+8-byte headers for iperf
+                            // payload, and add FCS+preamble+IFG for wire rate.
+                            if (assembling[port].size() >= 42)
+                                measured_forward_udp_bytes +=
+                                    assembling[port].size() - 42;
+                            measured_forward_wire_bytes +=
+                                assembling[port].size() + 4 + 8 + 12;
+                        }
+                    }
+                    if constexpr (CPU_LOOPBACK_TEST)
+                        last_forward_tick = ticks;
                     assembling[port].clear();
                     tx_in_frame[port] = false;
                 }
@@ -192,6 +279,86 @@ class L2SwitchTest
             system = true;
         }
         if (net) observe_forwarding();
+        if constexpr (L2_SWITCH_PER_CORE_PERF) {
+            if (measure_core_performance) {
+                auto& packet_dma = dut.processing.packet_dma[0];
+                if (packet_dma.descriptor_command_valid_in()
+                    && packet_dma.descriptor_command_cache_in()
+                    && packet_dma.descriptor_command_ready_out()) {
+                    const uint32_t handle =
+                        packet_dma.descriptor_command_handle_in();
+                    const uint32_t stream = handle & 7u;
+                    const uint32_t row = handle >> 3;
+                    const uint32_t rows =
+                        ((L2_SWITCH_FRAME_BYTES + 31u) / 32u) * 4u;
+                    if (stream >= NETWORK_PORTS) {
+                        fail(std::format("invalid RxRAM stream {} in handle "
+                            "0x{:x}", stream, handle));
+                    }
+                    else {
+                        if (expected_handle_valid[stream]
+                            && row != expected_handle_row[stream]) {
+                            fail(std::format("RxRAM stream {} handle jumped "
+                                "from expected row 0x{:x} to 0x{:x}", stream,
+                                expected_handle_row[stream], row));
+                        }
+                        expected_handle_valid[stream] = true;
+                        expected_handle_row[stream] =
+                            (row + rows) & (16384u - 1u);
+                    }
+                }
+                const uint32_t issued = dut.processing.packet_dma[0]
+                    .debug_command_issued();
+                while (last_command_issued != issued) {
+                    const uint32_t source = dut.processing.packet_dma[0]
+                        .debug_command_write_source();
+                    const uint32_t slot = source >> 11;
+                    if ((source & 0x7ffu) != 0 || slot >= 400) {
+                        fail(std::format("DMA command {} has invalid ring "
+                            "source 0x{:x}", last_command_issued + 1, source));
+                        break;
+                    }
+                    if (issued_ring_slots[slot]) {
+                        fail(std::format("ring slot {} was issued twice "
+                            "(observed counter {} -> {})", slot,
+                            last_command_issued, issued));
+                        break;
+                    }
+                    issued_ring_slots[slot] = true;
+                    const uint32_t core = slot & (CPU::CORES - 1u);
+                    // Two MAC lanes complete concurrently, so RxFIFO's fair
+                    // merge need not preserve the generator vector index.
+                    // The committed ring header is the authoritative packet
+                    // associated with this slot.
+                    const uint32_t expected_port =
+                        dut.cpu_memory_byte(0, source + 3);
+                    const uint32_t staged_port = dut.processing.packet_dma[0]
+                        .debug_command_write_network_port();
+                    if (staged_port != expected_port) {
+                        const uint64_t descriptor_mac =
+                            dut.processing.descriptor_fetcher[0]
+                                .debug_auto_destination(slot);
+                        fail(std::format("hart {} issued source 0x{:x} with "
+                            "port {}, expected {}; slot descriptor MAC "
+                            "{:012x}", core, source, staged_port,
+                            expected_port, descriptor_mac));
+                        break;
+                    }
+                    forwarding_owners.push_back(core);
+                    auto& performance = core_performance[core];
+                    if (performance.issued == 0) {
+                        performance.first_issue_tick = ticks;
+                    }
+                    else {
+                        performance.issued_wire_bytes +=
+                            L2_SWITCH_FRAME_BYTES + 4 + 8 + 12;
+                    }
+                    performance.last_issue_tick = ticks;
+                    ++performance.issued;
+                    ++last_command_issued;
+                }
+            }
+        }
 #if DEMO_VIDEO
         if (visualizer) {
             visualizer->observe_cpu_before(dut);
@@ -205,6 +372,32 @@ class L2SwitchTest
             && (uint32_t)dut.smartnic.l2_descriptor_word_out() == 0) {
             descriptor_ports.push_back((uint32_t)dut.smartnic
                 .l2_descriptor_data_out().bits(71, 64));
+            if constexpr (L2_SWITCH_PER_CORE_PERF) {
+                if (measure_core_performance) {
+                    const uint32_t handle = (uint32_t)dut.smartnic
+                        .l2_descriptor_data_out().bits(16, 0);
+                    const uint32_t stream = handle & 7u;
+                    const uint32_t row = handle >> 3;
+                    const uint32_t rows =
+                        ((L2_SWITCH_FRAME_BYTES + 31u) / 32u) * 4u;
+                    if (stream < NETWORK_PORTS) {
+                        if (expected_descriptor_handle_valid[stream]
+                            && row != expected_descriptor_handle_row[stream]) {
+                            fail(std::format("RX descriptor stream {} jumped "
+                                "from expected row 0x{:x} to 0x{:x}", stream,
+                                expected_descriptor_handle_row[stream], row));
+                        }
+                        expected_descriptor_handle_valid[stream] = true;
+                        expected_descriptor_handle_row[stream] =
+                            (row + rows) & (16384u - 1u);
+                    }
+                }
+            }
+        }
+        if (net && dut.smartnic.debug_release_valid_out()[0]) {
+            ++release_count;
+            last_release_handle = (uint32_t)dut.smartnic
+                .debug_release_handle_out().bits(Dut::HANDLE_BITS - 1, 0);
         }
         if (net && measure_wire && dut.traffic.valid_out()) {
             ++measured_net_cycles;
@@ -300,7 +493,8 @@ class L2SwitchTest
     static std::vector<uint8_t> packet(const std::array<uint8_t, 6>& dst,
         const std::array<uint8_t, 6>& src, uint32_t sequence)
     {
-        std::vector<uint8_t> frame(SUSTAINED_SWITCH ? 1516 : 128);
+        std::vector<uint8_t> frame((SUSTAINED_SWITCH
+            ? L2_SWITCH_FRAME_BYTES : (CPU_LOOPBACK_TEST ? 1516 : 128)));
         std::copy(dst.begin(), dst.end(), frame.begin());
         std::copy(src.begin(), src.end(), frame.begin() + 6);
         frame[12] = 0x08;
@@ -346,7 +540,12 @@ class L2SwitchTest
         std::vector<std::vector<uint8_t>> frames;
         uint32_t sequence = 20;
 #if CPU_LOOPBACK_TEST
-        for (uint32_t transfer = 0; transfer < 8; ++transfer) {
+        // Exceed the capacity of both RxRAM streams.  A short smoke test can
+        // pass even when completed packet handles are never reclaimed; this
+        // ownership regression must observe the PAUSE watermark recover and
+        // continue forwarding after several complete store turnovers.
+        for (uint32_t transfer = 0; transfer < CPU_LOOPBACK_TRANSFERS;
+            ++transfer) {
             const uint32_t ingress = transfer & 1u;
             const std::array<uint8_t, 6> destination =
                 {0x02, 0x31, 0, (uint8_t)(ingress ^ 1u), 0x55,
@@ -397,7 +596,8 @@ class L2SwitchTest
 #endif
         generator.clear();
         for (const auto& frame : frames)
-            generator.push(frame, SUSTAINED_SWITCH ? 384 : 128);
+            generator.push(frame, SUSTAINED_SWITCH
+                ? (L2_SWITCH_PER_CORE_PERF ? 12 : 384) : 128);
         generator.finalize();
         if (generator.size() > TRAFFIC_DEPTH) {
             fail("traffic image is too large");
@@ -509,6 +709,18 @@ public:
         measured_net_cycles = 0;
         lane_active_cycles.fill(0);
         measure_wire = true;
+#if L2_SWITCH_PER_CORE_PERF
+        last_command_issued = dut.processing.packet_dma[0]
+            .debug_command_issued();
+        forwarding_owners.clear();
+        core_performance.fill({});
+        expected_handle_valid.fill(false);
+        expected_handle_row.fill(0);
+        expected_descriptor_handle_valid.fill(false);
+        expected_descriptor_handle_row.fill(0);
+        issued_ring_slots.fill(false);
+        measure_core_performance = true;
+#endif
 #endif
         start = true;
         wait_net();
@@ -557,7 +769,48 @@ public:
                         (uint32_t)dut.processing.packet_dma[0]
                             .network_tx_port_out(),
                         forwarded.size(), expected.size());
+#if CPU_LOOPBACK_MULTICORE_TEST
+                    std::cerr << std::format(
+                        " multicore: lock={} issued={} cache={} backing={} "
+                        "pc={:08x}/{:08x}/"
+                        "{:08x}/{:08x}\n",
+                        dut.processing.packet_dma[0]
+                            .debug_command_lock_owner(),
+                        dut.processing.packet_dma[0].debug_command_issued(),
+                        (uint32_t)dut.processing.packet_dma[0]
+                            .cache_completed_count_out(),
+                        (uint32_t)dut.processing.packet_dma[0]
+                            .backing_completed_beat_count_out(),
+                        (uint32_t)dut.processing.cpu[0].tribe.cores[0]
+                            .imem_read_addr_out(),
+                        (uint32_t)dut.processing.cpu[0].tribe.cores[1]
+                            .imem_read_addr_out(),
+                        (uint32_t)dut.processing.cpu[0].tribe.cores[2]
+                            .imem_read_addr_out(),
+                        (uint32_t)dut.processing.cpu[0].tribe.cores[3]
+                            .imem_read_addr_out());
+                    const auto used = dut.smartnic.debug_rx_used_rows_out();
+                    const auto release_row =
+                        dut.smartnic.debug_rx_release_row_out();
+                    std::cerr << std::format(
+                        " rxram: descriptors_seen={} releases={} "
+                        "last_handle=0x{:05x} used={}/{} release_row={}/{} "
+                        "pause={}/{} full={}\n",
+                        descriptor_ports.size(), release_count,
+                        last_release_handle,
+                        (uint32_t)used.bits(14, 0),
+                        (uint32_t)used.bits(29, 15),
+                        (uint32_t)release_row.bits(13, 0),
+                        (uint32_t)release_row.bits(27, 14),
+                        (bool)dut.smartnic.net_rx_almost_full_out()[0],
+                        (bool)dut.smartnic.net_rx_almost_full_out()[1],
+                        dut.storage_full_out());
+#endif
                     next_progress += 100000;
+                }
+                if (last_forward_tick != 0
+                    && ticks - last_forward_tick > 500000) {
+                    fail("CPU forwarding made no progress for 500000 cycles");
                 }
             }
             if constexpr (SUSTAINED_SWITCH) {
@@ -598,6 +851,18 @@ public:
                     dut.processing.packet_dma[0].protocol_error_out(),
                     (uint32_t)dut.processing.packet_dma[0]
                         .protocol_error_reason_out()));
+                if constexpr (SUSTAINED_SWITCH) {
+                    std::cerr << std::format(
+                        "l2_switch PCs: {:08x}/{:08x}/{:08x}/{:08x}\n",
+                        (uint32_t)dut.processing.cpu[0].tribe.cores[0]
+                            .imem_read_addr_out(),
+                        (uint32_t)dut.processing.cpu[0].tribe.cores[1]
+                            .imem_read_addr_out(),
+                        (uint32_t)dut.processing.cpu[0].tribe.cores[2]
+                            .imem_read_addr_out(),
+                        (uint32_t)dut.processing.cpu[0].tribe.cores[3]
+                            .imem_read_addr_out());
+                }
             }
             // Full occupancy is legal after accepting the tail of a finite
             // wire-rate burst. cycle() already fails on the actual contract
@@ -607,6 +872,9 @@ public:
         }
 #if SUSTAINED_SWITCH
         measure_wire = false;
+#if L2_SWITCH_PER_CORE_PERF
+        measure_core_performance = false;
+#endif
         if ((uint32_t)dut.processing.packet_dma[0]
             .cache_completed_count_out() != frames.size()) {
             fail(std::format("coherent L2 prefetch completed {} of {} packets",
@@ -635,6 +903,39 @@ public:
             ? (uint32_t)frames.size() - ring_slots : 0;
         for (uint32_t index = first_resident; index < frames.size(); ++index) {
             const uint32_t base = (index & (ring_slots - 1)) * 2048;
+#if L2_SWITCH_PER_CORE_PERF
+            for (uint32_t byte = 0; byte < CPU::CACHE_LINE_BYTES; ++byte) {
+                if (dut.cpu_memory_byte(0, base + byte) != 0) {
+                    fail(std::format("DDR packet ring slot {} was not "
+                        "cleared at byte {}", index, byte));
+                    index = (uint32_t)frames.size();
+                    break;
+                }
+            }
+            if (index >= frames.size()) break;
+            bool payload_match = false;
+            for (uint32_t candidate = 0;
+                candidate < std::min<size_t>(40, frames.size()); ++candidate) {
+                bool same = true;
+                for (uint32_t byte = CPU::CACHE_LINE_BYTES;
+                    byte < frames[index].size(); ++byte) {
+                    if (dut.cpu_memory_byte(0, base + byte)
+                        != frames[candidate][byte]) {
+                        same = false;
+                        break;
+                    }
+                }
+                if (same) {
+                    payload_match = true;
+                    break;
+                }
+            }
+            if (!payload_match) {
+                fail(std::format("DDR packet ring slot {} payload matches no "
+                    "input frame", index));
+                break;
+            }
+#else
             for (uint32_t byte = 0; byte < frames[index].size(); ++byte) {
                 const uint8_t expected_byte = byte < CPU::CACHE_LINE_BYTES
                     ? 0 : frames[index][byte];
@@ -647,6 +948,7 @@ public:
                     break;
                 }
             }
+#endif
         }
 #endif
         if (forwarded.size() != expected.size()) {
@@ -706,7 +1008,82 @@ public:
         if ((uint32_t)dut.traffic_backpressure_cycles_out() != 0) {
             fail("traffic generator recorded ingress backpressure");
         }
+#if CPU_LOOPBACK_PERFORMANCE_TEST
+        const uint64_t forwarding_cycles = last_forward_tick > first_forward_tick
+            ? last_forward_tick - first_forward_tick : 0;
+        const double udp_mbps = forwarding_cycles == 0 ? 0.0
+            : (double)measured_forward_udp_bytes * 8.0
+                * (double)PROCESSING_CLK_HZ
+                / (double)forwarding_cycles / 1.0e6;
+        const double mac_mbps = forwarding_cycles == 0 ? 0.0
+            : (double)measured_forward_mac_bytes * 8.0
+                * (double)PROCESSING_CLK_HZ
+                / (double)forwarding_cycles / 1.0e6;
+        const double wire_mbps = forwarding_cycles == 0 ? 0.0
+            : (double)measured_forward_wire_bytes * 8.0
+                * (double)PROCESSING_CLK_HZ
+                / (double)forwarding_cycles / 1.0e6;
+        std::print("cpu_loopback throughput: cycles={} udp={:.1f} Mbit/s "
+            "mac={:.1f} Mbit/s wire={:.1f} Mbit/s\n",
+            forwarding_cycles, udp_mbps, mac_mbps, wire_mbps);
+#if CPU_LOOPBACK_ENFORCE_BASELINE
+        // The board measured 813 Mbit/s iperf payload, approximately
+        // 850 Mbit/s including Ethernet framing. Keep this broad enough for
+        // harmless firmware instruction changes, but narrow enough to catch
+        // accidental parking of extra harts or removal of the serial baseline.
+        if (wire_mbps < 830.0 || wire_mbps > 870.0) {
+            fail(std::format("one-core wire throughput {:.1f} Mbit/s is "
+                "outside the 850 Mbit/s baseline window", wire_mbps));
+        }
+#endif
+#endif
 #if SUSTAINED_SWITCH
+#if L2_SWITCH_PER_CORE_PERF
+        constexpr uint32_t expected_per_core = 400 / CPU::CORES;
+        double aggregate_issue_mbps = 0.0;
+        double aggregate_forward_mbps = 0.0;
+        for (uint32_t core = 0; core < CPU::CORES; ++core) {
+            const auto& performance = core_performance[core];
+            const uint64_t issue_cycles = performance.last_issue_tick
+                    > performance.first_issue_tick
+                ? performance.last_issue_tick - performance.first_issue_tick
+                : 0;
+            const uint64_t forward_cycles = performance.last_forward_tick
+                    > performance.first_forward_tick
+                ? performance.last_forward_tick
+                    - performance.first_forward_tick
+                : 0;
+            const double issue_mbps = issue_cycles == 0 ? 0.0
+                : (double)performance.issued_wire_bytes * 8.0
+                    * (double)PROCESSING_CLK_HZ / (double)issue_cycles / 1.0e6;
+            const double forward_mbps = forward_cycles == 0 ? 0.0
+                : (double)performance.forwarded_wire_bytes * 8.0
+                    * (double)PROCESSING_CLK_HZ / (double)forward_cycles
+                    / 1.0e6;
+            aggregate_issue_mbps += issue_mbps;
+            aggregate_forward_mbps += forward_mbps;
+            std::print("l2_switch core {}: frame={} issued={} cycles={} "
+                "lookup+enqueue={:.1f} Mbit/s forwarded={} cycles={} "
+                "effective={:.1f} Mbit/s\n", core, L2_SWITCH_FRAME_BYTES,
+                performance.issued, issue_cycles, issue_mbps,
+                performance.forwarded, forward_cycles, forward_mbps);
+            if (performance.issued != expected_per_core
+                || performance.forwarded != expected_per_core) {
+                fail(std::format("core {} handled issued/forwarded {}/{}, "
+                    "expected {}/{}", core, performance.issued,
+                    performance.forwarded, expected_per_core,
+                    expected_per_core));
+            }
+        }
+        if (!forwarding_owners.empty()) {
+            fail(std::format("{} issued DMA commands lack forwarded packets",
+                forwarding_owners.size()));
+        }
+        std::print("l2_switch 4-core aggregate: frame={} "
+            "lookup+enqueue={:.1f} Mbit/s effective={:.1f} Mbit/s\n",
+            L2_SWITCH_FRAME_BYTES, aggregate_issue_mbps,
+            aggregate_forward_mbps);
+#else
         for (uint32_t port = 0; port < NETWORK_PORTS; ++port) {
             const double load = measured_net_cycles == 0 ? 0.0
                 : 100.0 * lane_active_cycles[port] / measured_net_cycles;
@@ -715,6 +1092,7 @@ public:
                     port, load));
             }
         }
+#endif
         if (failed) {
             auto& packet_backing = dut.processing.packet_dma[0].backing_dma;
             auto& external_ddr = dut.processing.ddr[0];

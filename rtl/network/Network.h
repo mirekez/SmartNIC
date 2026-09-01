@@ -28,6 +28,7 @@ public:
     static constexpr size_t INPUT_BYTES = STREAMS * LANE_BYTES;
     static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * 4;
     static constexpr size_t LOGICAL_ROW_BITS = clog2(LOGICAL_ROWS);
+    static constexpr size_t USED_ROW_BITS = clog2(LOGICAL_ROWS + 1);
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
 
@@ -78,6 +79,8 @@ public:
 
     _PORT(bool) protocol_error_out;
     _PORT(bool) storage_full_out;
+    _PORT(logic<STREAMS * USED_ROW_BITS>) debug_rx_used_rows_out;
+    _PORT(logic<STREAMS * LOGICAL_ROW_BITS>) debug_rx_release_row_out;
 
 private:
     InputBalancer<LANE_WIDTH> balancer;
@@ -375,11 +378,14 @@ public:
         output_merger._assign();
 
         ready_out = _ASSIGN(balancer.ready_out());
-        // Pause for either immediate ingress elasticity or packet-store
-        // pressure.  Waiting until RxRAM actually refuses a new packet is too
-        // late for a remote transmitter with substantial internal buffering.
+        // Pause for immediate ingress elasticity, descriptor capacity, or
+        // packet-store pressure.  Minimum frames can fill the descriptor FIFO
+        // long before they consume RxRAM's byte-oriented watermark; omitting
+        // this term allowed the descriptor ring to wrap and orphan RxRAM
+        // handles under sustained 64-byte traffic.
         rx_almost_full_out = _ASSIGN(
-            balancer.almost_full_out() | rx_ram.almost_full_out());
+            balancer.almost_full_out() | rx_fifo.almost_full_out()
+                | rx_ram.almost_full_out());
         descriptor_valid_out = _ASSIGN(rx_fifo.valid_out());
         descriptor_data_out = _ASSIGN(rx_fifo.data_out());
         read_ready_out = _ASSIGN(rx_ram.read_ready_out());
@@ -394,6 +400,8 @@ public:
         tx_eop_out = _ASSIGN(output_merger.eop_out());
         protocol_error_out = _ASSIGN_COMB(error_comb_func());
         storage_full_out = _ASSIGN(rx_ram.storage_full_out());
+        debug_rx_used_rows_out = _ASSIGN(rx_ram.debug_used_rows_out());
+        debug_rx_release_row_out = _ASSIGN(rx_ram.debug_release_row_out());
     }
 
     void SMARTNIC_NETWORK_WORK_METHOD(bool reset)

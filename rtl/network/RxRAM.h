@@ -65,6 +65,7 @@ public:
     static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * SUBBANKS;
     static constexpr size_t PHYSICAL_ROW_BITS = clog2(BANK_DEPTH);
     static constexpr size_t LOGICAL_ROW_BITS = clog2(LOGICAL_ROWS);
+    static constexpr size_t USED_ROW_BITS = clog2(LOGICAL_ROWS + 1);
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
     static constexpr size_t READ_RR_BITS = READ_PORTS <= 1 ? 1 : clog2(READ_PORTS);
     static constexpr size_t FRAME_LENGTH_BITS = 14;
@@ -72,10 +73,12 @@ public:
     static constexpr size_t RELEASE_SLOTS = READ_PORTS * 4;
     // Assert XOFF while only a small fraction of the packet store is occupied.
     // At 10 Gb/s the remaining 120 KiB is about 98 us of wire data, leaving
-    // ample allowance for a remote MAC/NIC to act on a PAUSE frame.  Release
-    // only after half of that watermark has drained to avoid XOFF/XON chatter.
+    // ample allowance for a remote MAC/NIC to act on a PAUSE frame. Release
+    // immediately below the assertion watermark. A deeper hysteresis can
+    // deadlock a finite burst when the completion pipeline settles between
+    // the two levels and the paused peer cannot supply more drainable work.
     static constexpr size_t PAUSE_ASSERT_ROWS = LOGICAL_ROWS / 16;
-    static constexpr size_t PAUSE_RELEASE_ROWS = LOGICAL_ROWS / 32;
+    static constexpr size_t PAUSE_RELEASE_ROWS = PAUSE_ASSERT_ROWS - 1;
 
     static_assert(LANE_WIDTH == 64,
         "RxRAM supports 64-bit 10GbE MAC words");
@@ -128,6 +131,10 @@ public:
     // request has time to cross the link and drain transmitter elasticity.
     // This is live (not sticky) and is independent for each receive stream.
     _PORT(logic<STREAMS>) almost_full_out;
+    // No-JTAG board observability. These are live allocator positions, not
+    // additional state, and are consumed only by the low-rate UART probe.
+    _PORT(logic<STREAMS * USED_ROW_BITS>) debug_used_rows_out;
+    _PORT(logic<STREAMS * LOGICAL_ROW_BITS>) debug_release_row_out;
 
 private:
     SmartNicRAM<LANE_WIDTH, BANK_DEPTH> banks[PHYSICAL_BANKS];
@@ -184,6 +191,8 @@ private:
     logic<READ_PORTS> read_ready_comb;
     logic<STREAMS> input_ready_comb;
     logic<STREAMS> almost_full_comb;
+    logic<STREAMS * USED_ROW_BITS> debug_used_rows_comb;
+    logic<STREAMS * LOGICAL_ROW_BITS> debug_release_row_comb;
     logic<STREAMS> packet_valid_comb;
     logic<STREAMS * HANDLE_BITS> packet_handle_comb;
     logic<STREAMS * FRAME_LENGTH_BITS> packet_length_comb;
@@ -551,6 +560,34 @@ private:
         return almost_full_comb;
     }
 
+    logic<STREAMS * USED_ROW_BITS>& debug_used_rows_comb_func()
+    {
+        uint32_t stream;
+        uint32_t bit;
+        debug_used_rows_comb = 0;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            for (bit = 0; bit < USED_ROW_BITS; ++bit) {
+                debug_used_rows_comb[stream * USED_ROW_BITS + bit] =
+                    used_rows_reg[stream][bit];
+            }
+        }
+        return debug_used_rows_comb;
+    }
+
+    logic<STREAMS * LOGICAL_ROW_BITS>& debug_release_row_comb_func()
+    {
+        uint32_t stream;
+        uint32_t bit;
+        debug_release_row_comb = 0;
+        for (stream = 0; stream < STREAMS; ++stream) {
+            for (bit = 0; bit < LOGICAL_ROW_BITS; ++bit) {
+                debug_release_row_comb[stream * LOGICAL_ROW_BITS + bit] =
+                    release_row_reg[stream][bit];
+            }
+        }
+        return debug_release_row_comb;
+    }
+
     logic<STREAMS>& packet_valid_comb_func()
     {
         uint32_t stream;
@@ -689,6 +726,8 @@ public:
         protocol_error_out = _ASSIGN_REG(protocol_error_reg);
         storage_full_out = _ASSIGN_REG(storage_full_reg);
         almost_full_out = _ASSIGN_COMB(almost_full_comb_func());
+        debug_used_rows_out = _ASSIGN_COMB(debug_used_rows_comb_func());
+        debug_release_row_out = _ASSIGN_COMB(debug_release_row_comb_func());
     }
 
     void SMARTNIC_NETWORK_WORK_METHOD(bool reset)
@@ -887,6 +926,11 @@ public:
                                         [stream][release_slot]
                                         == release_handle) {
                                     release_error_reg[stream]._next = 1;
+#ifndef SYNTHESIS
+                                    std::print(stderr, "{}: RxRAM duplicate "
+                                        "release stream={} handle=0x{:x}\n",
+                                        __inst_name, stream, release_handle);
+#endif
                                 }
                                 if (free_release_slot == RELEASE_SLOTS
                                     && release_slot_available
@@ -897,6 +941,23 @@ public:
                             }
                             if (free_release_slot == RELEASE_SLOTS) {
                                 release_error_reg[stream]._next = 1;
+#ifndef SYNTHESIS
+                                std::print(stderr, "{}: RxRAM release slots "
+                                    "full stream={} handle=0x{:x} "
+                                    "release_row=0x{:x}", __inst_name,
+                                    stream, release_handle, release_row);
+                                for (release_slot = 0;
+                                    release_slot < RELEASE_SLOTS;
+                                    ++release_slot) {
+                                    std::print(stderr, " slot{}={}:0x{:x}",
+                                        release_slot,
+                                        (bool)deferred_release_valid_reg
+                                            [stream][release_slot],
+                                        (uint32_t)deferred_release_handle_reg
+                                            [stream][release_slot]);
+                                }
+                                std::print(stderr, "\n");
+#endif
                             }
                             else {
                                 claimed_release_slots |=
@@ -937,8 +998,13 @@ public:
             // shift/OR per segment.  The registered scanner boundary removes
             // the old eight-lane serial SOP/EOP-to-write-data chain.
             if ((bool)scan_valid_reg[stream]) {
-                if ((bool)scan_event.protocol_error)
+                if ((bool)scan_event.protocol_error) {
                     ingress_error_reg[stream]._next = 1;
+#ifndef SYNTHESIS
+                    std::print(stderr, "{}: RxRAM registered scanner error "
+                        "stream={}\n", __inst_name, stream);
+#endif
+                }
                 for (segment = 0; segment < 2; ++segment) {
                     segment_valid = segment == 0
                         ? (bool)scan_event.valid0
@@ -956,7 +1022,13 @@ public:
                         : (uint32_t)scan_event.bytes1;
 
                     if (segment_sop) {
-                        if (in_frame) ingress_error_reg[stream]._next = 1;
+                        if (in_frame) {
+                            ingress_error_reg[stream]._next = 1;
+#ifndef SYNTHESIS
+                            std::print(stderr, "{}: RxRAM SOP while in frame "
+                                "stream={}\n", __inst_name, stream);
+#endif
+                        }
                         row_advance += (SUBBANKS - ((next_row_base
                             + row_advance) & (SUBBANKS - 1)))
                             & (SUBBANKS - 1);
@@ -968,7 +1040,13 @@ public:
                         in_frame = true;
                     }
                     if (segment_valid) {
-                        if (!in_frame) ingress_error_reg[stream]._next = 1;
+                        if (!in_frame) {
+                            ingress_error_reg[stream]._next = 1;
+#ifndef SYNTHESIS
+                            std::print(stderr, "{}: RxRAM data outside frame "
+                                "stream={}\n", __inst_name, stream);
+#endif
+                        }
                         combined_data = logic<128>(pack_data)
                             | (logic<128>(segment_data) << (pack_count * 8));
                         total_count = pack_count + segment_bytes;
@@ -1025,6 +1103,11 @@ public:
                                 // violation visible instead of overwriting an
                                 // unread packet descriptor.
                                 ingress_error_reg[stream]._next = 1;
+#ifndef SYNTHESIS
+                                std::print(stderr, "{}: RxRAM completion FIFO "
+                                    "overflow stream={} count={}\n",
+                                    __inst_name, stream, completion_count);
+#endif
                             }
                             else {
                                 completion_handle_reg[stream][tail]._next =
@@ -1092,8 +1175,13 @@ public:
                 scan_event_reg[stream]._next = scan_event;
                 scan_valid_reg[stream]._next = 1;
                 scan_in_frame_reg[stream]._next = scan_event.in_frame_next;
-                if ((bool)scan_event.protocol_error)
+                if ((bool)scan_event.protocol_error) {
                     ingress_error_reg[stream]._next = 1;
+#ifndef SYNTHESIS
+                    std::print(stderr, "{}: RxRAM input scanner error "
+                        "stream={}\n", __inst_name, stream);
+#endif
+                }
             }
             completion_head_reg[stream]._next = head;
             completion_tail_reg[stream]._next = tail;

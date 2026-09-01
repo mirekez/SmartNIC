@@ -19,6 +19,10 @@
 #define L2_DATA_WIDTH 256
 #define NET_LANE_WIDTH 64
 #define L2_CLK_HZ NET_CLK_HZ
+// RxRAM has 16K logical rows. A packet handle contains the 14-bit row plus
+// three low stream/alignment bits; narrowing this to 16 bits aliases the
+// upper half of the store and prevents in-order release after row 8191.
+#define PACKET_HANDLE_BITS 17
 
 // PacketParser bounds.  These are deliberately finite: the parser examines a
 // fixed header window and reports PACKET_PARSER_FLAG_LIMIT instead of allowing

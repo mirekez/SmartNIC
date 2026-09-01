@@ -8,8 +8,16 @@
 
 using namespace cpphdl;
 
-#define SMARTNIC_FOR_EACH_RX_PORT(M) \
-    M(0) M(1)
+#ifndef SMARTNIC_READ_PORTS
+#define SMARTNIC_READ_PORTS 2
+#endif
+#if SMARTNIC_READ_PORTS == 1
+#define SMARTNIC_FOR_EACH_RX_PORT(M) M(0)
+#elif SMARTNIC_READ_PORTS == 2
+#define SMARTNIC_FOR_EACH_RX_PORT(M) M(0) M(1)
+#else
+#error "SMARTNIC_READ_PORTS must be one or two"
+#endif
 #define SMARTNIC_FOR_EACH_TX_STREAM(M) \
     M(0) M(1)
 
@@ -20,7 +28,11 @@ class SmartNIC : public Module
 {
 public:
     static constexpr size_t STREAMS = 2;
-    static constexpr size_t READ_PORTS = 2;
+    // This is a generation-time product specialization, not a run-time mode.
+    // ProcessingStub needs two independent readers; the one-cluster CPU image
+    // needs one and should not carry a second PacketStream/metadata queue or
+    // RxRAM arbitration client through synthesis and routing.
+    static constexpr size_t READ_PORTS = SMARTNIC_READ_PORTS;
     static constexpr size_t L2_WIDTH = 256;
     static constexpr size_t L2_BYTES = L2_WIDTH / 8;
     static constexpr size_t LANE_BYTES = LANE_WIDTH / 8;
@@ -31,6 +43,7 @@ public:
     static constexpr size_t NET_BYTES = STREAMS * LANE_BYTES;
     static constexpr size_t LOGICAL_ROWS = BANK_DEPTH * 4;
     static constexpr size_t LOGICAL_ROW_BITS = clog2(LOGICAL_ROWS);
+    static constexpr size_t USED_ROW_BITS = clog2(LOGICAL_ROWS + 1);
     static constexpr size_t HANDLE_BITS = LOGICAL_ROW_BITS + 3;
     static constexpr size_t FRAME_LENGTH_BITS = 14;
     static constexpr size_t READ_COMMAND_BITS = HANDLE_BITS + FRAME_LENGTH_BITS;
@@ -38,6 +51,8 @@ public:
 
     static_assert(LANE_WIDTH == 64,
         "SmartNIC supports 64-bit 10GbE MAC words");
+    static_assert(HANDLE_BITS == PACKET_HANDLE_BITS,
+        "Processing and RxRAM packet-handle widths must match");
 
     // Ordered post-PCS Ethernet receive input, passed directly to Network.
     _PORT(bool) net_rx_valid_in;
@@ -89,6 +104,13 @@ public:
 
     _PORT(bool) protocol_error_out;
     _PORT(bool) storage_full_out;
+    // Hardware-only observability for the no-JTAG UART probe. Each bit pulses
+    // when a completed packet handle is handed to RxRAM for reclamation.
+    _PORT(logic<READ_PORTS>) debug_release_valid_out;
+    _PORT(logic<READ_PORTS * HANDLE_BITS>) debug_release_handle_out;
+    _PORT(logic<READ_PORTS * FRAME_LENGTH_BITS>) debug_release_length_out;
+    _PORT(logic<STREAMS * USED_ROW_BITS>) debug_rx_used_rows_out;
+    _PORT(logic<STREAMS * LOGICAL_ROW_BITS>) debug_rx_release_row_out;
 
 private:
     Network<LANE_WIDTH, READ_PORTS, BANK_DEPTH, RX_FIFO_DEPTH,
@@ -105,8 +127,10 @@ private:
     reg<u<6>> meta_bytes_reg[READ_PORTS][READ_META_DEPTH];
     reg<u1> meta_sop_reg[READ_PORTS][READ_META_DEPTH];
     reg<u1> meta_eop_reg[READ_PORTS][READ_META_DEPTH];
-    reg<u<HANDLE_BITS>> meta_handle_reg[READ_PORTS][READ_META_DEPTH];
-    reg<u<FRAME_LENGTH_BITS>> meta_length_reg[READ_PORTS][READ_META_DEPTH];
+    // Handle and length are intentionally not duplicated in every response
+    // slot. l2_read_command_ready_comb_func() admits a new packet only after
+    // read_active and meta_count both return to zero, so the per-port command
+    // registers remain stable through the final response/release event.
     reg<u<3>> meta_head_reg[READ_PORTS];
     reg<u<3>> meta_tail_reg[READ_PORTS];
     reg<u<4>> meta_count_reg[READ_PORTS];
@@ -123,6 +147,19 @@ private:
     logic<READ_PORTS> network_release_valid_comb;
     logic<READ_PORTS * HANDLE_BITS> network_release_handle_comb;
     logic<READ_PORTS * FRAME_LENGTH_BITS> network_release_length_comb;
+    // RxRAM release bookkeeping uses two register banks at the SmartNIC
+    // boundary.  The event bank can remain beside the response metadata muxes;
+    // the output bank can remain beside RxRAM's deferred-release allocator.
+    // A single bank was pulled between those dense regions by placement and
+    // hardware could lose the handle retirement even though RTL simulation
+    // passed.  Both banks sustain one release per read port per clock, so the
+    // extra latency does not reduce packet throughput.
+    reg<logic<READ_PORTS>> release_event_valid_reg;
+    reg<logic<READ_PORTS * HANDLE_BITS>> release_event_handle_reg;
+    reg<logic<READ_PORTS * FRAME_LENGTH_BITS>> release_event_length_reg;
+    reg<logic<READ_PORTS>> network_release_valid_reg;
+    reg<logic<READ_PORTS * HANDLE_BITS>> network_release_handle_reg;
+    reg<logic<READ_PORTS * FRAME_LENGTH_BITS>> network_release_length_reg;
     logic<STREAMS> network_tx_valid_comb;
     logic<NET_BITS> network_tx_data_comb;
     logic<NET_BYTES> network_tx_keep_comb;
@@ -222,7 +259,7 @@ private:
         for (port = 0; port < READ_PORTS; ++port) {
             for (bit = 0; bit < HANDLE_BITS; ++bit) {
                 network_release_handle_comb[port * HANDLE_BITS + bit] =
-                    meta_handle_reg[port][(uint32_t)meta_head_reg[port]][bit];
+                    read_handle_reg[port][bit];
             }
         }
         return network_release_handle_comb;
@@ -236,7 +273,7 @@ private:
         for (port = 0; port < READ_PORTS; ++port) {
             for (bit = 0; bit < FRAME_LENGTH_BITS; ++bit) {
                 network_release_length_comb[port * FRAME_LENGTH_BITS + bit] =
-                    meta_length_reg[port][(uint32_t)meta_head_reg[port]][bit];
+                    read_length_reg[port][bit];
             }
         }
         return network_release_length_comb;
@@ -475,12 +512,9 @@ public:
         network.read_handle_in = _ASSIGN_COMB(network_read_handle_comb_func());
         network.read_word_in = _ASSIGN_COMB(network_read_word_comb_func());
         network.read_ready_in = _ASSIGN_COMB(network_read_ready_comb_func());
-        network.release_valid_in =
-            _ASSIGN_COMB(network_release_valid_comb_func());
-        network.release_handle_in =
-            _ASSIGN_COMB(network_release_handle_comb_func());
-        network.release_length_in =
-            _ASSIGN_COMB(network_release_length_comb_func());
+        network.release_valid_in = _ASSIGN_REG(network_release_valid_reg);
+        network.release_handle_in = _ASSIGN_REG(network_release_handle_reg);
+        network.release_length_in = _ASSIGN_REG(network_release_length_reg);
         network.tx_valid_in = _ASSIGN_COMB(network_tx_valid_comb_func());
         network.tx_data_in = _ASSIGN_COMB(network_tx_data_comb_func());
         network.tx_keep_in = _ASSIGN_COMB(network_tx_keep_comb_func());
@@ -550,6 +584,12 @@ public:
         l2_tx_ready_out = _ASSIGN_COMB(l2_tx_ready_comb_func());
         protocol_error_out = _ASSIGN(network.protocol_error_out());
         storage_full_out = _ASSIGN(network.storage_full_out());
+        debug_release_valid_out = _ASSIGN_REG(network_release_valid_reg);
+        debug_release_handle_out = _ASSIGN_REG(network_release_handle_reg);
+        debug_release_length_out = _ASSIGN_REG(network_release_length_reg);
+        debug_rx_used_rows_out = _ASSIGN(network.debug_rx_used_rows_out());
+        debug_rx_release_row_out =
+            _ASSIGN(network.debug_rx_release_row_out());
     }
 
     void _work_net_clk(bool reset)
@@ -578,6 +618,19 @@ public:
 #undef SMARTNIC_WORK_NET_TX
 #endif
 
+        // First capture beside the response metadata, then cross the physical
+        // Network/RxRAM boundary from a second register bank. Handle and length
+        // are sampled continuously; only the aligned valid bit is consumed.
+        network_release_valid_reg._next = release_event_valid_reg;
+        network_release_handle_reg._next = release_event_handle_reg;
+        network_release_length_reg._next = release_event_length_reg;
+        release_event_valid_reg._next =
+            network_release_valid_comb_func();
+        release_event_handle_reg._next =
+            network_release_handle_comb_func();
+        release_event_length_reg._next =
+            network_release_length_comb_func();
+
         for (port = 0; port < READ_PORTS; ++port) {
             head = (uint32_t)meta_head_reg[port];
             tail = (uint32_t)meta_tail_reg[port];
@@ -585,8 +638,12 @@ public:
             command_fire = (bool)l2_rx_read_valid_in()[port]
                 && (bool)l2_read_command_ready_comb_func()[port];
             if (command_fire) {
+#if SMARTNIC_READ_PORTS == 1
+                command = read_command_0_comb_func();
+#else
                 if (port == 0) command = read_command_0_comb_func();
                 else command = read_command_1_comb_func();
+#endif
                 read_handle_reg[port]._next =
                     command.bits(HANDLE_BITS - 1, 0);
                 read_length_reg[port]._next = command.bits(
@@ -613,8 +670,6 @@ public:
                 meta_sop_reg[port][tail]._next =
                     (uint32_t)read_word_reg[port] == 0;
                 meta_eop_reg[port][tail]._next = remaining <= RX_READ_BYTES;
-                meta_handle_reg[port][tail]._next = read_handle_reg[port];
-                meta_length_reg[port][tail]._next = read_length_reg[port];
                 tail = (tail + 1) & (READ_META_DEPTH - 1);
                 ++count;
                 read_word_reg[port]._next =
@@ -647,6 +702,12 @@ public:
         }
 
         if (reset) {
+            release_event_valid_reg.clr();
+            release_event_handle_reg.clr();
+            release_event_length_reg.clr();
+            network_release_valid_reg.clr();
+            network_release_handle_reg.clr();
+            network_release_length_reg.clr();
             for (port = 0; port < READ_PORTS; ++port) {
                 read_active_reg[port].clr();
                 read_handle_reg[port].clr();
@@ -660,8 +721,6 @@ public:
                     meta_bytes_reg[port][slot].clr();
                     meta_sop_reg[port][slot].clr();
                     meta_eop_reg[port][slot].clr();
-                    meta_handle_reg[port][slot].clr();
-                    meta_length_reg[port][slot].clr();
                 }
             }
             descriptor_hold_reg.clr();
@@ -685,6 +744,12 @@ public:
         SMARTNIC_FOR_EACH_TX_STREAM(SMARTNIC_STROBE_NET_TX_STREAM)
 #undef SMARTNIC_STROBE_NET_TX_STREAM
 #endif
+        release_event_valid_reg.strobe();
+        release_event_handle_reg.strobe();
+        release_event_length_reg.strobe();
+        network_release_valid_reg.strobe();
+        network_release_handle_reg.strobe();
+        network_release_length_reg.strobe();
         for (port = 0; port < READ_PORTS; ++port) {
             read_active_reg[port].strobe();
             read_handle_reg[port].strobe();
@@ -698,8 +763,6 @@ public:
                 meta_bytes_reg[port][slot].strobe();
                 meta_sop_reg[port][slot].strobe();
                 meta_eop_reg[port][slot].strobe();
-                meta_handle_reg[port][slot].strobe();
-                meta_length_reg[port][slot].strobe();
             }
         }
         descriptor_hold_reg.strobe();
@@ -719,3 +782,4 @@ template class SmartNIC<64, 4096, 64, 2048>;
 #undef SMARTNIC_FOR_EACH_RX_PORT
 #undef SMARTNIC_FOR_EACH_TX_STREAM
 #undef SMARTNIC_TWO_CLOCKS
+#undef SMARTNIC_READ_PORTS

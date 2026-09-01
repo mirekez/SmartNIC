@@ -9,7 +9,7 @@ module DescriptorFetcher #(
 ,   parameter AXI_ADDR_WIDTH = 'h20
 ,   parameter AXI_ID_WIDTH = 'h4
 ,   parameter AXI_DATA_WIDTH = 'h100
-,   parameter HANDLE_BITS = 'h10
+,   parameter HANDLE_BITS = 'h11
  )
  (
     input wire clk
@@ -27,6 +27,8 @@ module DescriptorFetcher #(
 ,   output wire[14-1:0] packet_command_length_out
 ,   output wire packet_command_system_out
 ,   output wire packet_command_cache_out
+,   output wire packet_command_network_out
+,   output wire[8-1:0] packet_command_network_port_out
 ,   output wire[32-1:0] packet_command_destination_out
 ,   input wire mmio__awvalid_in
 ,   output wire mmio__awready_out
@@ -65,6 +67,8 @@ module DescriptorFetcher #(
     localparam  ACTION_NEXT = 'h1;
     localparam  ACTION_DMA_DISCARD = 'h2;
     localparam  ACTION_DMA_SYSTEM = 'h4;
+    localparam  ACTION_DMA_CACHE = 'h8;
+    localparam  ACTION_DMA_NETWORK = 'h10;
     localparam  STATUS_AVAILABLE = 'h1;
     localparam  STATUS_PREFETCH_ENABLED = 'h2;
     localparam  STATUS_PROTOCOL_ERROR = 'h4;
@@ -72,8 +76,6 @@ module DescriptorFetcher #(
 
 
     // regs and combs
-    reg[1280-1:0] queue_reg[DEPTH];
-    reg[1280-1:0] current_descriptor_reg;
     reg[PTR_BITS-1:0] head_reg;
     reg[PTR_BITS-1:0] tail_reg;
     reg[COUNT_BITS-1:0] count_reg;
@@ -91,7 +93,10 @@ module DescriptorFetcher #(
     reg[14-1:0] packet_command_length_reg;
     reg packet_command_system_reg;
     reg packet_command_cache_reg;
+    reg packet_command_network_reg;
+    reg[8-1:0] packet_command_network_port_reg;
     reg[32-1:0] packet_command_destination_reg;
+    reg[32-1:0] action_destination_reg;
     reg[AXI_ADDR_WIDTH-1:0] write_addr_reg;
     reg[AXI_ID_WIDTH-1:0] write_id_reg;
     reg write_addr_valid_reg;
@@ -105,13 +110,30 @@ module DescriptorFetcher #(
     reg[AXI_DATA_WIDTH-1:0] read_data_reg;
     reg read_valid_reg;
     logic[1280-1:0] current_descriptor_comb;
+    logic[1280-1:0] queue_write_data_comb;
     logic[AXI_DATA_WIDTH-1:0] register_read_comb;
 
     // members
+    wire[$clog2(DEPTH)-1:0] queue_mem__write_addr_in;
+    wire queue_mem__write_in;
+    wire[DESCRIPTOR_BITS-1:0] queue_mem__write_data_in;
+    wire[$clog2(DEPTH)-1:0] queue_mem__read_addr_in;
+    wire[DESCRIPTOR_BITS-1:0] queue_mem__read_data_out;
+    AsyncReadRam #(
+        DESCRIPTOR_BITS
+,       DEPTH
+    ) queue_mem (
+        .clk(clk)
+,       .l2_clock(l2_clock)
+,       .reset(reset)
+,       .write_addr_in(queue_mem__write_addr_in)
+,       .write_in(queue_mem__write_in)
+,       .write_data_in(queue_mem__write_data_in)
+,       .read_addr_in(queue_mem__read_addr_in)
+,       .read_data_out(queue_mem__read_data_out)
+    );
 
     // tmp variables
-    logic[1280-1:0] queue_reg_tmp[DEPTH];
-    logic[1280-1:0] current_descriptor_reg_tmp;
     logic[PTR_BITS-1:0] head_reg_tmp;
     logic[PTR_BITS-1:0] tail_reg_tmp;
     logic[COUNT_BITS-1:0] count_reg_tmp;
@@ -129,7 +151,10 @@ module DescriptorFetcher #(
     logic[14-1:0] packet_command_length_reg_tmp;
     logic packet_command_system_reg_tmp;
     logic packet_command_cache_reg_tmp;
+    logic packet_command_network_reg_tmp;
+    logic[8-1:0] packet_command_network_port_reg_tmp;
     logic[32-1:0] packet_command_destination_reg_tmp;
+    logic[32-1:0] action_destination_reg_tmp;
     logic[AXI_ADDR_WIDTH-1:0] write_addr_reg_tmp;
     logic[AXI_ID_WIDTH-1:0] write_id_reg_tmp;
     logic write_addr_valid_reg_tmp;
@@ -147,7 +172,23 @@ module DescriptorFetcher #(
     always_comb begin : current_descriptor_comb_func  // current_descriptor_comb_func
         current_descriptor_comb = 'h0;
         if (unsigned'(32'(count_reg)) != 'h0) begin
-            current_descriptor_comb = current_descriptor_reg;
+            current_descriptor_comb = queue_mem__read_data_out;
+        end
+    end
+
+    always_comb begin : queue_write_data_comb_func  // queue_write_data_comb_func
+        logic[31:0] _bit;
+        logic[31:0] word_index;
+        queue_write_data_comb = assembly_reg;
+        word_index=unsigned'(32'(descriptor_word_in));
+        if (word_index>=DESCRIPTOR_WORDS) begin
+            word_index='h0;
+        end
+        if (descriptor_sop_in) begin
+            queue_write_data_comb = 'h0;
+        end
+        for (_bit='h0;_bit < DESCRIPTOR_WORD_BITS;_bit=_bit+1) begin
+            queue_write_data_comb[(word_index*DESCRIPTOR_WORD_BITS) + _bit] = descriptor_data_in[_bit];
         end
     end
 
@@ -171,7 +212,7 @@ module DescriptorFetcher #(
             return ((enabled_reg) ? (CONTROL_ENABLE) : ('h0)) | ((auto_l2_reg) ? (CONTROL_AUTO_L2) : ('h0));
         end
         if (address == DescriptorFetcher_Register_pkg::REG_STATUS) begin
-            return ((((((unsigned'(32'(count_reg)) != 'h0)) ? (STATUS_AVAILABLE) : ('h0)) | ((enabled_reg) ? (STATUS_PREFETCH_ENABLED) : ('h0))) | ((protocol_error_reg) ? (STATUS_PROTOCOL_ERROR) : ('h0))) | ((packet_command_ready_in) ? (STATUS_DMA_READY) : ('h0))) | ((unsigned'(32'(count_reg)) <<< 'h8));
+            return ((((((unsigned'(32'(count_reg)) != 'h0)) ? (STATUS_AVAILABLE) : ('h0)) | ((enabled_reg) ? (STATUS_PREFETCH_ENABLED) : ('h0))) | ((protocol_error_reg) ? (STATUS_PROTOCOL_ERROR) : ('h0))) | (((packet_command_ready_in && !packet_command_valid_reg)) ? (STATUS_DMA_READY) : ('h0))) | ((unsigned'(32'(count_reg)) <<< 'h8));
         end
         if (address == DescriptorFetcher_Register_pkg::REG_AUTO_SLOT_MASK) begin
             return unsigned'(32'(auto_slot_mask_reg));
@@ -216,6 +257,9 @@ module DescriptorFetcher #(
         if (address == DescriptorFetcher_Register_pkg::REG_SOURCE_PORT) begin
             return descriptor_bits32('h40) & 'hFF;
         end
+        if (address == DescriptorFetcher_Register_pkg::REG_ACTION_DESTINATION) begin
+            return unsigned'(32'(action_destination_reg));
+        end
         return 'h0;
     endfunction
 
@@ -250,6 +294,10 @@ module DescriptorFetcher #(
     endfunction
 
     generate  // _assign
+        assign queue_mem__write_addr_in = tail_reg;
+        assign queue_mem__write_in = (descriptor_valid_in && descriptor_ready_out) && descriptor_eop_in;
+        assign queue_mem__write_data_in = queue_write_data_comb;
+        assign queue_mem__read_addr_in = head_reg;
         assign descriptor_ready_out = enabled_reg && (unsigned'(32'(count_reg)) < DEPTH);
         assign descriptor_available_out = unsigned'(32'(count_reg)) != 'h0;
         assign descriptor_count_out = count_reg;
@@ -261,6 +309,8 @@ module DescriptorFetcher #(
         assign packet_command_length_out = packet_command_length_reg;
         assign packet_command_system_out = packet_command_system_reg;
         assign packet_command_cache_out = packet_command_cache_reg;
+        assign packet_command_network_out = packet_command_network_reg;
+        assign packet_command_network_port_out = packet_command_network_port_reg;
         assign packet_command_destination_out = unsigned'(32'(unsigned'(32'(packet_command_destination_reg))));
         assign mmio__awready_out = !write_addr_valid_reg && !write_response_valid_reg;
         assign mmio__wready_out = write_addr_valid_reg && !write_response_valid_reg;
@@ -275,7 +325,6 @@ module DescriptorFetcher #(
 
     task _work (input logic reset);
     begin: _work
-        logic[31:0] slot;
         logic[31:0] count;
         logic[31:0] address;
         logic[31:0] value;
@@ -288,7 +337,9 @@ module DescriptorFetcher #(
         count=unsigned'(32'(count_reg));
         pop=0;
         input_fire=descriptor_valid_in && descriptor_ready_out;
-        packet_command_valid_reg_tmp = unsigned'(1'(0));
+        if (packet_command_valid_reg && packet_command_ready_in) begin
+            packet_command_valid_reg_tmp = unsigned'(1'(0));
+        end
         if (mmio__awvalid_in && mmio__awready_out) begin
             write_addr_reg_tmp = mmio__awaddr_in;
             write_id_reg_tmp = mmio__awid_in;
@@ -310,22 +361,29 @@ module DescriptorFetcher #(
                         auto_base_reg_tmp = unsigned'(32'(value & ~'h7FF));
                     end
                     else begin
-                        if ((address == DescriptorFetcher_Register_pkg::REG_ACTION) && (((value & ACTION_NEXT)) != 'h0)) begin
-                            if (((value & ((ACTION_DMA_DISCARD | ACTION_DMA_SYSTEM)))) == 'h0) begin
-                                pop=count != 'h0;
-                            end
-                            else begin
-                                if (((count != 'h0) && packet_command_ready_in) && !(((((value & ACTION_DMA_DISCARD)) != 'h0) && (((value & ACTION_DMA_SYSTEM)) != 'h0)))) begin
-                                    packet_command_handle_reg_tmp = descriptor_bits32('h0);
-                                    packet_command_length_reg_tmp = descriptor_bits32('h20);
-                                    packet_command_system_reg_tmp = unsigned'(1'(((value & ACTION_DMA_SYSTEM)) != 'h0));
-                                    packet_command_cache_reg_tmp = unsigned'(1'(0));
-                                    packet_command_destination_reg_tmp = unsigned'(32'h0);
-                                    packet_command_valid_reg_tmp = unsigned'(1'(1));
-                                    pop=1;
+                        if (address == DescriptorFetcher_Register_pkg::REG_ACTION_DESTINATION) begin
+                            action_destination_reg_tmp = unsigned'(32'(value));
+                        end
+                        else begin
+                            if ((address == DescriptorFetcher_Register_pkg::REG_ACTION) && (((value & ACTION_NEXT)) != 'h0)) begin
+                                if (((value & ((((ACTION_DMA_DISCARD | ACTION_DMA_SYSTEM) | ACTION_DMA_CACHE) | ACTION_DMA_NETWORK)))) == 'h0) begin
+                                    pop=count != 'h0;
                                 end
                                 else begin
-                                    protocol_error_reg_tmp = unsigned'(1'(1));
+                                    if ((((count != 'h0) && packet_command_ready_in) && !packet_command_valid_reg) && (((((((((value & ACTION_DMA_DISCARD)) != 'h0)) + ((((value & ACTION_DMA_SYSTEM)) != 'h0))) + ((((value & ACTION_DMA_CACHE)) != 'h0))) + ((((value & ACTION_DMA_NETWORK)) != 'h0)))) == 'h1)) begin
+                                        packet_command_handle_reg_tmp = descriptor_bits32('h0);
+                                        packet_command_length_reg_tmp = descriptor_bits32('h20);
+                                        packet_command_system_reg_tmp = unsigned'(1'(((value & ACTION_DMA_SYSTEM)) != 'h0));
+                                        packet_command_cache_reg_tmp = unsigned'(1'(((value & ACTION_DMA_CACHE)) != 'h0));
+                                        packet_command_network_reg_tmp = unsigned'(1'(((value & ACTION_DMA_NETWORK)) != 'h0));
+                                        packet_command_network_port_reg_tmp = ((descriptor_bits32('h40) & 'h1)) ^ 'h1;
+                                        packet_command_destination_reg_tmp = (((value & ACTION_DMA_CACHE)) != 'h0) ? (unsigned'(32'(action_destination_reg))) : (unsigned'(32'(unsigned'(32'h0))));
+                                        packet_command_valid_reg_tmp = unsigned'(1'(1));
+                                        pop=1;
+                                    end
+                                    else begin
+                                        protocol_error_reg_tmp = unsigned'(1'(1));
+                                    end
                                 end
                             end
                         end
@@ -368,6 +426,8 @@ module DescriptorFetcher #(
             packet_command_length_reg_tmp = descriptor_bits32('h20);
             packet_command_system_reg_tmp = unsigned'(1'(0));
             packet_command_cache_reg_tmp = unsigned'(1'(1));
+            packet_command_network_reg_tmp = unsigned'(1'(0));
+            packet_command_network_port_reg_tmp = 'h0;
             packet_command_destination_reg_tmp = unsigned'(32'(auto_base_reg + ((((unsigned'(32'(auto_sequence_reg)) & unsigned'(32'(auto_slot_mask_reg)))) <<< 'hB))));
             packet_command_valid_reg_tmp = unsigned'(1'(1));
             auto_sequence_reg_tmp = unsigned'(32'(auto_sequence_reg + 'h1));
@@ -377,12 +437,9 @@ module DescriptorFetcher #(
             next_head=((unsigned'(32'(head_reg)) + 'h1)) & ((DEPTH - 'h1));
             head_reg_tmp = next_head;
             --count;
-            if (count != 'h0) begin
-                current_descriptor_reg_tmp = queue_reg[next_head];
-            end
         end
         if (input_fire) begin
-            assembly = assembly_reg;
+            assembly = queue_write_data_comb;
             word_index=unsigned'(32'(descriptor_word_in));
             if (word_index>=DESCRIPTOR_WORDS) begin
                 word_index='h0;
@@ -392,7 +449,6 @@ module DescriptorFetcher #(
                 if (assembly_active_reg || (unsigned'(32'(descriptor_word_in)) != 'h0)) begin
                     protocol_error_reg_tmp = unsigned'(1'(1));
                 end
-                assembly = 'h0;
                 assembly_active_reg_tmp = unsigned'(1'(1));
                 assembly_word_reg_tmp = 'h0;
             end
@@ -402,17 +458,10 @@ module DescriptorFetcher #(
             if (unsigned'(32'(descriptor_word_in)) != unsigned'(32'(assembly_word_reg))) begin
                 protocol_error_reg_tmp = unsigned'(1'(1));
             end
-            for (_bit='h0;_bit < 'h100;_bit=_bit+1) begin
-                assembly[(word_index*'h100) + _bit] = descriptor_data_in[_bit];
-            end
             assembly_reg_tmp = assembly;
             if (descriptor_eop_in) begin
                 if (unsigned'(32'(descriptor_word_in)) != (DESCRIPTOR_WORDS - 'h1)) begin
                     protocol_error_reg_tmp = unsigned'(1'(1));
-                end
-                queue_reg_tmp[unsigned'(32'(tail_reg))] = assembly;
-                if (count == 'h0) begin
-                    current_descriptor_reg_tmp = assembly;
                 end
                 tail_reg_tmp = ((unsigned'(32'(tail_reg)) + 'h1)) & ((DEPTH - 'h1));
                 count=count+1;
@@ -428,7 +477,6 @@ module DescriptorFetcher #(
             head_reg_tmp = '0;
             tail_reg_tmp = '0;
             count_reg_tmp = '0;
-            current_descriptor_reg_tmp = '0;
             assembly_reg_tmp = '0;
             assembly_word_reg_tmp = '0;
             assembly_active_reg_tmp = '0;
@@ -443,7 +491,10 @@ module DescriptorFetcher #(
             packet_command_length_reg_tmp = '0;
             packet_command_system_reg_tmp = '0;
             packet_command_cache_reg_tmp = '0;
+            packet_command_network_reg_tmp = '0;
+            packet_command_network_port_reg_tmp = '0;
             packet_command_destination_reg_tmp = '0;
+            action_destination_reg_tmp = '0;
             write_addr_reg_tmp = '0;
             write_id_reg_tmp = '0;
             write_addr_valid_reg_tmp = '0;
@@ -456,9 +507,6 @@ module DescriptorFetcher #(
             read_format_pending_reg_tmp = '0;
             read_data_reg_tmp = '0;
             read_valid_reg_tmp = '0;
-            for (slot='h0;slot < DEPTH;slot=slot+1) begin
-                queue_reg_tmp[slot] = '0;
-            end
         end
     end
     endtask
@@ -469,8 +517,6 @@ module DescriptorFetcher #(
     endtask
 
     always_ff @(posedge clk) begin
-        queue_reg_tmp = queue_reg;
-        current_descriptor_reg_tmp = current_descriptor_reg;
         head_reg_tmp = head_reg;
         tail_reg_tmp = tail_reg;
         count_reg_tmp = count_reg;
@@ -488,7 +534,10 @@ module DescriptorFetcher #(
         packet_command_length_reg_tmp = packet_command_length_reg;
         packet_command_system_reg_tmp = packet_command_system_reg;
         packet_command_cache_reg_tmp = packet_command_cache_reg;
+        packet_command_network_reg_tmp = packet_command_network_reg;
+        packet_command_network_port_reg_tmp = packet_command_network_port_reg;
         packet_command_destination_reg_tmp = packet_command_destination_reg;
+        action_destination_reg_tmp = action_destination_reg;
         write_addr_reg_tmp = write_addr_reg;
         write_id_reg_tmp = write_id_reg;
         write_addr_valid_reg_tmp = write_addr_valid_reg;
@@ -504,8 +553,6 @@ module DescriptorFetcher #(
 
         _work(reset);
 
-        queue_reg <= queue_reg_tmp;
-        current_descriptor_reg <= current_descriptor_reg_tmp;
         head_reg <= head_reg_tmp;
         tail_reg <= tail_reg_tmp;
         count_reg <= count_reg_tmp;
@@ -523,7 +570,10 @@ module DescriptorFetcher #(
         packet_command_length_reg <= packet_command_length_reg_tmp;
         packet_command_system_reg <= packet_command_system_reg_tmp;
         packet_command_cache_reg <= packet_command_cache_reg_tmp;
+        packet_command_network_reg <= packet_command_network_reg_tmp;
+        packet_command_network_port_reg <= packet_command_network_port_reg_tmp;
         packet_command_destination_reg <= packet_command_destination_reg_tmp;
+        action_destination_reg <= action_destination_reg_tmp;
         write_addr_reg <= write_addr_reg_tmp;
         write_id_reg <= write_id_reg_tmp;
         write_addr_valid_reg <= write_addr_valid_reg_tmp;

@@ -5,6 +5,8 @@
 // RxQueue/TxQueue.  The command FIFO and MMIO registers are uncached CPU IOMEM.
 
 #include "../common/Axi4Master.h"
+#include "../common/AsyncReadRam.h"
+#include "../../Config.h"
 
 using namespace cpphdl;
 
@@ -52,7 +54,8 @@ enum PacketDmaPrefetchState : uint8_t
     PACKET_DMA_PREFETCH_STREAM
 };
 
-template<size_t HANDLE_BITS = 16, size_t FRAME_LENGTH_BITS = 14,
+template<size_t HANDLE_BITS = PACKET_HANDLE_BITS,
+    size_t FRAME_LENGTH_BITS = 14,
     size_t CMD_DEPTH = 8, size_t AXI_ADDR_WIDTH = 32,
     size_t AXI_ID_WIDTH = 4, size_t AXI_DATA_WIDTH = 256,
     size_t BACKING_ADDR_WIDTH = 31, size_t BACKING_DEPTH = 64,
@@ -112,7 +115,13 @@ public:
         REG_COMMAND_ISSUED = 0x40,
         // Bit 0 reserves room for one concurrent coherent backing beat plus
         // this CPU clear. Bits 15:8 report current backing FIFO occupancy.
-        REG_CLEAR_STATUS = 0x44
+        REG_CLEAR_STATUS = 0x44,
+        // Monotonic count of packet-data beats committed to backing DDR.
+        // Firmware uses this as an eviction-safe per-packet completion ticket.
+        REG_BACKING_COMPLETED = 0x48,
+        // Atomic four-hart packet-ring forward command:
+        // [8:0] slot, [22:9] length, [23] port, [25:24] hart.
+        REG_RING_FORWARD = 0x4c
     };
 
     static constexpr uint32_t COMMAND_PUSH = 1u << 0;
@@ -126,6 +135,9 @@ public:
     // CPU-requested post-TX ownership release. After accepting the final
     // Network beat, PacketDMA clears the first 32-byte source line in DDR.
     static constexpr uint32_t FLAG_CLEAR_SOURCE_AFTER_TX = 1u << 6;
+    // RxRAM -> Network zero-copy forwarding. The descriptor supplies the
+    // authoritative handle/length and the command supplies the egress port.
+    static constexpr uint32_t FLAG_NETWORK_FORWARD = 1u << 7;
     static constexpr uint32_t STATUS_BUSY = 1u << 0;
     static constexpr uint32_t STATUS_CMD_READY = 1u << 1;
     static constexpr uint32_t STATUS_ERROR = 1u << 2;
@@ -201,6 +213,8 @@ public:
     _PORT(u<FRAME_LENGTH_BITS>) descriptor_command_length_in;
     _PORT(bool) descriptor_command_system_in;
     _PORT(bool) descriptor_command_cache_in;
+    _PORT(bool) descriptor_command_network_in;
+    _PORT(u<8>) descriptor_command_network_port_in;
     _PORT(u32) descriptor_command_destination_in;
     _PORT(u<32>) completed_count_out;
     _PORT(u<32>) cache_completed_count_out;
@@ -229,10 +243,36 @@ private:
         BACKING_RESPONSE
     };
 
-    reg<Command> command_reg[CMD_DEPTH];
+    // Payloads live in small inference leaves so Vivado sees canonical
+    // synchronous-write/asynchronous-read LUTRAM instead of writes hidden in
+    // the generated parent task. Queue policy and occupancy remain here.
+    AsyncReadRam<HANDLE_BITS, CMD_DEPTH> command_handle_mem;
+    AsyncReadRam<FRAME_LENGTH_BITS, CMD_DEPTH> command_length_mem;
+    AsyncReadRam<32, CMD_DEPTH> command_source_mem;
+    AsyncReadRam<32, CMD_DEPTH> command_destination_mem;
+    AsyncReadRam<8, CMD_DEPTH> command_flags_mem;
+    AsyncReadRam<8, CMD_DEPTH> command_network_port_mem;
     reg<u<CMD_PTR_BITS>> command_head_reg;
     reg<u<CMD_PTR_BITS>> command_tail_reg;
     reg<u<CMD_COUNT_BITS>> command_count_reg;
+    reg<u1> command_write_pending_reg;
+    reg<u<HANDLE_BITS>> command_write_handle_reg;
+    reg<u<FRAME_LENGTH_BITS>> command_write_length_reg;
+    reg<u32> command_write_source_reg;
+    reg<u32> command_write_destination_reg;
+    reg<u8> command_write_flags_reg;
+    reg<u8> command_write_network_port_reg;
+    // Per-hart sequence makes the side-effecting doorbell idempotent if an
+    // uncached CPU store is replayed while its AXI response crosses the cache
+    // hierarchy. Each hart owns slots hart, hart+4, ... modulo 512.
+    reg<u<9>> ring_next_slot_reg[4];
+#ifndef SYNTHESIS
+    // Snapshot the entry that actually crossed into CMD-FIFO. The staging
+    // registers may already contain the following hart's command when a test
+    // observes command_issued_reg on the next cycle.
+    reg<u32> debug_issued_source_reg;
+    reg<u8> debug_issued_network_port_reg;
+#endif
 
     reg<u<HANDLE_BITS>> stage_handle_reg;
     reg<u<FRAME_LENGTH_BITS>> stage_length_reg;
@@ -294,13 +334,16 @@ private:
     reg<logic<AXI_DATA_WIDTH>> read_data_reg;
     reg<u1> read_valid_reg;
 
-    reg<BackingBeat> backing_reg[BACKING_DEPTH];
+    AsyncReadRam<BACKING_ADDR_WIDTH, BACKING_DEPTH> backing_address_mem;
+    AsyncReadRam<AXI_DATA_WIDTH, BACKING_DEPTH> backing_data_mem;
+    AsyncReadRam<AXI_BYTES, BACKING_DEPTH> backing_keep_mem;
+    AsyncReadRam<1, BACKING_DEPTH> backing_clear_mem;
     reg<u<BACKING_PTR_BITS>> backing_head_reg;
     reg<u<BACKING_PTR_BITS>> backing_tail_reg;
     reg<u<BACKING_COUNT_BITS>> backing_count_reg;
     reg<u<2>> backing_state_reg;
     reg<u<32>> backing_completed_reg;
-    reg<u<BACKING_ADDR_WIDTH>> post_clear_reg[CLEAR_DEPTH];
+    AsyncReadRam<BACKING_ADDR_WIDTH, CLEAR_DEPTH> post_clear_mem;
     reg<u<CLEAR_PTR_BITS>> post_clear_head_reg;
     reg<u<CLEAR_PTR_BITS>> post_clear_tail_reg;
     reg<u<CLEAR_COUNT_BITS>> post_clear_count_reg;
@@ -308,12 +351,29 @@ private:
     u<HANDLE_BITS> current_handle_comb;
     u<FRAME_LENGTH_BITS> current_length_comb;
     logic<AXI_BYTES> output_keep_comb;
+    bool backing_memory_write_comb;
+    logic<BACKING_ADDR_WIDTH> backing_address_write_data_comb;
+    logic<AXI_DATA_WIDTH> backing_data_write_data_comb;
+    logic<AXI_BYTES> backing_keep_write_data_comb;
+    logic<1> backing_clear_write_data_comb;
+    bool post_clear_memory_write_comb;
 
     Command current_command()
     {
         Command command = {};
         if ((uint32_t)command_count_reg != 0) {
-            command = command_reg[(uint32_t)command_head_reg];
+            command.handle = (uint32_t)
+                command_handle_mem.read_data_out();
+            command.length = (uint32_t)
+                command_length_mem.read_data_out();
+            command.source = (uint32_t)
+                command_source_mem.read_data_out();
+            command.destination = (uint32_t)
+                command_destination_mem.read_data_out();
+            command.flags = (uint32_t)
+                command_flags_mem.read_data_out();
+            command.network_port = (uint32_t)
+                command_network_port_mem.read_data_out();
         }
         return command;
     }
@@ -322,7 +382,8 @@ private:
     {
         current_handle_comb = 0;
         if ((uint32_t)command_count_reg != 0) {
-            current_handle_comb = command_reg[(uint32_t)command_head_reg].handle;
+            current_handle_comb =
+                (uint32_t)command_handle_mem.read_data_out();
         }
         return current_handle_comb;
     }
@@ -331,7 +392,8 @@ private:
     {
         current_length_comb = 0;
         if ((uint32_t)command_count_reg != 0) {
-            current_length_comb = command_reg[(uint32_t)command_head_reg].length;
+            current_length_comb =
+                (uint32_t)command_length_mem.read_data_out();
         }
         return current_length_comb;
     }
@@ -357,7 +419,9 @@ private:
             return (uint32_t)stage_network_port_reg;
         if (address == REG_STATUS) {
             return ((uint32_t)state_reg != PACKET_DMA_IDLE ? STATUS_BUSY : 0)
-                | ((uint32_t)command_count_reg < CMD_DEPTH ? STATUS_CMD_READY : 0)
+                | (((uint32_t)command_count_reg < CMD_DEPTH
+                        && !(bool)command_write_pending_reg)
+                    ? STATUS_CMD_READY : 0)
                 | ((bool)protocol_error_reg ? STATUS_ERROR : 0)
                 | ((uint32_t)command_count_reg << 8);
         }
@@ -377,6 +441,8 @@ private:
         if (address == REG_CLEAR_STATUS)
             return ((uint32_t)backing_count_reg < BACKING_DEPTH - 1 ? 1u : 0u)
                 | ((uint32_t)backing_count_reg << 8);
+        if (address == REG_BACKING_COMPLETED)
+            return (uint32_t)backing_completed_reg;
         if (address == REG_LAST_OPERATION) return (uint32_t)last_operation_reg;
         return 0;
     }
@@ -467,9 +533,170 @@ private:
         return clear_l2_line_selected_comb;
     }
 
+    bool backing_stream_write()
+    {
+        return l2_line_valid_out() && l2_line_ready_in();
+    }
+
+    bool backing_clear_write()
+    {
+        return mmio.wvalid_in() && mmio.wready_out()
+            && (((uint32_t)write_addr_reg & ~3u) == REG_CLEAR_NOTIFY)
+            && write_value() != 0 && clear_notify_armed_reg
+            && (uint32_t)backing_count_reg < BACKING_DEPTH
+            && !backing_stream_write();
+    }
+
+    bool backing_memory_write()
+    {
+        return backing_stream_write() || backing_clear_write();
+    }
+
+    bool post_clear_memory_write()
+    {
+        return (uint32_t)state_reg == PACKET_DMA_POST_TX_CLEAR
+            && (uint32_t)post_clear_count_reg < CLEAR_DEPTH;
+    }
+
+    bool& backing_memory_write_comb_func()
+    {
+        backing_memory_write_comb = backing_memory_write();
+        return backing_memory_write_comb;
+    }
+
+    logic<BACKING_ADDR_WIDTH>& backing_address_write_data_comb_func()
+    {
+        backing_address_write_data_comb = backing_stream_write()
+            ? (logic<BACKING_ADDR_WIDTH>)l2_line_addr_out()
+            : (logic<BACKING_ADDR_WIDTH>)clear_address_reg;
+        return backing_address_write_data_comb;
+    }
+
+    logic<AXI_DATA_WIDTH>& backing_data_write_data_comb_func()
+    {
+        backing_data_write_data_comb = backing_stream_write()
+            ? (logic<AXI_DATA_WIDTH>)l2_line_data_out()
+            : (logic<AXI_DATA_WIDTH>)0;
+        return backing_data_write_data_comb;
+    }
+
+    logic<AXI_BYTES>& backing_keep_write_data_comb_func()
+    {
+        backing_keep_write_data_comb = backing_stream_write()
+            ? (logic<AXI_BYTES>)l2_line_keep_out()
+            : (logic<AXI_BYTES>)-1;
+        return backing_keep_write_data_comb;
+    }
+
+    logic<1>& backing_clear_write_data_comb_func()
+    {
+        backing_clear_write_data_comb = backing_stream_write()
+            ? (logic<1>)clear_l2_line_selected_comb_func()
+            : (logic<1>)true;
+        return backing_clear_write_data_comb;
+    }
+
+    bool& post_clear_memory_write_comb_func()
+    {
+        post_clear_memory_write_comb = post_clear_memory_write();
+        return post_clear_memory_write_comb;
+    }
+
 public:
+#ifndef SYNTHESIS
+    uint32_t debug_command_lock_owner() { return (uint32_t)command_lock_reg; }
+    uint32_t debug_command_issued() { return (uint32_t)command_issued_reg; }
+    uint32_t debug_command_write_source()
+    {
+        return (uint32_t)debug_issued_source_reg;
+    }
+    uint32_t debug_command_write_network_port()
+    {
+        return (uint32_t)debug_issued_network_port_reg;
+    }
+#endif
+
     void _assign()
     {
+        command_handle_mem.write_addr_in = _ASSIGN_REG(command_tail_reg);
+        command_handle_mem.write_in = _ASSIGN_REG(command_write_pending_reg);
+        command_handle_mem.write_data_in = _ASSIGN(
+            (logic<HANDLE_BITS>)command_write_handle_reg);
+        command_handle_mem.read_addr_in = _ASSIGN_REG(command_head_reg);
+        command_handle_mem._assign();
+        command_length_mem.write_addr_in = _ASSIGN_REG(command_tail_reg);
+        command_length_mem.write_in = _ASSIGN_REG(command_write_pending_reg);
+        command_length_mem.write_data_in = _ASSIGN(
+            (logic<FRAME_LENGTH_BITS>)command_write_length_reg);
+        command_length_mem.read_addr_in = _ASSIGN_REG(command_head_reg);
+        command_length_mem._assign();
+        command_source_mem.write_addr_in = _ASSIGN_REG(command_tail_reg);
+        command_source_mem.write_in = _ASSIGN_REG(command_write_pending_reg);
+        command_source_mem.write_data_in = _ASSIGN(
+            (logic<32>)command_write_source_reg);
+        command_source_mem.read_addr_in = _ASSIGN_REG(command_head_reg);
+        command_source_mem._assign();
+        command_destination_mem.write_addr_in = _ASSIGN_REG(command_tail_reg);
+        command_destination_mem.write_in =
+            _ASSIGN_REG(command_write_pending_reg);
+        command_destination_mem.write_data_in = _ASSIGN(
+            (logic<32>)command_write_destination_reg);
+        command_destination_mem.read_addr_in = _ASSIGN_REG(command_head_reg);
+        command_destination_mem._assign();
+        command_flags_mem.write_addr_in = _ASSIGN_REG(command_tail_reg);
+        command_flags_mem.write_in = _ASSIGN_REG(command_write_pending_reg);
+        command_flags_mem.write_data_in = _ASSIGN(
+            (logic<8>)command_write_flags_reg);
+        command_flags_mem.read_addr_in = _ASSIGN_REG(command_head_reg);
+        command_flags_mem._assign();
+        command_network_port_mem.write_addr_in =
+            _ASSIGN_REG(command_tail_reg);
+        command_network_port_mem.write_in =
+            _ASSIGN_REG(command_write_pending_reg);
+        command_network_port_mem.write_data_in = _ASSIGN(
+            (logic<8>)command_write_network_port_reg);
+        command_network_port_mem.read_addr_in =
+            _ASSIGN_REG(command_head_reg);
+        command_network_port_mem._assign();
+
+        backing_address_mem.write_addr_in = _ASSIGN_REG(backing_tail_reg);
+        backing_address_mem.write_in =
+            _ASSIGN_COMB(backing_memory_write_comb_func());
+        backing_address_mem.write_data_in =
+            _ASSIGN_COMB(backing_address_write_data_comb_func());
+        backing_address_mem.read_addr_in = _ASSIGN_REG(backing_head_reg);
+        backing_address_mem._assign();
+        backing_data_mem.write_addr_in = _ASSIGN_REG(backing_tail_reg);
+        backing_data_mem.write_in =
+            _ASSIGN_COMB(backing_memory_write_comb_func());
+        backing_data_mem.write_data_in =
+            _ASSIGN_COMB(backing_data_write_data_comb_func());
+        backing_data_mem.read_addr_in = _ASSIGN_REG(backing_head_reg);
+        backing_data_mem._assign();
+        backing_keep_mem.write_addr_in = _ASSIGN_REG(backing_tail_reg);
+        backing_keep_mem.write_in =
+            _ASSIGN_COMB(backing_memory_write_comb_func());
+        backing_keep_mem.write_data_in =
+            _ASSIGN_COMB(backing_keep_write_data_comb_func());
+        backing_keep_mem.read_addr_in = _ASSIGN_REG(backing_head_reg);
+        backing_keep_mem._assign();
+        backing_clear_mem.write_addr_in = _ASSIGN_REG(backing_tail_reg);
+        backing_clear_mem.write_in =
+            _ASSIGN_COMB(backing_memory_write_comb_func());
+        backing_clear_mem.write_data_in =
+            _ASSIGN_COMB(backing_clear_write_data_comb_func());
+        backing_clear_mem.read_addr_in = _ASSIGN_REG(backing_head_reg);
+        backing_clear_mem._assign();
+
+        post_clear_mem.write_addr_in = _ASSIGN_REG(post_clear_tail_reg);
+        post_clear_mem.write_in =
+            _ASSIGN_COMB(post_clear_memory_write_comb_func());
+        post_clear_mem.write_data_in = _ASSIGN(
+            (logic<BACKING_ADDR_WIDTH>)(source_base_reg
+                & ~(AXI_BYTES - 1)));
+        post_clear_mem.read_addr_in = _ASSIGN_REG(post_clear_head_reg);
+        post_clear_mem._assign();
+
         mmio.awready_out = _ASSIGN(!write_addr_valid_reg
             && !write_response_valid_reg
             && (!(bool)write_aw_seen_reg
@@ -482,8 +709,11 @@ public:
         // independent descriptor or coherent backing write.
         mmio.wready_out = _ASSIGN(write_addr_valid_reg
             && !write_response_valid_reg
-            && ((((uint32_t)write_addr_reg & ~3u) != REG_COMMAND)
-                || (uint32_t)command_count_reg < CMD_DEPTH)
+            && (((((uint32_t)write_addr_reg & ~3u) != REG_COMMAND)
+                    && (((uint32_t)write_addr_reg & ~3u)
+                        != REG_RING_FORWARD))
+                || ((uint32_t)command_count_reg < CMD_DEPTH
+                    && !(bool)command_write_pending_reg))
             && ((((uint32_t)write_addr_reg & ~3u) != REG_CLEAR_NOTIFY)
                 || ((uint32_t)backing_count_reg < BACKING_DEPTH
                     && !(l2_line_valid_out() && l2_line_ready_in()))));
@@ -523,8 +753,7 @@ public:
             && (rx_l2_line_selected_comb_func()
                 || clear_l2_line_selected_comb_func()));
         l2_line_addr_out = _ASSIGN(clear_l2_line_selected_comb_func()
-            ? (u<AXI_ADDR_WIDTH>)post_clear_reg[
-                (uint32_t)post_clear_head_reg]
+            ? (u<AXI_ADDR_WIDTH>)(uint32_t)post_clear_mem.read_data_out()
             : ((uint32_t)prefetch_state_reg == PACKET_DMA_PREFETCH_STREAM
                 ? (u<AXI_ADDR_WIDTH>)prefetch_destination_reg
                 : (u<AXI_ADDR_WIDTH>)destination_reg));
@@ -561,12 +790,14 @@ public:
                             & FLAG_RING_SOURCE) != 0)))
             : ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
-                && ((((uint32_t)active_flags_reg & FLAG_CACHE_ALLOCATE) != 0)
+                && (((uint32_t)active_flags_reg & FLAG_CACHE_ALLOCATE) != 0
                         ? (l2_line_ready_in()
                             && (uint32_t)backing_count_reg < BACKING_DEPTH)
-                        : (((uint32_t)active_flags_reg
-                                & FLAG_NETWORK_SYSTEM) == 0
-                            || system_tx_ready_in()))));
+                    : ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0
+                        ? system_tx_ready_in()
+                    : ((uint32_t)active_flags_reg & FLAG_NETWORK_FORWARD) != 0
+                        ? network_tx_ready_in()
+                        : true)));
         system_rx_ready_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
             && (uint32_t)operation_reg == DMA_SYSTEM_CPU);
 
@@ -577,41 +808,65 @@ public:
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0
                 && rx_valid_in()));
-        network_tx_valid_out = _ASSIGN((uint32_t)state_reg == PACKET_DMA_SEND_OUTPUT
-            && (uint32_t)operation_reg == DMA_CPU_NETWORK);
+        network_tx_valid_out = _ASSIGN(((uint32_t)state_reg
+                == PACKET_DMA_SEND_OUTPUT
+                && (uint32_t)operation_reg == DMA_CPU_NETWORK)
+            || ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
+                && (uint32_t)operation_reg == DMA_NETWORK_CPU
+                && ((uint32_t)active_flags_reg & FLAG_NETWORK_FORWARD) != 0
+                && rx_valid_in()));
         system_tx_data_out = _ASSIGN(
             ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
             ? rx_data_in() : (logic<AXI_DATA_WIDTH>)beat_data_reg);
-        network_tx_data_out = _ASSIGN_REG(beat_data_reg);
+        network_tx_data_out = _ASSIGN(
+            ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
+                && (uint32_t)operation_reg == DMA_NETWORK_CPU
+                && ((uint32_t)active_flags_reg & FLAG_NETWORK_FORWARD) != 0)
+            ? rx_data_in() : (logic<AXI_DATA_WIDTH>)beat_data_reg);
         system_tx_keep_out = _ASSIGN(
             ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
             ? rx_keep_in() : (logic<AXI_BYTES>)beat_keep_reg);
-        network_tx_keep_out = _ASSIGN_REG(beat_keep_reg);
+        network_tx_keep_out = _ASSIGN(
+            ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
+                && (uint32_t)operation_reg == DMA_NETWORK_CPU
+                && ((uint32_t)active_flags_reg & FLAG_NETWORK_FORWARD) != 0)
+            ? rx_keep_in() : (logic<AXI_BYTES>)beat_keep_reg);
         system_tx_sop_out = _ASSIGN(
             ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
             ? rx_sop_in() : (bool)beat_sop_reg);
-        network_tx_sop_out = _ASSIGN_REG(beat_sop_reg);
+        network_tx_sop_out = _ASSIGN(
+            ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
+                && (uint32_t)operation_reg == DMA_NETWORK_CPU
+                && ((uint32_t)active_flags_reg & FLAG_NETWORK_FORWARD) != 0)
+            ? rx_sop_in() : (bool)beat_sop_reg);
         system_tx_eop_out = _ASSIGN(
             ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
                 && (uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
             ? rx_eop_in() : (bool)beat_eop_reg);
-        network_tx_eop_out = _ASSIGN_REG(beat_eop_reg);
+        network_tx_eop_out = _ASSIGN(
+            ((uint32_t)state_reg == PACKET_DMA_WAIT_INPUT
+                && (uint32_t)operation_reg == DMA_NETWORK_CPU
+                && ((uint32_t)active_flags_reg & FLAG_NETWORK_FORWARD) != 0)
+            ? rx_eop_in() : (bool)beat_eop_reg);
         network_tx_port_out = _ASSIGN_REG(active_network_port_reg);
 
         busy_out = _ASSIGN((uint32_t)state_reg != PACKET_DMA_IDLE
-            || (uint32_t)command_count_reg != 0);
-        command_ready_out = _ASSIGN((uint32_t)command_count_reg < CMD_DEPTH);
+            || (uint32_t)command_count_reg != 0
+            || (bool)command_write_pending_reg);
+        command_ready_out = _ASSIGN((uint32_t)command_count_reg < CMD_DEPTH
+            && !(bool)command_write_pending_reg);
         descriptor_command_ready_out = _ASSIGN(
             descriptor_command_cache_in()
                 ? (uint32_t)prefetch_state_reg == PACKET_DMA_PREFETCH_IDLE
-                : (uint32_t)command_count_reg < CMD_DEPTH);
+                : ((uint32_t)command_count_reg < CMD_DEPTH
+                    && !(bool)command_write_pending_reg));
         completed_count_out = _ASSIGN_REG(completed_reg);
         cache_completed_count_out = _ASSIGN_REG(cache_completed_reg);
         command_completed_count_out = _ASSIGN_REG(command_completed_reg);
@@ -625,17 +880,16 @@ public:
         backing_dma.awvalid_out = _ASSIGN((uint32_t)backing_state_reg
             == BACKING_ADDRESS && (uint32_t)backing_count_reg != 0);
         backing_dma.awaddr_out = _ASSIGN((u<BACKING_ADDR_WIDTH>)
-            backing_reg[(uint32_t)backing_head_reg].address);
+            (uint32_t)backing_address_mem.read_data_out());
         backing_dma.awid_out = _ASSIGN((u<AXI_ID_WIDTH>)0);
         backing_dma.wvalid_out = _ASSIGN(((uint32_t)backing_state_reg
                 == BACKING_ADDRESS
             || (uint32_t)backing_state_reg == BACKING_DATA)
             && (uint32_t)backing_count_reg != 0);
         backing_dma.wdata_out = _ASSIGN(
-            (logic<AXI_DATA_WIDTH>)backing_reg[
-                (uint32_t)backing_head_reg].data);
+            (logic<AXI_DATA_WIDTH>)backing_data_mem.read_data_out());
         backing_dma.wstrb_out = _ASSIGN(
-            (logic<AXI_BYTES>)backing_reg[(uint32_t)backing_head_reg].keep);
+            (logic<AXI_BYTES>)backing_keep_mem.read_data_out());
         backing_dma.wlast_out = _ASSIGN(true);
         backing_dma.bready_out = _ASSIGN((uint32_t)backing_state_reg
             == BACKING_RESPONSE);
@@ -657,7 +911,6 @@ public:
 
     void _work(bool reset)
     {
-        uint32_t slot;
         uint32_t address;
         uint32_t value;
         uint32_t count;
@@ -665,6 +918,7 @@ public:
         bool push;
         bool pop;
         bool descriptor_push;
+        bool packed_ring_push;
         bool input_valid;
         bool input_sop;
         bool input_eop;
@@ -672,15 +926,42 @@ public:
         bool backing_pop;
         uint32_t backing_count;
         uint32_t post_clear_count;
+        uint32_t ring_hart;
+        uint32_t ring_slot;
         logic<AXI_DATA_WIDTH> input_data;
         logic<AXI_BYTES> input_keep;
         Command command;
         Command staged;
 
+        command_handle_mem._work(reset);
+        command_length_mem._work(reset);
+        command_source_mem._work(reset);
+        command_destination_mem._work(reset);
+        command_flags_mem._work(reset);
+        command_network_port_mem._work(reset);
+        backing_address_mem._work(reset);
+        backing_data_mem._work(reset);
+        backing_keep_mem._work(reset);
+        backing_clear_mem._work(reset);
+        post_clear_mem._work(reset);
+
         count = (uint32_t)command_count_reg;
+        if (command_write_pending_reg) {
+            command_tail_reg._next = ((uint32_t)command_tail_reg + 1)
+                & (CMD_DEPTH - 1);
+            command_issued_reg._next = command_issued_reg + 1;
+            command_write_pending_reg._next = false;
+#ifndef SYNTHESIS
+            debug_issued_source_reg._next = command_write_source_reg;
+            debug_issued_network_port_reg._next =
+                command_write_network_port_reg;
+#endif
+            ++count;
+        }
         push = false;
         pop = false;
         descriptor_push = false;
+        packed_ring_push = false;
         command = current_command();
         backing_count = (uint32_t)backing_count_reg;
         backing_push = l2_line_valid_out() && l2_line_ready_in();
@@ -688,14 +969,6 @@ public:
         post_clear_count = (uint32_t)post_clear_count_reg;
 
         if (backing_push) {
-            backing_reg[(uint32_t)backing_tail_reg]._next.address =
-                (u<BACKING_ADDR_WIDTH>)l2_line_addr_out();
-            backing_reg[(uint32_t)backing_tail_reg]._next.data =
-                l2_line_data_out();
-            backing_reg[(uint32_t)backing_tail_reg]._next.keep =
-                l2_line_keep_out();
-            backing_reg[(uint32_t)backing_tail_reg]._next.clear =
-                clear_l2_line_selected_comb_func();
             backing_tail_reg._next = ((uint32_t)backing_tail_reg + 1)
                 & (BACKING_DEPTH - 1);
             ++backing_count;
@@ -730,7 +1003,7 @@ public:
                 & (BACKING_DEPTH - 1);
             backing_pop = true;
             backing_completed_reg._next = backing_completed_reg + 1;
-            if (backing_reg[(uint32_t)backing_head_reg].clear)
+            if ((bool)backing_clear_mem.read_data_out())
                 clear_completed_reg._next = clear_completed_reg + 1;
         }
         if (backing_pop) --backing_count;
@@ -843,12 +1116,6 @@ public:
             else if (address == REG_CLEAR_NOTIFY && value != 0
                 && clear_notify_armed_reg) {
                 if (backing_count < BACKING_DEPTH && !backing_push) {
-                    backing_reg[(uint32_t)backing_tail_reg]._next.address =
-                        clear_address_reg;
-                    backing_reg[(uint32_t)backing_tail_reg]._next.data = 0;
-                    backing_reg[(uint32_t)backing_tail_reg]._next.keep =
-                        (logic<AXI_BYTES>)-1;
-                    backing_reg[(uint32_t)backing_tail_reg]._next.clear = true;
                     backing_tail_reg._next =
                         ((uint32_t)backing_tail_reg + 1)
                             & (BACKING_DEPTH - 1);
@@ -860,6 +1127,28 @@ public:
                     protocol_error_reg._next = true;
                     protocol_error_reason_reg._next =
                         PACKET_DMA_ERROR_COMMAND_QUEUE_FULL;
+                }
+            }
+            else if (address == REG_RING_FORWARD) {
+                staged = {};
+                ring_hart = (value >> 24) & 3u;
+                ring_slot = value & 0x1ffu;
+                staged.length = (value >> 9) & 0x3fffu;
+                staged.source = ring_slot << 11;
+                staged.flags = DMA_CPU_NETWORK | FLAG_RING_SOURCE
+                    | FLAG_CLEAR_SOURCE_AFTER_TX;
+                staged.network_port = (value >> 23) & 1u;
+                if ((uint32_t)staged.length == 0) {
+                    protocol_error_reg._next = true;
+                    protocol_error_reason_reg._next =
+                        PACKET_DMA_ERROR_ZERO_LENGTH;
+                }
+                else if (ring_slot
+                    == (uint32_t)ring_next_slot_reg[ring_hart]) {
+                    push = true;
+                    packed_ring_push = true;
+                    ring_next_slot_reg[ring_hart]._next =
+                        (ring_slot + 4u) & 0x1ffu;
                 }
             }
             else if (address == REG_COMMAND && (value & COMMAND_PUSH) != 0
@@ -887,13 +1176,24 @@ public:
                         & ~(FLAG_OPERATION_MASK | FLAG_CACHE_ALLOCATE
                             | FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM
                             | FLAG_RING_SOURCE
-                            | FLAG_CLEAR_SOURCE_AFTER_TX)) != 0
+                            | FLAG_CLEAR_SOURCE_AFTER_TX
+                            | FLAG_NETWORK_FORWARD)) != 0
                     || (((uint32_t)stage_flags_reg
-                            & (FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM)) != 0
+                            & (FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM
+                                | FLAG_NETWORK_FORWARD)) != 0
                         && ((uint32_t)stage_flags_reg & FLAG_OPERATION_MASK)
                             != DMA_NETWORK_CPU)
-                    || (((uint32_t)stage_flags_reg & FLAG_NETWORK_DISCARD) != 0
-                        && ((uint32_t)stage_flags_reg & FLAG_NETWORK_SYSTEM) != 0)
+                    || ((((uint32_t)stage_flags_reg & FLAG_NETWORK_DISCARD) != 0
+                            && ((uint32_t)stage_flags_reg
+                                & FLAG_NETWORK_SYSTEM) != 0)
+                        || (((uint32_t)stage_flags_reg
+                                & FLAG_NETWORK_DISCARD) != 0
+                            && ((uint32_t)stage_flags_reg
+                                & FLAG_NETWORK_FORWARD) != 0)
+                        || (((uint32_t)stage_flags_reg
+                                & FLAG_NETWORK_SYSTEM) != 0
+                            && ((uint32_t)stage_flags_reg
+                                & FLAG_NETWORK_FORWARD) != 0))
                     || (((uint32_t)stage_flags_reg & FLAG_RING_SOURCE) != 0
                         && ((uint32_t)stage_flags_reg & FLAG_OPERATION_MASK)
                             != DMA_CPU_NETWORK)
@@ -948,21 +1248,25 @@ public:
         if (read_valid_reg && mmio.rready_in()) read_valid_reg._next = false;
 
         if (descriptor_command_valid_in() && !descriptor_command_cache_in()
-            && count < CMD_DEPTH && !push) {
+            && count < CMD_DEPTH && !push
+            && !(bool)command_write_pending_reg) {
             staged = {};
             staged.handle = descriptor_command_handle_in();
             staged.length = descriptor_command_length_in();
             staged.destination = descriptor_command_destination_in();
             staged.flags = DMA_NETWORK_CPU
                 | (descriptor_command_cache_in() ? FLAG_CACHE_ALLOCATE
-                    : (descriptor_command_system_in()
-                        ? FLAG_NETWORK_SYSTEM : FLAG_NETWORK_DISCARD));
+                    : (descriptor_command_network_in()
+                        ? FLAG_NETWORK_FORWARD
+                        : (descriptor_command_system_in()
+                            ? FLAG_NETWORK_SYSTEM : FLAG_NETWORK_DISCARD)));
+            staged.network_port = descriptor_command_network_port_in();
             push = true;
             descriptor_push = true;
         }
 
         if (push) {
-            if (!descriptor_push) {
+            if (!descriptor_push && !packed_ring_push) {
                 staged = {};
                 staged.handle = stage_handle_reg;
                 staged.length = stage_length_reg;
@@ -972,15 +1276,17 @@ public:
                 staged.network_port = stage_network_port_reg;
                 stage_command_armed_reg._next = false;
             }
-            command_reg[(uint32_t)command_tail_reg]._next = staged;
-            command_tail_reg._next = ((uint32_t)command_tail_reg + 1)
-                & (CMD_DEPTH - 1);
-            command_issued_reg._next = command_issued_reg + 1;
-            ++count;
+            command_write_handle_reg._next = staged.handle;
+            command_write_length_reg._next = staged.length;
+            command_write_source_reg._next = staged.source;
+            command_write_destination_reg._next = staged.destination;
+            command_write_flags_reg._next = staged.flags;
+            command_write_network_port_reg._next = staged.network_port;
+            command_write_pending_reg._next = true;
         }
 
-        if ((uint32_t)state_reg == PACKET_DMA_IDLE && count != 0) {
-            if ((uint32_t)command_count_reg == 0 && push) command = staged;
+        if ((uint32_t)state_reg == PACKET_DMA_IDLE
+            && (uint32_t)command_count_reg != 0) {
             operation_reg._next = (uint32_t)command.flags & FLAG_OPERATION_MASK;
             active_flags_reg._next = command.flags;
             active_network_port_reg._next = command.network_port;
@@ -1025,10 +1331,14 @@ public:
                 ? rx_eop_in() : system_rx_eop_in();
             if ((uint32_t)operation_reg == DMA_NETWORK_CPU
                 && ((uint32_t)active_flags_reg
-                    & (FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM)) != 0) {
+                    & (FLAG_NETWORK_DISCARD | FLAG_NETWORK_SYSTEM
+                        | FLAG_NETWORK_FORWARD)) != 0) {
                 if (input_valid
-                    && (((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) == 0
-                        || system_tx_ready_in())) {
+                    && (((uint32_t)active_flags_reg & FLAG_NETWORK_SYSTEM) != 0
+                        ? system_tx_ready_in()
+                        : (((uint32_t)active_flags_reg
+                                & FLAG_NETWORK_FORWARD) != 0
+                            ? network_tx_ready_in() : true))) {
                     bytes = input_bytes(input_keep);
                     if ((bool)first_beat_reg != input_sop) {
                         protocol_error_reg._next = true;
@@ -1200,8 +1510,6 @@ public:
         }
         else if ((uint32_t)state_reg == PACKET_DMA_POST_TX_CLEAR
             && post_clear_count < CLEAR_DEPTH) {
-            post_clear_reg[(uint32_t)post_clear_tail_reg]._next =
-                source_base_reg & ~(AXI_BYTES - 1);
             post_clear_tail_reg._next =
                 ((uint32_t)post_clear_tail_reg + 1) & (CLEAR_DEPTH - 1);
             ++post_clear_count;
@@ -1225,6 +1533,21 @@ public:
             command_head_reg.clr();
             command_tail_reg.clr();
             command_count_reg.clr();
+            command_write_pending_reg.clr();
+            command_write_handle_reg.clr();
+            command_write_length_reg.clr();
+            command_write_source_reg.clr();
+            command_write_destination_reg.clr();
+            command_write_flags_reg.clr();
+            command_write_network_port_reg.clr();
+            ring_next_slot_reg[0]._next = 0;
+            ring_next_slot_reg[1]._next = 1;
+            ring_next_slot_reg[2]._next = 2;
+            ring_next_slot_reg[3]._next = 3;
+#ifndef SYNTHESIS
+            debug_issued_source_reg.clr();
+            debug_issued_network_port_reg.clr();
+#endif
             stage_handle_reg.clr();
             stage_length_reg.clr();
             stage_source_reg.clr();
@@ -1283,21 +1606,35 @@ public:
             post_clear_head_reg.clr();
             post_clear_tail_reg.clr();
             post_clear_count_reg.clr();
-            for (slot = 0; slot < CMD_DEPTH; ++slot) command_reg[slot].clr();
-            for (slot = 0; slot < BACKING_DEPTH; ++slot)
-                backing_reg[slot].clr();
-            for (slot = 0; slot < CLEAR_DEPTH; ++slot)
-                post_clear_reg[slot].clr();
         }
     }
 
     void _strobe()
     {
-        uint32_t slot;
-        for (slot = 0; slot < CMD_DEPTH; ++slot) command_reg[slot].strobe();
+        command_handle_mem._strobe();
+        command_length_mem._strobe();
+        command_source_mem._strobe();
+        command_destination_mem._strobe();
+        command_flags_mem._strobe();
+        command_network_port_mem._strobe();
         command_head_reg.strobe();
         command_tail_reg.strobe();
         command_count_reg.strobe();
+        command_write_pending_reg.strobe();
+        command_write_handle_reg.strobe();
+        command_write_length_reg.strobe();
+        command_write_source_reg.strobe();
+        command_write_destination_reg.strobe();
+        command_write_flags_reg.strobe();
+        command_write_network_port_reg.strobe();
+        ring_next_slot_reg[0].strobe();
+        ring_next_slot_reg[1].strobe();
+        ring_next_slot_reg[2].strobe();
+        ring_next_slot_reg[3].strobe();
+#ifndef SYNTHESIS
+        debug_issued_source_reg.strobe();
+        debug_issued_network_port_reg.strobe();
+#endif
         stage_handle_reg.strobe();
         stage_length_reg.strobe();
         stage_source_reg.strobe();
@@ -1348,18 +1685,20 @@ public:
         read_pending_reg.strobe();
         read_data_reg.strobe();
         read_valid_reg.strobe();
-        for (slot = 0; slot < BACKING_DEPTH; ++slot)
-            backing_reg[slot].strobe();
+        backing_address_mem._strobe();
+        backing_data_mem._strobe();
+        backing_keep_mem._strobe();
+        backing_clear_mem._strobe();
         backing_head_reg.strobe();
         backing_tail_reg.strobe();
         backing_count_reg.strobe();
         backing_state_reg.strobe();
         backing_completed_reg.strobe();
-        for (slot = 0; slot < CLEAR_DEPTH; ++slot) post_clear_reg[slot].strobe();
+        post_clear_mem._strobe();
         post_clear_head_reg.strobe();
         post_clear_tail_reg.strobe();
         post_clear_count_reg.strobe();
     }
 };
 
-template class PacketDMA<16, 14, 8, 32, 4, 256, 31, 64>;
+template class PacketDMA<PACKET_HANDLE_BITS, 14, 8, 32, 4, 256, 31, 64>;

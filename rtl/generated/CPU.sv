@@ -317,7 +317,7 @@ module CPU (
         assign tribe__boot_hartid_in = boot_hartid_in;
         assign tribe__boot_dtb_addr_in = boot_dtb_addr_in;
         assign tribe__boot_priv_in = boot_priv_in;
-        assign tribe__external_cache_invalidate_in = cache_invalidate_in || dma_line_eop_in;
+        assign tribe__external_cache_invalidate_in = cache_invalidate_in || (((dma_line_valid_in && dma_line_ready_out) && dma_line_eop_in));
         assign tribe__memory_base_in = unsigned'(32'('h0));
         assign tribe__memory_size_in = unsigned'(32'((MEMORY_BYTES + IO_BYTES)));
         assign tribe__mem_region_size_in['h0] = unsigned'(32'(MEMORY_BYTES));

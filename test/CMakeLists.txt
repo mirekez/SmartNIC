@@ -47,6 +47,25 @@ add_custom_command(
     VERBATIM)
 add_custom_target(cpu_loopback_firmware DEPENDS "${CPU_LOOPBACK_ELF}")
 
+set(CPU_LOOPBACK_MULTICORE_ELF
+    "${CMAKE_CURRENT_BINARY_DIR}/cpu_loopback_multicore.elf")
+add_custom_command(
+    OUTPUT "${CPU_LOOPBACK_MULTICORE_ELF}"
+    COMMAND "${CAPTURE_RISCV_CC}"
+        ${CAPTURE_RISCV_CC_ARGS}
+        -DCPU_LOOPBACK_MULTICORE=1
+        -march=rv32im_zicsr -mabi=ilp32
+        -nostdlib
+        -Wl,--no-relax
+        "-Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/capture.ld"
+        -Wl,--build-id=none
+        -o "${CPU_LOOPBACK_MULTICORE_ELF}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cpu_loopback.S"
+    DEPENDS cpu_loopback.S capture.ld
+    VERBATIM)
+add_custom_target(cpu_loopback_multicore_firmware
+    DEPENDS "${CPU_LOOPBACK_MULTICORE_ELF}")
+
 set(L2_SWITCH_ELF "${CMAKE_CURRENT_BINARY_DIR}/l2_switch.elf")
 add_custom_command(
     OUTPUT "${L2_SWITCH_ELF}"
@@ -137,10 +156,104 @@ if(BUILD_TESTING)
         TIMEOUT 3600)
 endif()
 
-add_executable(cpu_loopback_test l2_switch.cpp)
+# Four-core MAC-lookup and forwarding benchmarks.  Firmware and harness use
+# the same compile-time frame length so PacketDMA never reads beyond EOP.
+function(smartnic_add_l2_switch_perf frame_bytes)
+    set(firmware
+        "${CMAKE_CURRENT_BINARY_DIR}/l2_switch_perf_${frame_bytes}.elf")
+    set(firmware_target "l2_switch_perf_${frame_bytes}_firmware")
+    set(test_target "l2_switch_perf_${frame_bytes}_test")
+    add_custom_command(
+        OUTPUT "${firmware}"
+        COMMAND "${CAPTURE_RISCV_CC}"
+            ${CAPTURE_RISCV_CC_ARGS}
+            -DSUSTAINED_SWITCH=1
+            -DL2_SWITCH_FRAME_BYTES=${frame_bytes}
+            # Keep ingress outside the measured four-core lookup interval.
+            # The 512-slot ring holds all 400 packets without reuse.
+            -DL2_SWITCH_PROCESSING_LEAD=400
+            -march=rv32im_zicsr -mabi=ilp32
+            -nostdlib -Wl,--no-relax
+            "-Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/l2_switch.ld"
+            -Wl,--build-id=none
+            -o "${firmware}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/l2_switch.S"
+        DEPENDS l2_switch.S l2_switch.ld
+        VERBATIM)
+    add_custom_target(${firmware_target} DEPENDS "${firmware}")
+
+    add_executable(${test_target} l2_switch.cpp)
+    add_dependencies(${test_target} ${firmware_target})
+    target_compile_definitions(${test_target} PRIVATE
+        CPU_RESET_PC=0x00100000 SUSTAINED_SWITCH=1
+        L2_SWITCH_PER_CORE_PERF=1
+        L2_SWITCH_FRAME_BYTES=${frame_bytes}
+        DEMO_NETWORK_INTERVAL=1 DEMO_TRAFFIC_REPEATS=10)
+    target_include_directories(${test_target} PRIVATE
+        "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/cpphdl/include"
+        "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu"
+        "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
+        "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/spec"
+        "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/cache"
+        "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/devices")
+    target_compile_options(${test_target} PRIVATE
+        -std=c++26 -fno-strict-aliasing)
+    cpphdl_add_host_opt_flags(${test_target})
+    cpphdl_link_stdcxxexp_if_available(${test_target})
+    if(CAPTURE_STDCXXEXP)
+        target_link_libraries(${test_target} PRIVATE
+            "${CAPTURE_STDCXXEXP_LIBRARY}")
+    endif()
+    if(BUILD_TESTING)
+        add_test(NAME system_l2_switch_4core_${frame_bytes}
+            COMMAND "$<TARGET_FILE:${test_target}>" "${firmware}")
+        set_tests_properties(system_l2_switch_4core_${frame_bytes} PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+            LABELS "system;switch;cpu;multicore;l2;dma;axi4;performance"
+            TIMEOUT 3600)
+    endif()
+endfunction()
+
+foreach(frame_bytes IN ITEMS 64 300 1000 1500)
+    smartnic_add_l2_switch_perf(${frame_bytes})
+endforeach()
+
+add_executable(cpu_loopback_multicore_test cpu_loopback.cpp)
+add_dependencies(cpu_loopback_multicore_test cpu_loopback_multicore_firmware)
+target_compile_definitions(cpu_loopback_multicore_test PRIVATE
+    CPU_RESET_PC=0 SMARTNIC_READ_PORTS=1 CPU_LOOPBACK_PERFORMANCE_TEST=1
+    CPU_LOOPBACK_MULTICORE_TEST=1 CPU_LOOPBACK_ENFORCE_BASELINE=0)
+target_include_directories(cpu_loopback_multicore_test PRIVATE
+    "${PROJECT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/cpphdl/include"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/common"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/spec"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/cache"
+    "${PROJECT_SOURCE_DIR}/cpphdl/tribe_cpu/devices")
+target_compile_options(cpu_loopback_multicore_test PRIVATE
+    -std=c++26 -fno-strict-aliasing)
+cpphdl_add_host_opt_flags(cpu_loopback_multicore_test)
+cpphdl_link_stdcxxexp_if_available(cpu_loopback_multicore_test)
+if(CAPTURE_STDCXXEXP)
+    target_link_libraries(cpu_loopback_multicore_test PRIVATE
+        "${CAPTURE_STDCXXEXP_LIBRARY}")
+endif()
+if(BUILD_TESTING)
+    add_test(NAME system_cpu_loopback_multicore
+        COMMAND "$<TARGET_FILE:cpu_loopback_multicore_test>"
+            "${CPU_LOOPBACK_MULTICORE_ELF}")
+    set_tests_properties(system_cpu_loopback_multicore PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        LABELS "system;loopback;cpu;multicore;l2;dma;axi4"
+        TIMEOUT 1200)
+endif()
+
+add_executable(cpu_loopback_test cpu_loopback.cpp)
 add_dependencies(cpu_loopback_test cpu_loopback_firmware)
 target_compile_definitions(cpu_loopback_test PRIVATE
-    CPU_RESET_PC=0 CPU_LOOPBACK_TEST=1)
+    CPU_RESET_PC=0 SMARTNIC_READ_PORTS=1)
 target_include_directories(cpu_loopback_test PRIVATE
     "${PROJECT_SOURCE_DIR}"
     "${PROJECT_SOURCE_DIR}/cpphdl/include"

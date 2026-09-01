@@ -29,7 +29,7 @@ long _system_clock = -1;
 namespace
 {
 
-using Fetcher = DescriptorFetcher<4, 32, 4, 256, 16>;
+using Fetcher = DescriptorFetcher<4, 32, 4, 256, PACKET_HANDLE_BITS>;
 
 template<typename T, typename V>
 static void copy_to_verilator(T& target, const V& value)
@@ -63,6 +63,10 @@ class DescriptorFetcherTest
     uint32_t packet_command_handle = 0;
     uint32_t packet_command_length = 0;
     bool packet_command_system = false;
+    bool packet_command_cache = false;
+    bool packet_command_network = false;
+    uint32_t packet_command_network_port = 0;
+    uint32_t packet_command_destination = 0;
     Axi4Driver<32, 4, 256> axi = {};
     bool error = false;
 
@@ -128,18 +132,31 @@ class DescriptorFetcherTest
 #ifdef VERILATOR
         drive_verilator(reset, false);
         if (dut.packet_command_valid_out) {
-            ++packet_commands;
             packet_command_handle = dut.packet_command_handle_out;
             packet_command_length = dut.packet_command_length_out;
             packet_command_system = dut.packet_command_system_out;
+            packet_command_cache = dut.packet_command_cache_out;
+            packet_command_network = dut.packet_command_network_out;
+            packet_command_network_port = dut.packet_command_network_port_out;
+            packet_command_destination = dut.packet_command_destination_out;
+        }
+        if (dut.packet_command_valid_out && packet_command_ready) {
+            ++packet_commands;
         }
 #else
         if (dut.packet_command_valid_out()) {
-            ++packet_commands;
             packet_command_handle = (uint32_t)dut.packet_command_handle_out();
             packet_command_length = (uint32_t)dut.packet_command_length_out();
             packet_command_system = dut.packet_command_system_out();
+            packet_command_cache = dut.packet_command_cache_out();
+            packet_command_network = dut.packet_command_network_out();
+            packet_command_network_port =
+                (uint32_t)dut.packet_command_network_port_out();
+            packet_command_destination =
+                (uint32_t)dut.packet_command_destination_out();
         }
+        if (dut.packet_command_valid_out() && packet_command_ready)
+            ++packet_commands;
 #endif
 #ifdef VERILATOR
         drive_verilator(reset, true);
@@ -231,7 +248,8 @@ class DescriptorFetcherTest
 #endif
     }
 
-    void write32(uint32_t address, uint32_t value)
+    void write32(uint32_t address, uint32_t value,
+        bool stall_packet_command = false)
     {
         uint32_t lane = address & 31u;
         axi.aw.valid = true;
@@ -250,6 +268,7 @@ class DescriptorFetcherTest
         if (!wready()) fail("W was not ready");
         cycle();
         axi.w.valid = false;
+        if (stall_packet_command) packet_command_ready = false;
         if (!bvalid()) fail("B was not valid");
         cycle();
         axi.b.ready = false;
@@ -374,11 +393,73 @@ public:
         }
         write32(Fetcher::REG_ACTION,
             Fetcher::ACTION_NEXT | Fetcher::ACTION_DMA_SYSTEM);
-        if (packet_commands != 2 || packet_command_handle != 0xcdef
+        if (packet_commands != 2 || packet_command_handle != 0x1cdef
             || packet_command_length != 1514 || !packet_command_system) {
             fail("System action did not emit the second descriptor command");
         }
         if (available()) fail("skip/pop did not empty the queue");
+
+        // A direct-network action is atomic: its command remains stable until
+        // PacketDMA accepts it, and its egress is the opposite physical port.
+        logic<1280> third = make_descriptor(0x34561234);
+        third.bits(71, 64) = 0;
+        send(third);
+        write32(Fetcher::REG_ACTION,
+            Fetcher::ACTION_NEXT | Fetcher::ACTION_DMA_NETWORK, true);
+        if (packet_commands != 2 || packet_command_handle != 0x1234
+            || packet_command_length != 1514 || packet_command_system
+            || packet_command_cache || !packet_command_network
+            || packet_command_network_port != 1
+            || packet_command_destination != 0) {
+            fail("network action command fields or swapped port mismatch");
+        }
+        const uint32_t held_handle = packet_command_handle;
+        const uint32_t held_port = packet_command_network_port;
+        cycle();
+        cycle();
+        if (packet_commands != 2 || packet_command_handle != held_handle
+            || packet_command_network_port != held_port
+            || !packet_command_network) {
+            fail("network action was not held stable under DMA backpressure");
+        }
+        packet_command_ready = true;
+        cycle();
+        if (packet_commands != 3)
+            fail("held network action was not accepted exactly once");
+        cycle();
+        if (packet_commands != 3)
+            fail("accepted network action was emitted more than once");
+        if (available()) fail("network action did not pop its descriptor");
+
+        // Autonomous ring metadata follows the exact descriptor-to-slot
+        // sequence. The MMIO ABI translates the parser's network-order
+        // 48-bit MAC into RV32 packet-load word order and packs two high
+        // half-words into one register.
+        logic<1280> auto_first = make_descriptor(0x11111111);
+        logic<1280> auto_second = make_descriptor(0x22222222);
+        auto_first.bits(303, 256) = logic<48>(0x021000014014ull);
+        auto_second.bits(303, 256) = logic<48>(0x021000004015ull);
+        write32(Fetcher::REG_AUTO_BASE, 0x2000);
+        write32(Fetcher::REG_AUTO_SLOT_MASK, 511);
+        write32(Fetcher::REG_CONTROL,
+            Fetcher::CONTROL_ENABLE | Fetcher::CONTROL_AUTO_L2);
+        send(auto_first);
+        send(auto_second);
+        for (uint32_t timeout = 0;
+            timeout < 32 && packet_commands < 5; ++timeout) cycle();
+        if (packet_commands != 5 || !packet_command_cache
+            || packet_command_destination != 0x2800) {
+            fail("autonomous descriptors did not map to consecutive slots");
+        }
+        if (read32(Fetcher::REG_AUTO_DESTINATION_LO_BASE + 0 * 4)
+                != 0x01001002
+            || read32(Fetcher::REG_AUTO_DESTINATION_LO_BASE + 1 * 4)
+                != 0x00001002
+            || read32(Fetcher::REG_AUTO_DESTINATION_HI_BASE)
+                != 0x15401440) {
+            fail("autonomous destination-MAC table or byte order mismatch");
+        }
+        if (available()) fail("autonomous mode did not drain descriptors");
         if (read32(Fetcher::REG_STATUS) & Fetcher::STATUS_PROTOCOL_ERROR) {
             fail("well-formed descriptor traffic set protocol error");
         }
@@ -412,7 +493,7 @@ static bool build_verilator()
             / "cpphdl" / "tribe_cpu" / "common").string()};
     return VerilatorCompileInExactFolderFromGenerated(source.string(),
         "DescriptorFetcher_verilator", "DescriptorFetcher", generated,
-        {"DescriptorFetcher"}, includes, 4, 32, 4, 256, 16);
+        {"AsyncReadRam", "DescriptorFetcher"}, includes, 4, 32, 4, 256, 17);
 #endif
 }
 

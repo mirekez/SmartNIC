@@ -24,6 +24,8 @@ public:
     static constexpr size_t STREAMS = NETWORK_PORTS;
     static constexpr size_t L2_WIDTH = 256;
     static constexpr size_t L2_BYTES = 32;
+    static constexpr size_t NIC_READ_PORTS =
+        SmartNIC<LANE_WIDTH, 4096, 64, 2048>::READ_PORTS;
     static constexpr size_t NET_BITS = STREAMS * LANE_WIDTH;
     static constexpr size_t NET_BYTES = NET_BITS / 8;
     // 4096 physical rows across four subbanks require 14 row bits; the low
@@ -83,10 +85,11 @@ public:
     _PORT(bool) storage_full_out;
 
 private:
-    // SmartNIC has one RxRAM read port per Ethernet stream, while the Kintex-7
-    // Processing profile has one cluster. Unused read ports must remain
-    // explicitly deasserted instead of narrowing the bound port type.
-    logic<STREAMS> smartnic_rx_ready_comb;
+    // Keep a physical-stream-wide staging value here.  In the Kintex-7 CPU
+    // test SMARTNIC_READ_PORTS=1 narrows the SmartNIC reader interface to the
+    // single Processing cluster; assignment below intentionally consumes its
+    // low bit.  Other full-system tests retain two RxRAM read ports.
+    logic<NIC_READ_PORTS> smartnic_rx_ready_comb;
     logic<STREAMS> smartnic_tx_valid_comb;
     logic<STREAMS * L2_WIDTH> smartnic_tx_data_comb;
     logic<STREAMS * L2_BYTES> smartnic_tx_keep_comb;
@@ -101,7 +104,7 @@ private:
     logic<SYSTEM_QUEUES> system_tx_ready_comb;
     bool protocol_error_comb;
 
-    logic<STREAMS>& smartnic_rx_ready_comb_func()
+    logic<NIC_READ_PORTS>& smartnic_rx_ready_comb_func()
     {
         uint32_t index;
         smartnic_rx_ready_comb = 0;

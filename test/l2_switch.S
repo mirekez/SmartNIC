@@ -22,6 +22,8 @@
     .equ FETCHER_SRC_LO,        0x110
     .equ FETCHER_SRC_HI,        0x114
     .equ FETCHER_INGRESS,       0x140
+    .equ FETCHER_AUTO_DST_LO,   0x400
+    .equ FETCHER_AUTO_DST_HI,   0xc00
     .equ FETCHER_AVAILABLE,     1
     .equ FETCHER_DMA_READY,     8
     .equ ACTION_NEXT,           1
@@ -43,6 +45,8 @@
     .equ DMA_CLEAR_NOTIFY,      0x03c
     .equ DMA_COMMAND_ISSUED,    0x040
     .equ DMA_CLEAR_STATUS,      0x044
+    .equ DMA_BACKING_COMPLETED, 0x048
+    .equ DMA_RING_FORWARD,      0x04c
     .equ DMA_CACHE_COMPLETED,   0x024
     .equ DMA_BUSY,              1
     .equ DMA_CMD_READY,         2
@@ -54,9 +58,19 @@
     .equ DMA_CLEAR_AFTER_TX,    64
 
 #ifdef SUSTAINED_SWITCH
+#ifndef L2_SWITCH_FRAME_BYTES
+#define L2_SWITCH_FRAME_BYTES 1516
+#endif
+#ifndef L2_SWITCH_PROCESSING_LEAD
+#define L2_SWITCH_PROCESSING_LEAD 256
+#endif
     /* DDR[0..0xfffff] is a 512 x 2 KiB packet ring. Firmware starts at
        0x100000 and the four MAC hash layers start at 0x110000. */
-    .equ PACKET_BUFFER,         0x00000000
+    /* Keep finite learning packets away from the measured ring. Reusing ring
+       slots 0..19 left old learning headers in private L1 caches while the
+       autonomous DMA replaced their L2/DDR contents, so a fast minimum-frame
+       run could make a forwarding decision from the stale destination MAC. */
+    .equ PACKET_BUFFER,         0x00180000
     .equ HASH_BASE,             0x00110000
     .equ AUTO_PACKET_BUFFER,    0x00000000
     .equ AUTO_SLOT_MASK,        511
@@ -64,10 +78,11 @@
     .equ SAMPLE_STRIDE,         SAMPLE_INTERVAL * 4
     .equ SWITCH_PACKETS,        400
     .equ SWITCH_COMMANDS,       SWITCH_PACKETS + 20
+    .equ BACKING_BEATS,         (L2_SWITCH_FRAME_BYTES + 31) / 32
     /* Let the wire-priority prefetch engine establish a DDR/L2 backlog before
        all four harts begin cache-intensive lookups. The remaining 144 packets
        still arrive while the four-core switching pipeline is active. */
-    .equ PROCESSING_LEAD,       256
+    .equ PROCESSING_LEAD,       L2_SWITCH_PROCESSING_LEAD
 #else
     .equ PACKET_BUFFER,         0x00000000
     .equ HASH_BASE,             0x00110000
@@ -85,6 +100,18 @@ _start:
 #else
     bnez    t0, .Lpark
 #endif
+
+    /* External DDR has no architectural power-up value.  Every hash record
+       uses its word at offset 12 as the valid marker, so relying on an
+       allocator- or simulator-provided zero image can create false MAC hits
+       on hardware.  Core 0 owns initialization and clears all four 4 KiB
+       layers before descriptor processing is enabled. */
+    li      t0, HASH_BASE
+    li      t1, HASH_BASE + 0x4000
+.Lclear_hash:
+    sw      zero, 0(t0)
+    addi    t0, t0, 4
+    bltu    t0, t1, .Lclear_hash
 
     li      s2, 0                  /* observed PacketDMA completion count */
     li      s3, PACKET_BUFFER
@@ -302,13 +329,19 @@ _start:
 .Lsustained_wait:
     lw      t0, DMA_CACHE_COMPLETED(s1)
     bltu    t0, s2, .Lsustained_wait
+    /* RING_SOURCE reads authoritative DDR rather than the L2 copy. Wait for
+       this packet sequence's backing beats before its hart enqueues TX. */
+    li      t1, BACKING_BEATS
+    mul     t1, s2, t1
+    lw      t0, DMA_BACKING_COMPLETED(s1)
+    bltu    t0, t1, .Lsustained_wait
 
     addi    t0, s2, -1
     andi    t0, t0, AUTO_SLOT_MASK
     slli    t0, t0, 11
     li      s3, AUTO_PACKET_BUFFER
     add     s3, s3, t0
-    li      s4, 1516
+    li      s4, L2_SWITCH_FRAME_BYTES
 
     /* Pull the real destination/source header into this hart's L1 D-cache. */
     mv      t0, s3
@@ -320,10 +353,37 @@ _start:
     addi    t0, t0, 4
     bltu    t0, t1, .Lsustained_touch
 
-    lw      s6, 0(s3)
-    lw      t3, 4(s3)
-    slli    s7, t3, 16
+    /* The descriptor and the autonomous ring use the same sequence number.
+       Read the parsed destination MAC through uncached MMIO, avoiding a
+       private-L1 line that can race the DMA population of a reused slot. */
+.Lsustained_metadata_lock:
+    sw      s5, DMA_COMMAND_LOCK(s1)
+    lw      t0, DMA_COMMAND_LOCK(s1)
+    bne     t0, s5, .Lsustained_metadata_lock
+    addi    t0, s2, -1
+    andi    t0, t0, AUTO_SLOT_MASK
+    slli    t1, t0, 2
+    add     t1, s0, t1
+.Lsustained_metadata_low_retry:
+    lw      s6, FETCHER_AUTO_DST_LO(t1)
+    lw      t3, FETCHER_AUTO_DST_LO(t1)
+    bne     s6, t3, .Lsustained_metadata_low_retry
+    srli    t1, t0, 1
+    slli    t1, t1, 2
+    add     t1, s0, t1
+    li      t2, FETCHER_AUTO_DST_HI
+    add     t1, t1, t2
+    lw      s7, 0(t1)
+    andi    t0, t0, 1
+    beqz    t0, .Lsustained_mac_high_ready
     srli    s7, s7, 16
+.Lsustained_mac_high_ready:
+    slli    s7, s7, 16
+    srli    s7, s7, 16
+    sw      zero, DMA_COMMAND_LOCK(s1)
+    /* Preserve the descriptor-derived physical port across the hash helper.
+       It is both the miss fallback and the stale/collision-hit validator. */
+    srli    s11, s6, 24
     /* One complete four-layer lookup is sufficient. Repeating a miss four
        times only refetched the same DDR lines and could starve wire ingress
        when all four harts were active concurrently. */
@@ -338,51 +398,33 @@ _start:
     /* The stress demo's locally administered MAC format encodes the learned
        physical port in destination byte 3. Preserve dispatch on a persistent
        table miss; the main regression still validates the hash-only path. */
-    srli    a0, s6, 24
+    mv      a0, s11
 .Lsustained_lookup_found:
     /* The sustained generator encodes the already learned physical port in
        destination byte 3. Keep the hash access as the firmware workload, but
        reject a stale/conflicting table hit so the throughput demonstration is
        deterministic while the hash-only regression remains authoritative. */
-    srli    t0, s6, 24
-    beq     a0, t0, .Lsustained_lookup_verified
-    mv      a0, t0
+    beq     a0, s11, .Lsustained_lookup_verified
+    mv      a0, s11
 .Lsustained_lookup_verified:
-    mv      s11, a0
 
 .Lsustained_dma_ready:
-    /* PacketDMA has one staged MMIO command bank per four-core cluster.
-       Hardware serializes lock acquisition, so command fields from different
-       harts cannot interleave. */
-    sw      s5, DMA_COMMAND_LOCK(s1)
-    lw      t0, DMA_COMMAND_LOCK(s1)
-    bne     t0, s5, .Lsustained_dma_ready
-.Lsustained_dma_locked:
+    /* Slot, exact length and egress enter PacketDMA in one atomic
+       MMIO write. No shared staging lock is held while a packet is queued or
+       transmitted. */
     lw      t0, DMA_STATUS(s1)
     andi    t0, t0, DMA_CMD_READY
-    beqz    t0, .Lsustained_dma_locked
-    /* Snapshot the accepted-command counter while holding the staging lock.
-       Tribe may retire stores into its registered memory path before another
-       hart can observe the final PacketDMA doorbell.  Waiting for this
-       counter makes the ownership handoff explicit and prevents the next
-       hart from mixing its port with the previous hart's source address. */
-    lw      t2, DMA_COMMAND_ISSUED(s1)
-    sw      s4, DMA_LENGTH(s1)
-    sw      s3, DMA_SOURCE(s1)
-    sw      s11, DMA_NETWORK_PORT(s1)
-    li      t0, DMA_CPU_NETWORK | DMA_RING_SOURCE | DMA_CLEAR_AFTER_TX
-    sw      t0, DMA_FLAGS(s1)
-    li      t0, 1
-    sw      t0, DMA_COMMAND(s1)
- .Lsustained_wait_issued:
-    lw      t3, DMA_COMMAND_ISSUED(s1)
-    beq     t3, t2, .Lsustained_wait_issued
-    /* The complete command is now owned by the hardware FIFO. Release the
-       shared staging bank immediately: keeping this lock through the
-       1,516-byte transfer serialized all four harts and left the 64-entry
-       command FIFO unused. FIFO backpressure bounds the outstanding working
-       set well below the 512-slot packet ring. */
-    sw      zero, DMA_COMMAND_LOCK(s1)
+    beqz    t0, .Lsustained_dma_ready
+    srli    t0, s3, 11             /* bits 8:0: 2 KiB ring slot */
+    slli    t1, s4, 9              /* bits 22:9: exact frame length */
+    or      t0, t0, t1
+    slli    t1, s11, 23            /* bit 23: physical egress */
+    or      t0, t0, t1
+    addi    t1, s5, -1
+    slli    t1, t1, 24             /* bits 25:24: issuing hart */
+    or      t0, t0, t1
+    sw      t0, DMA_RING_FORWARD(s1)
+    fence   iorw, iorw
 
 .Lsustained_next:
     addi    s2, s2, SAMPLE_STRIDE

@@ -312,6 +312,33 @@ def parse_dump(data: bytes) -> tuple[dict[str, int | str], list[dict[str, int]]]
                 "tx_words": tx_words,
                 "tx_packets": tx_packets,
             })
+    elif schema == "PCRL":
+        for offset in range(0, len(payload), RECORD_BYTES):
+            raw = payload[offset : offset + RECORD_BYTES]
+            packed = int.from_bytes(raw[4:16], "little")
+            state_flags = packed & 0xFFFF
+            packed >>= 16
+            dma_status = packed & 0xFF
+            packed >>= 8
+            release_count = packed & 0xFF
+            packed >>= 8
+            release_handle = packed & 0x1FFFF
+            packed >>= 17
+            release_length = packed & 0x3FFF
+            packed >>= 14
+            used_rows = packed & 0x7FFF
+            packed >>= 15
+            release_row = packed & 0x3FFF
+            records.append({
+                "timestamp": struct.unpack_from("<I", raw, 0)[0],
+                "flags": state_flags,
+                "dma_status": dma_status,
+                "event": release_count,
+                "release_handle": release_handle,
+                "release_length": release_length,
+                "used_rows": used_rows,
+                "release_row": release_row,
+            })
     elif schema in ("SFPD", "SF4D"):
         sfp_record = struct.Struct("<IHBBBHHHB")
         for values in sfp_record.iter_unpack(payload):
@@ -529,6 +556,8 @@ def render_text(metadata: dict[str, int | str], records: list[dict[str, int]]) -
         return render_loopback_text(metadata, records)
     if metadata["schema"] == "PCPU":
         return render_cpu_processing_text(metadata, records)
+    if metadata["schema"] == "PCRL":
+        return render_cpu_release_text(metadata, records)
     if metadata["schema"] in ("SFPD", "SF4D"):
         return render_sfp_diagnostic_text(metadata, records)
     diagnostic = metadata["schema"] == "ETHD"
@@ -669,8 +698,25 @@ def render_cpu_processing_text(
     error_mask = (1 << 13) | (1 << 14) | (1 << 15)
     errors = any(record["flags"] & error_mask for record in records)
     links_good = bool((latest["flags"] & 0xF) == 0xF)
-    progress_good = descriptors > 0 and rx_words > 0 and tx_words > 0 \
+    # A command-driven dump is commonly requested after traffic has stopped.
+    # Counter movement inside the 102.4 ms capture window proves live traffic,
+    # while nonzero lifetime counters still prove that the CPU/DMA datapath
+    # forwarded packets since reset. Do not report that valid post-traffic
+    # state as BAD merely because the circular capture is quiescent.
+    progress_in_window = descriptors > 0 and rx_words > 0 and tx_words > 0 \
         and tx_packets > 0
+    lifetime_progress = latest["descriptors"] > 0 \
+        and latest["rx_words"] > 0 and latest["tx_words"] > 0 \
+        and latest["tx_packets"] > 0
+    progress_good = progress_in_window or lifetime_progress
+    pause_seen = [
+        any(record["dma_status"] & (1 << (4 + stream)) for record in records)
+        for stream in range(2)
+    ]
+    pause_active = [
+        bool(latest["dma_status"] & (1 << (4 + stream)))
+        for stream in range(2)
+    ]
     lines = [
         "KlusterLab real Processing/CPU UART probe",
         f"schema={metadata['schema']} sequence={metadata['sequence']} "
@@ -690,8 +736,18 @@ def render_cpu_processing_text(
         f"  accepted RxRAM words         {rx_words}",
         f"  accepted PacketDMA TX words  {tx_words}",
         f"  completed TX packets         {tx_packets}",
-        f"  DMA completion counter       {latest['event'] & 1}",
+        "",
+        "Lifetime counters at final sample:",
+        f"  completed descriptors        {latest['descriptors']}",
+        f"  accepted RxRAM words         {latest['rx_words']}",
+        f"  accepted PacketDMA TX words  {latest['tx_words']}",
+        f"  completed TX packets         {latest['tx_packets']}",
+        f"  RxRAM release events (mod 256) {latest['event']}",
         f"  DMA error reason             {latest['dma_status'] & 0xF}",
+        f"  RxRAM PAUSE pressure port 0  "
+        f"{'ACTIVE' if pause_active[0] else ('seen/recovered' if pause_seen[0] else 'clear')}",
+        f"  RxRAM PAUSE pressure port 1  "
+        f"{'ACTIVE' if pause_active[1] else ('seen/recovered' if pause_seen[1] else 'clear')}",
         "",
         "Automatic checks:",
         f"  startup/QPLL/PCS links       {'GOOD' if links_good else 'BAD'}",
@@ -699,7 +755,7 @@ def render_cpu_processing_text(
         f"  protocol/error flags         {'GOOD' if not errors else 'BAD'}",
         "",
         "Samples:",
-        "time_ms flags dma event descriptors rx_words tx_words tx_packets",
+        "time_ms flags dma releases descriptors rx_words tx_words tx_packets",
     ))
     clock_hz = int(metadata["clock_hz"])
     origin = records[0]["timestamp"] if records else 0
@@ -711,6 +767,90 @@ def render_cpu_processing_text(
             f"{record['dma_status']:02x} {record['event']:02x} "
             f"{record['descriptors']:5d} {record['rx_words']:5d} "
             f"{record['tx_words']:5d} {record['tx_packets']:5d}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_cpu_release_text(
+    metadata: dict[str, int | str], records: list[dict[str, int]]
+) -> str:
+    latest = records[-1] if records else {
+        "flags": 0, "dma_status": 0, "event": 0,
+        "release_handle": 0, "release_length": 0,
+        "used_rows": 0, "release_row": 0,
+    }
+    handle = latest["release_handle"]
+    length = latest["release_length"]
+    start_row = handle >> 3
+    released_rows = ((length + 31) // 32) * 4 if length else 0
+    expected_row = (start_row + released_rows) & 0x3FFF
+    allocator_match = bool(length) and latest["release_row"] == expected_row
+    stream = handle & 7
+    pause_active = stream < 2 and bool(
+        latest["dma_status"] & (1 << (4 + stream)))
+    rxram_protocol_error = bool(latest["dma_status"] & (1 << 7))
+    rxram_storage_full = bool(latest["dma_status"] & (1 << 6))
+    error_mask = (1 << 13) | (1 << 14) | (1 << 15)
+    errors = any(record["flags"] & error_mask for record in records)
+    links_good = bool((latest["flags"] & 0xF) == 0xF)
+
+    lines = [
+        "KlusterLab CPU/RxRAM release diagnostic",
+        f"schema={metadata['schema']} sequence={metadata['sequence']} "
+        f"records={metadata['count']}/{metadata['depth']} crc32={metadata['crc32']}",
+        f"sample_clock={metadata['clock_hz']} Hz "
+        f"sample_div={metadata['sample_div']} "
+        f"period={1e6 * int(metadata['sample_div']) / int(metadata['clock_hz']):.3f} us",
+        "",
+        "State flags:",
+    ]
+    for bit, name in enumerate(CPU_PROCESSING_FLAG_NAMES):
+        lines.append(f"  {name:28s} {stable_bit(records, bit)}")
+    lines.extend((
+        "",
+        "Release/allocator state at final sample:",
+        f"  release events (mod 256)     {latest['event']}",
+        f"  last handle                  0x{handle:05x}",
+        f"  last stream                  {stream}",
+        f"  last start row               {start_row}",
+        f"  last length                  {length} bytes",
+        f"  rows represented by release {released_rows}",
+        f"  expected next release row    {expected_row}",
+        f"  actual next release row      {latest['release_row']}",
+        f"  occupied selected rows       {latest['used_rows']}",
+        f"  selected stream PAUSE        {'ACTIVE' if pause_active else 'clear'}",
+        f"  RxRAM protocol error         {'ACTIVE' if rxram_protocol_error else 'clear'}",
+        f"  RxRAM storage full           {'ACTIVE' if rxram_storage_full else 'clear'}",
+        f"  DMA error reason             {latest['dma_status'] & 0xF}",
+        "",
+        "Automatic checks:",
+        f"  startup/QPLL/PCS links       {'GOOD' if links_good else 'BAD'}",
+        f"  last release was applied     {'GOOD' if allocator_match else 'BAD'}",
+        f"  allocator drained after idle {'GOOD' if latest['used_rows'] == 0 else 'BAD'}",
+        f"  protocol/error flags         {'GOOD' if not errors else 'BAD'}",
+        "",
+        "Samples:",
+        "time_ms flags dma count handle length used release_row",
+    ))
+    clock_hz = int(metadata["clock_hz"])
+    origin = records[0]["timestamp"] if records else 0
+    previous = None
+    for record in records:
+        state = (
+            record["flags"], record["dma_status"], record["event"],
+            record["release_handle"], record["release_length"],
+            record["used_rows"], record["release_row"],
+        )
+        if state == previous:
+            continue
+        previous = state
+        elapsed = ((record["timestamp"] - origin) & 0xFFFFFFFF) \
+            / clock_hz * 1e3
+        lines.append(
+            f"{elapsed:9.3f} {record['flags']:04x} "
+            f"{record['dma_status']:02x} {record['event']:3d} "
+            f"{record['release_handle']:05x} {record['release_length']:5d} "
+            f"{record['used_rows']:5d} {record['release_row']:5d}"
         )
     return "\n".join(lines) + "\n"
 

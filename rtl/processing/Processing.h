@@ -9,6 +9,8 @@
 #include "CPU.h"
 #include "DescriptorFetcher.h"
 #include "PacketDMA.h"
+#include "RxLineBuffer.h"
+#include "TxLineBuffer.h"
 #include "../common/Axi4WriteArbiter.h"
 #include "../../cpphdl/tribe_cpu/common/Axi4RegionMux.h"
 
@@ -18,7 +20,8 @@ using namespace cpphdl;
 #define CPU_RESET_PC 0
 #endif
 
-template<size_t CPU_COUNT = CPUS_USED, size_t HANDLE_BITS = 16,
+template<size_t CPU_COUNT = CPUS_USED,
+    size_t HANDLE_BITS = PACKET_HANDLE_BITS,
     size_t FRAME_LENGTH_BITS = 14>
 class Processing : public Module
 {
@@ -54,6 +57,14 @@ public:
     // the engine's maximum accepted-command throughput.
     PacketDMA<HANDLE_BITS, FRAME_LENGTH_BITS, 64, 32, 4, 256,
         CPU::EXTERNAL_ADDR_WIDTH, 32, 64> packet_dma[CPU_COUNT];
+    // This FIFO is upstream of PacketDMA so command completion remains tied
+    // to the real L2 acceptance, while L2 backpressure can no longer reach
+    // RxRAM's BRAM address inputs in the same cycle.
+    RxLineBuffer<256, 4> rx_line_buffer[CPU_COUNT];
+    // PacketDMA completion must not depend combinationally on the remote
+    // OutputMerger/TxFIFO ready tree. Two entries sustain one line per clock
+    // while providing a registered-occupancy timing and locality boundary.
+    TxLineBuffer<256, 8, 2> tx_line_buffer[CPU_COUNT];
 
     // Aggregate descriptor stream from SmartNIC on the shared clock.
     _PORT(bool) descriptor_valid_in;
@@ -128,7 +139,6 @@ private:
     logic<CPU_COUNT * HANDLE_BITS> rx_read_handle_comb;
     logic<CPU_COUNT * FRAME_LENGTH_BITS> rx_read_length_comb;
     logic<CPU_COUNT> rx_ready_comb;
-    logic<RX_STREAM_BITS> rx_stream_pack_comb[CPU_COUNT];
     logic<RX_STREAM_BITS> from_system_pack_comb[CPU_COUNT];
     logic<CPU_COUNT> to_system_valid_comb;
     logic<CPU_COUNT * 256> to_system_data_comb;
@@ -186,28 +196,9 @@ private:
         uint32_t index;
         rx_ready_comb = 0;
         for (index = 0; index < CPU_COUNT; ++index) {
-            rx_ready_comb[index] = packet_dma[index].rx_ready_out();
+            rx_ready_comb[index] = rx_line_buffer[index].ready_out();
         }
         return rx_ready_comb;
-    }
-
-    logic<RX_STREAM_BITS> (&rx_stream_pack_comb_func())[CPU_COUNT]
-    {
-        uint32_t index;
-        uint32_t bit;
-        for (index = 0; index < CPU_COUNT; ++index) {
-            rx_stream_pack_comb[index] = 0;
-            for (bit = 0; bit < 256; ++bit) {
-                rx_stream_pack_comb[index][bit] = rx_data_in()[index * 256 + bit];
-            }
-            for (bit = 0; bit < 32; ++bit) {
-                rx_stream_pack_comb[index][256 + bit] =
-                    rx_keep_in()[index * 32 + bit];
-            }
-            rx_stream_pack_comb[index][288] = rx_sop_in()[index];
-            rx_stream_pack_comb[index][289] = rx_eop_in()[index];
-        }
-        return rx_stream_pack_comb;
     }
 
     logic<RX_STREAM_BITS> (&from_system_pack_comb_func())[CPU_COUNT]
@@ -278,10 +269,58 @@ private:
     PROCESSING_STREAM_OUTPUT_FUNCTIONS(to_system, system_tx_valid_out,
         system_tx_data_out, system_tx_keep_out, system_tx_sop_out,
         system_tx_eop_out)
-    PROCESSING_STREAM_OUTPUT_FUNCTIONS(to_network, network_tx_valid_out,
-        network_tx_data_out, network_tx_keep_out, network_tx_sop_out,
-        network_tx_eop_out)
 #undef PROCESSING_STREAM_OUTPUT_FUNCTIONS
+
+    logic<CPU_COUNT>& to_network_valid_comb_func()
+    {
+        uint32_t index;
+        to_network_valid_comb = 0;
+        for (index = 0; index < CPU_COUNT; ++index)
+            to_network_valid_comb[index] = tx_line_buffer[index].valid_out();
+        return to_network_valid_comb;
+    }
+
+    logic<CPU_COUNT * 256>& to_network_data_comb_func()
+    {
+        uint32_t index;
+        uint32_t bit;
+        to_network_data_comb = 0;
+        for (index = 0; index < CPU_COUNT; ++index)
+            for (bit = 0; bit < 256; ++bit)
+                to_network_data_comb[index * 256 + bit] =
+                    tx_line_buffer[index].data_out()[bit];
+        return to_network_data_comb;
+    }
+
+    logic<CPU_COUNT * 32>& to_network_keep_comb_func()
+    {
+        uint32_t index;
+        uint32_t bit;
+        to_network_keep_comb = 0;
+        for (index = 0; index < CPU_COUNT; ++index)
+            for (bit = 0; bit < 32; ++bit)
+                to_network_keep_comb[index * 32 + bit] =
+                    tx_line_buffer[index].keep_out()[bit];
+        return to_network_keep_comb;
+    }
+
+    logic<CPU_COUNT>& to_network_sop_comb_func()
+    {
+        uint32_t index;
+        to_network_sop_comb = 0;
+        for (index = 0; index < CPU_COUNT; ++index)
+            to_network_sop_comb[index] = tx_line_buffer[index].sop_out();
+        return to_network_sop_comb;
+    }
+
+    logic<CPU_COUNT>& to_network_eop_comb_func()
+    {
+        uint32_t index;
+        to_network_eop_comb = 0;
+        for (index = 0; index < CPU_COUNT; ++index)
+            to_network_eop_comb[index] = tx_line_buffer[index].eop_out();
+        return to_network_eop_comb;
+    }
 
     logic<CPU_COUNT * 8>& to_network_port_comb_func()
     {
@@ -291,7 +330,7 @@ private:
         for (index = 0; index < CPU_COUNT; ++index) {
             for (bit = 0; bit < 8; ++bit) {
                 to_network_port_comb[index * 8 + bit] =
-                    packet_dma[index].network_tx_port_out()[bit];
+                    tx_line_buffer[index].port_out()[bit];
             }
         }
         return to_network_port_comb;
@@ -334,6 +373,46 @@ public:
         to_network_port_out = _ASSIGN_COMB(to_network_port_comb_func());
 
         for (index = 0; index < CPU_COUNT; ++index) {
+            rx_line_buffer[index].valid_in = _ASSIGN_INDEXED((index),
+                rx_valid_in()[index]);
+            rx_line_buffer[index].data_in = _ASSIGN_INDEXED((index),
+                (logic<256>)rx_data_in().bits(index * 256 + 255,
+                    index * 256));
+            rx_line_buffer[index].keep_in = _ASSIGN_INDEXED((index),
+                (logic<32>)rx_keep_in().bits(index * 32 + 31,
+                    index * 32));
+            rx_line_buffer[index].sop_in = _ASSIGN_INDEXED((index),
+                rx_sop_in()[index]);
+            rx_line_buffer[index].eop_in = _ASSIGN_INDEXED((index),
+                rx_eop_in()[index]);
+            rx_line_buffer[index].ready_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].rx_ready_out());
+#ifndef SYNTHESIS
+            rx_line_buffer[index].__inst_name =
+                __inst_name + "/rx_line_buffer" + std::to_string(index);
+#endif
+            rx_line_buffer[index]._assign();
+
+            tx_line_buffer[index].valid_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_valid_out());
+            tx_line_buffer[index].data_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_data_out());
+            tx_line_buffer[index].keep_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_keep_out());
+            tx_line_buffer[index].sop_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_sop_out());
+            tx_line_buffer[index].eop_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_eop_out());
+            tx_line_buffer[index].port_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_port_out());
+            tx_line_buffer[index].ready_in = _ASSIGN_INDEXED((index),
+                to_network_ready_in()[index]);
+#ifndef SYNTHESIS
+            tx_line_buffer[index].__inst_name =
+                __inst_name + "/tx_line_buffer" + std::to_string(index);
+#endif
+            tx_line_buffer[index]._assign();
+
             descriptor_fetcher[index].descriptor_valid_in =
                 descriptor_valid_in;
             descriptor_fetcher[index].descriptor_data_in = descriptor_data_in;
@@ -352,6 +431,10 @@ public:
                 descriptor_fetcher[index].packet_command_system_out;
             packet_dma[index].descriptor_command_cache_in =
                 descriptor_fetcher[index].packet_command_cache_out;
+            packet_dma[index].descriptor_command_network_in =
+                descriptor_fetcher[index].packet_command_network_out;
+            packet_dma[index].descriptor_command_network_port_in =
+                descriptor_fetcher[index].packet_command_network_port_out;
             packet_dma[index].descriptor_command_destination_in =
                 descriptor_fetcher[index].packet_command_destination_out;
 
@@ -381,10 +464,6 @@ public:
             // Bind these through deferred calls. PacketDMA and CPU create
             // their output function_refs below, so copying the not-yet-bound
             // function_ref here required a second binding after _assign().
-            // The converter emitted both bindings as continuous assignments,
-            // giving Vivado a multi-driven coherent-line valid net. A deferred
-            // indexed lambda is valid in native simulation and emits exactly
-            // one RTL driver.
             cpu[index].dma_line_valid_in = _ASSIGN_INDEXED((index),
                 packet_dma[index].l2_line_valid_out());
             cpu[index].dma_line_addr_in = _ASSIGN_INDEXED((index),
@@ -401,17 +480,15 @@ public:
             packet_dma[index].rx_read_ready_in =
                 _ASSIGN_INDEXED((index), rx_read_ready_in()[index]);
             packet_dma[index].rx_valid_in = _ASSIGN_INDEXED((index),
-                rx_valid_in()[index]);
+                rx_line_buffer[index].valid_out());
             packet_dma[index].rx_data_in = _ASSIGN_INDEXED((index),
-                (logic<256>)rx_data_in().bits(index * 256 + 255,
-                    index * 256));
+                rx_line_buffer[index].data_out());
             packet_dma[index].rx_keep_in = _ASSIGN_INDEXED((index),
-                (logic<32>)rx_keep_in().bits(index * 32 + 31,
-                    index * 32));
+                rx_line_buffer[index].keep_out());
             packet_dma[index].rx_sop_in = _ASSIGN_INDEXED((index),
-                rx_sop_in()[index]);
+                rx_line_buffer[index].sop_out());
             packet_dma[index].rx_eop_in = _ASSIGN_INDEXED((index),
-                rx_eop_in()[index]);
+                rx_line_buffer[index].eop_out());
 
             // All processing packet streams are synchronous at 156.25 MHz.
             packet_dma[index].system_tx_ready_in =
@@ -430,7 +507,7 @@ public:
                 from_system_eop_in()[index]);
 
             packet_dma[index].network_tx_ready_in =
-                _ASSIGN_INDEXED((index), to_network_ready_in()[index]);
+                _ASSIGN_INDEXED((index), tx_line_buffer[index].ready_out());
 
             // Merge ordinary L2 traffic with PacketDMA's write-through packet
             // backing stream. Packet writes receive address-channel priority;
@@ -475,6 +552,24 @@ public:
             cpu[index]._assign();
             descriptor_fetcher[index]._assign();
             packet_dma[index]._assign();
+            // PacketDMA creates rx_ready_out above; refresh the deferred
+            // consumer link after child assignment.
+            rx_line_buffer[index].ready_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].rx_ready_out());
+            tx_line_buffer[index].valid_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_valid_out());
+            tx_line_buffer[index].data_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_data_out());
+            tx_line_buffer[index].keep_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_keep_out());
+            tx_line_buffer[index].sop_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_sop_out());
+            tx_line_buffer[index].eop_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_eop_out());
+            tx_line_buffer[index].port_in = _ASSIGN_INDEXED((index),
+                packet_dma[index].network_tx_port_out());
+            packet_dma[index].network_tx_ready_in =
+                _ASSIGN_INDEXED((index), tx_line_buffer[index].ready_out());
             iomem_mux[index]._assign();
 
             // The child modules above create their output function bindings
@@ -521,6 +616,10 @@ public:
                 descriptor_fetcher[index].packet_command_system_out;
             packet_dma[index].descriptor_command_cache_in =
                 descriptor_fetcher[index].packet_command_cache_out;
+            packet_dma[index].descriptor_command_network_in =
+                descriptor_fetcher[index].packet_command_network_out;
+            packet_dma[index].descriptor_command_network_port_in =
+                descriptor_fetcher[index].packet_command_network_port_out;
             packet_dma[index].descriptor_command_destination_in =
                 descriptor_fetcher[index].packet_command_destination_out;
             // CPU_COUNT is fixed to one above. Bind debug outputs only after
@@ -543,6 +642,8 @@ public:
         for (index = 0; index < CPU_COUNT; ++index) {
             cpu[index]._work(reset);
             descriptor_fetcher[index]._work(reset);
+            rx_line_buffer[index]._work(reset);
+            tx_line_buffer[index]._work(reset);
             packet_dma[index]._work(reset);
             iomem_mux[index]._work(reset);
             ddr_arbiter[index]._work(reset);
@@ -569,6 +670,8 @@ public:
         for (index = 0; index < CPU_COUNT; ++index) {
             cpu[index]._strobe();
             descriptor_fetcher[index]._strobe();
+            rx_line_buffer[index]._strobe();
+            tx_line_buffer[index]._strobe();
             packet_dma[index]._strobe();
             iomem_mux[index]._strobe();
             ddr_arbiter[index]._strobe();
@@ -584,4 +687,4 @@ public:
     }
 };
 
-template class Processing<CPUS_USED, 16, 14>;
+template class Processing<CPUS_USED, PACKET_HANDLE_BITS, 14>;

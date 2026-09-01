@@ -63,6 +63,14 @@ public:
             data_out_reg.clr();
             return;
         }
+        // Match the nonblocking READ_FIRST behavior of
+        // SmartNicMemoryPrimitive.sv when read and write address the same
+        // location.  Capturing the read after updating the CppHDL memory made
+        // native simulation return the newly written FIFO tail and skip one
+        // complete ring whenever a full FIFO drained while being refilled.
+        if (!SHOWAHEAD && read_in()) {
+            data_out_reg._next = buffer[read_addr_in()];
+        }
         if (write_in()) {
             if (FULL_WORD_WRITE) {
                 buffer[write_addr_in()] = write_data_in();
@@ -77,9 +85,6 @@ public:
                     (buffer[write_addr_in()] & ~write_mask_comb)
                     | (write_data_in() & write_mask_comb);
             }
-        }
-        if (!SHOWAHEAD && read_in()) {
-            data_out_reg._next = buffer[read_addr_in()];
         }
     }
 

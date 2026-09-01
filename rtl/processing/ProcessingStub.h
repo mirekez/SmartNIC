@@ -8,10 +8,12 @@
 #include <cpphdl.h>
 #include "../network/RxFifo.h"
 #include "../../fpga/UART_PROBE.h"
+#include "../../Config.h"
 
 using namespace cpphdl;
 
-template<size_t HANDLE_BITS = 16, size_t FRAME_LENGTH_BITS = 14>
+template<size_t HANDLE_BITS = PACKET_HANDLE_BITS,
+    size_t FRAME_LENGTH_BITS = 14>
 class ProcessingStub : public Module
 {
 public:
@@ -434,4 +436,4 @@ public:
     }
 };
 
-template class ProcessingStub<16, 14>;
+template class ProcessingStub<PACKET_HANDLE_BITS, 14>;

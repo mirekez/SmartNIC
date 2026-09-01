@@ -156,6 +156,9 @@ add_custom_target(processing_rtl
         "${CMAKE_CURRENT_SOURCE_DIR}/CPU.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/DescriptorFetcher.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/PacketDMA.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/RxLineBuffer.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/TxLineBuffer.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../common/AsyncReadRam.h"
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     VERBATIM
 )

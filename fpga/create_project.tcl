@@ -134,6 +134,14 @@ set_property STEPS.SYNTH_DESIGN.ARGS.RESOURCE_SHARING on [get_runs synth_1]
 # path it spent tens of minutes attempting local CPU-only transformations after
 # a legal routed checkpoint had already been produced.
 set_property strategy Performance_Explore [get_runs impl_1]
+# The dense L2/PacketDMA image routes with similar or better WNS when logic is
+# spread before detail placement, while reducing the measured congestion level
+# from 4 to 2. Alternate CLB routing and post-route Explore then recover the
+# remaining setup slack without re-concentrating the BRAM-column neighborhood.
+set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE AltSpreadLogic_high [get_runs impl_1]
+set_property STEPS.PLACE_DESIGN.TCL.PRE \
+    [file join $script_dir pre_place_congestion.tcl] [get_runs impl_1]
+set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE AlternateCLBRouting [get_runs impl_1]
 set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1]
 set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1]

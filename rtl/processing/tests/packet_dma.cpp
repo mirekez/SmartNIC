@@ -27,7 +27,7 @@ long _system_clock = -1;
 namespace
 {
 
-using Dma = PacketDMA<16, 14, 8, 32, 4, 256>;
+using Dma = PacketDMA<PACKET_HANDLE_BITS, 14, 8, 32, 4, 256>;
 
 template<typename T, typename V>
 static void copy_to_verilator(T& target, const V& value)
@@ -63,10 +63,12 @@ class PacketDmaTest
     bool rx_eop = false;
 
     bool descriptor_command_valid = false;
-    u<16> descriptor_command_handle = 0;
+    u<PACKET_HANDLE_BITS> descriptor_command_handle = 0;
     u<14> descriptor_command_length = 0;
     bool descriptor_command_system = false;
     bool descriptor_command_cache = false;
+    bool descriptor_command_network = false;
+    u<8> descriptor_command_network_port = 0;
     u32 descriptor_command_destination = 0;
     bool l2_line_ready = true;
 
@@ -119,6 +121,10 @@ class PacketDmaTest
         dut.descriptor_command_length_in = _ASSIGN(descriptor_command_length);
         dut.descriptor_command_system_in = _ASSIGN(descriptor_command_system);
         dut.descriptor_command_cache_in = _ASSIGN(descriptor_command_cache);
+        dut.descriptor_command_network_in =
+            _ASSIGN(descriptor_command_network);
+        dut.descriptor_command_network_port_in =
+            _ASSIGN(descriptor_command_network_port);
         dut.descriptor_command_destination_in =
             _ASSIGN(descriptor_command_destination);
         dut.l2_line_ready_in = _ASSIGN(l2_line_ready);
@@ -151,6 +157,9 @@ class PacketDmaTest
             (uint32_t)descriptor_command_length;
         dut.descriptor_command_system_in = descriptor_command_system;
         dut.descriptor_command_cache_in = descriptor_command_cache;
+        dut.descriptor_command_network_in = descriptor_command_network;
+        dut.descriptor_command_network_port_in =
+            (uint8_t)(uint32_t)descriptor_command_network_port;
         dut.descriptor_command_destination_in =
             (uint32_t)descriptor_command_destination;
         dut.l2_line_ready_in = l2_line_ready;
@@ -415,6 +424,14 @@ class PacketDmaTest
         return dut.network_tx_eop_out;
 #else
         return dut.network_tx_eop_out();
+#endif
+    }
+    uint32_t network_tx_port_out()
+    {
+#ifdef VERILATOR
+        return dut.network_tx_port_out;
+#else
+        return (uint32_t)dut.network_tx_port_out();
 #endif
     }
 
@@ -752,12 +769,17 @@ class PacketDmaTest
         write32(Dma::REG_COMMAND, Dma::COMMAND_PUSH);
     }
 
-    void issue_descriptor(uint32_t handle, uint32_t length, bool system)
+    void issue_descriptor(uint32_t handle, uint32_t length, bool system,
+        bool network = false, uint32_t network_port = 0)
     {
         if (!command_ready()) fail("descriptor command queue was not ready");
         descriptor_command_handle = handle;
         descriptor_command_length = length;
         descriptor_command_system = system;
+        descriptor_command_cache = false;
+        descriptor_command_network = network;
+        descriptor_command_network_port = network_port;
+        descriptor_command_destination = 0;
         descriptor_command_valid = true;
         cycle();
         descriptor_command_valid = false;
@@ -848,7 +870,7 @@ public:
         write32(Dma::REG_COMMAND_LOCK, 0);
 
         // Network RxRAM -> coherent CPU memory.
-        const uint32_t handle = 0x3456;
+        const uint32_t handle = 0x13456;
         const uint32_t network_destination = 0x400;
         auto network_input = make_packet(77);
         issue(DMA_NETWORK_CPU, network_input.size(), 0, network_destination, handle);
@@ -934,6 +956,43 @@ public:
             fail("descriptor network-to-system framing mismatch");
         }
 
+        // Hardware descriptor command: RxRAM streams directly to the selected
+        // network TxFIFO without touching coherent memory. Backpressure must
+        // stop RxRAM, preserve framing/data, and retain the selected port.
+        auto direct_network_input = make_packet(117);
+        network_output.clear();
+        network_output_sop = false;
+        network_output_eop = false;
+        network_tx_ready = false;
+        issue_descriptor(handle + 3, direct_network_input.size(), false,
+            true, 1);
+        for (uint32_t timeout = 0;
+            timeout < 100 && !read_command_valid(); ++timeout) {
+            cycle();
+        }
+        if (!read_command_valid()) {
+            fail("descriptor network forward never issued RxRAM read");
+        }
+        else if (read_handle() != handle + 3
+            || read_length() != direct_network_input.size()) {
+            fail("descriptor network forward RxRAM command mismatch");
+        }
+        rx_read_ready = true;
+        cycle();
+        rx_read_ready = false;
+        if (rx_ready()) fail("direct Network path ignored output backpressure");
+        if (network_tx_port_out() != 1)
+            fail("direct Network path selected the wrong output port");
+        cycle();
+        network_tx_ready = true;
+        send_input(direct_network_input, true);
+        if (network_output != direct_network_input)
+            fail("descriptor network-forward payload mismatch");
+        if (!network_output_sop || !network_output_eop)
+            fail("descriptor network-forward framing mismatch");
+        if (network_tx_port_out() != 1)
+            fail("direct Network output port changed during transfer");
+
         // System TxQueue -> coherent CPU memory.
         const uint32_t system_destination = 0x800;
         auto system_input = make_packet(95);
@@ -990,7 +1049,31 @@ public:
         if (!network_output_sop || !network_output_eop)
             fail("DDR-ring-to-network framing mismatch");
 
-        if (read32(Dma::REG_COMPLETED) != 7) fail("completion count mismatch");
+        // The four-core fast path writes one self-contained command word.
+        // A repeated MMIO store is acknowledged but must not enqueue the same
+        // per-hart ring slot twice.
+        const uint32_t packed_slot = 0;
+        auto packed_ring = make_packet(79);
+        std::copy(packed_ring.begin(), packed_ring.end(), memory.begin());
+        network_output.clear();
+        network_output_sop = false;
+        network_output_eop = false;
+        const uint32_t issued_before = read32(Dma::REG_COMMAND_ISSUED);
+        const uint32_t packed_command = packed_slot
+            | ((uint32_t)packed_ring.size() << 9)
+            | (1u << 23) | (0u << 24);
+        write32(Dma::REG_RING_FORWARD, packed_command);
+        write32(Dma::REG_RING_FORWARD, packed_command);
+        wait_for_output();
+        if (network_output != packed_ring)
+            fail("atomic ring-forward payload mismatch");
+        if (!network_output_sop || !network_output_eop
+            || network_tx_port_out() != 1)
+            fail("atomic ring-forward framing or port mismatch");
+        if (read32(Dma::REG_COMMAND_ISSUED) != issued_before + 1)
+            fail("atomic ring-forward replay was not suppressed");
+
+        if (read32(Dma::REG_COMPLETED) != 9) fail("completion count mismatch");
         if (read32(Dma::REG_LAST_OPERATION) != DMA_CPU_NETWORK) {
             fail("last operation register mismatch");
         }
@@ -1023,8 +1106,9 @@ static bool build_verilator()
         (source.parent_path().parent_path().parent_path().parent_path()
             / "cpphdl" / "tribe_cpu" / "common").string()};
     return VerilatorCompileInExactFolderFromGenerated(source.string(),
-        "PacketDMA_verilator", "PacketDMA", generated, {"PacketDMA"}, includes,
-        16, 14, 8, 32, 4, 256);
+        "PacketDMA_verilator", "PacketDMA", generated,
+        {"AsyncReadRam", "PacketDMA"}, includes,
+        17, 14, 8, 32, 4, 256);
 #endif
 }
 

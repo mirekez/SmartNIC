@@ -51,7 +51,7 @@ void check_tx_data(unsigned destination, uint32_t seed)
     }
 }
 
-void send_descriptor(uint8_t source, uint16_t handle, uint16_t length)
+void send_descriptor(uint8_t source, uint32_t handle, uint16_t length)
 {
     for (unsigned word = 0; word < 5; ++word) {
         clear_wide(dut.descriptor_data_in, 8);
@@ -76,7 +76,7 @@ void send_descriptor(uint8_t source, uint16_t handle, uint16_t length)
 
     check((dut.rx_read_valid_out & (1U << source)) != 0,
           "source-specific RxRAM command was not produced");
-    check(((dut.rx_read_handle_out >> (source * 16)) & 0xffffU) == handle,
+    check(((dut.rx_read_handle_out >> (source * 17)) & 0x1ffffU) == handle,
           "source-specific RxRAM handle is wrong");
     check(((dut.rx_read_length_out >> (source * 14)) & 0x3fffU) == length,
           "source-specific RxRAM length is wrong");
@@ -106,7 +106,7 @@ int main()
 
     // Both descriptors must be accepted before either packet is consumed.
     send_descriptor(0, 0x1234, 40);
-    send_descriptor(1, 0x5678, 40);
+    send_descriptor(1, 0x15678, 40);
     check(dut.rx_read_valid_out == 3,
           "two independent RxRAM commands were not held concurrently");
 

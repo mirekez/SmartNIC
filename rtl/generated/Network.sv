@@ -66,6 +66,8 @@ module Network #(
 ,   input wire[2-1:0] tx_ready_in
 ,   output wire protocol_error_out
 ,   output wire storage_full_out
+,   output wire[STREAMS*USED_ROW_BITS-1:0] debug_rx_used_rows_out
+,   output wire[STREAMS*LOGICAL_ROW_BITS-1:0] debug_rx_release_row_out
 );
     localparam  STREAMS = 64'h2;
     localparam  LANE_BYTES = LANE_WIDTH/'h8;
@@ -73,6 +75,7 @@ module Network #(
     localparam  INPUT_BYTES = STREAMS*LANE_BYTES;
     localparam  LOGICAL_ROWS = BANK_DEPTH*'h4;
     localparam  LOGICAL_ROW_BITS = $clog2(LOGICAL_ROWS);
+    localparam  USED_ROW_BITS = $clog2(LOGICAL_ROWS + 'h1);
     localparam  HANDLE_BITS = LOGICAL_ROW_BITS + 'h3;
     localparam  FRAME_LENGTH_BITS = 64'hE;
 
@@ -207,6 +210,8 @@ module Network #(
     wire rx_ram__protocol_error_out;
     wire rx_ram__storage_full_out;
     wire[2-1:0] rx_ram__almost_full_out;
+    wire[64'h2*$clog2(((BANK_DEPTH*64'h4) + 'h1))-1:0] rx_ram__debug_used_rows_out;
+    wire[64'h2*$clog2((BANK_DEPTH*64'h4))-1:0] rx_ram__debug_release_row_out;
     RxRAM #(
         LANE_WIDTH
 ,       READ_PORTS
@@ -239,6 +244,8 @@ module Network #(
 ,       .protocol_error_out(rx_ram__protocol_error_out)
 ,       .storage_full_out(rx_ram__storage_full_out)
 ,       .almost_full_out(rx_ram__almost_full_out)
+,       .debug_used_rows_out(rx_ram__debug_used_rows_out)
+,       .debug_release_row_out(rx_ram__debug_release_row_out)
     );
     wire[2-1:0] rx_fifo__valid_in;
     wire RxDescriptorWord[2-1:0] rx_fifo__data_in;
@@ -491,6 +498,8 @@ module Network #(
         assign tx_eop_out = output_merger__eop_out;
         assign protocol_error_out = error_comb;
         assign storage_full_out = rx_ram__storage_full_out;
+        assign debug_rx_used_rows_out = rx_ram__debug_used_rows_out;
+        assign debug_rx_release_row_out = rx_ram__debug_release_row_out;
     endgenerate
 
     task _work_net_clk (input logic reset);

@@ -85,6 +85,39 @@ def make_cpu_dump() -> bytes:
             + struct.pack("<I", binascii.crc32(payload) & 0xffffffff))
 
 
+def make_quiescent_cpu_dump() -> bytes:
+    header = bytearray(32)
+    header[:8] = b"UPRB\x01\x20\x10\x03"
+    struct.pack_into("<5I", header, 8, 2, 15625, 156_250_000, 5, 1024)
+    header[28:32] = b"PCPU"
+    record = struct.pack("<IHBB4H", 100, 0x0AAF, 0, 0x50,
+                         38, 123, 123, 38)
+    payload = record + record
+    return (bytes(header) + payload + b"END!"
+            + struct.pack("<I", binascii.crc32(payload) & 0xffffffff))
+
+
+def make_cpu_release_dump() -> bytes:
+    header = bytearray(32)
+    header[:8] = b"UPRB\x01\x20\x10\x03"
+    struct.pack_into("<5I", header, 8, 1, 15625, 156_250_000, 6, 1024)
+    header[28:32] = b"PCRL"
+    flags = 0x0AAF
+    dma_status = 0
+    release_count = 37
+    release_handle = 0x12340
+    release_length = 1400
+    used_rows = 0
+    released_rows = ((release_length + 31) // 32) * 4
+    release_row = ((release_handle >> 3) + released_rows) & 0x3FFF
+    packed = flags | (dma_status << 16) | (release_count << 24) \
+        | (release_handle << 32) | (release_length << 49) \
+        | (used_rows << 63) | (release_row << 78)
+    payload = struct.pack("<I", 100) + packed.to_bytes(12, "little")
+    return (bytes(header) + payload + b"END!"
+            + struct.pack("<I", binascii.crc32(payload) & 0xffffffff))
+
+
 class UARTProbeHostTest(unittest.TestCase):
     def test_decode_and_text(self) -> None:
         metadata, records = uart_probe.parse_dump(make_dump())
@@ -146,6 +179,24 @@ class UARTProbeHostTest(unittest.TestCase):
         self.assertIn("accepted RxRAM words         50", report)
         self.assertIn("completed TX packets         2", report)
         self.assertIn("CPU/DMA forwarding progress  GOOD", report)
+
+    def test_cpu_post_traffic_counters_prove_progress(self) -> None:
+        metadata, records = uart_probe.parse_dump(make_quiescent_cpu_dump())
+        report = uart_probe.render_text(metadata, records)
+        self.assertIn("Observed counter changes in capture window:", report)
+        self.assertIn("Lifetime counters at final sample:", report)
+        self.assertIn("completed descriptors        38", report)
+        self.assertIn("CPU/DMA forwarding progress  GOOD", report)
+
+    def test_cpu_release_schema(self) -> None:
+        metadata, records = uart_probe.parse_dump(make_cpu_release_dump())
+        self.assertEqual(metadata["schema"], "PCRL")
+        self.assertEqual(records[0]["release_handle"], 0x12340)
+        self.assertEqual(records[0]["release_length"], 1400)
+        self.assertEqual(records[0]["used_rows"], 0)
+        report = uart_probe.render_text(metadata, records)
+        self.assertIn("last release was applied     GOOD", report)
+        self.assertIn("allocator drained after idle GOOD", report)
 
 
 if __name__ == "__main__":

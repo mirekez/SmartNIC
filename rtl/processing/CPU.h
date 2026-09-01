@@ -127,8 +127,13 @@ public:
         tribe.boot_hartid_in = boot_hartid_in;
         tribe.boot_dtb_addr_in = boot_dtb_addr_in;
         tribe.boot_priv_in = boot_priv_in;
-        tribe.external_cache_invalidate_in = _ASSIGN(
-            cache_invalidate_in() || dma_line_eop_in());
+        // Stream payload sidebands are meaningful only on a completed
+        // ready/valid transfer.  An elastic buffer may legally retain EOP
+        // after dropping valid; treating that stale bit as a level holds all
+        // private L1 caches in their initialization walk indefinitely.
+        tribe.external_cache_invalidate_in = _ASSIGN(cache_invalidate_in()
+            || (dma_line_valid_in() && dma_line_ready_out()
+                && dma_line_eop_in()));
         tribe.memory_base_in = _ASSIGN((uint32_t)0);
         tribe.memory_size_in = _ASSIGN((uint32_t)(MEMORY_BYTES + IO_BYTES));
         tribe.mem_region_size_in[0] = _ASSIGN((uint32_t)MEMORY_BYTES);

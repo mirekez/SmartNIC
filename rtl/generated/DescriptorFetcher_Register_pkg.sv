@@ -23,7 +23,8 @@ typedef enum logic[32-1:0] {
     REG_DESTINATION_IP3 = 'h134,
     REG_PORTS = 'h138,
     REG_PROTOCOL = 'h13C,
-    REG_SOURCE_PORT = 'h140
+    REG_SOURCE_PORT = 'h140,
+    REG_ACTION_DESTINATION = 'h144
 } DescriptorFetcher_Register;
 
 

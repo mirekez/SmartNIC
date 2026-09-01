@@ -58,16 +58,14 @@ import CacheResponse_pkg::*;
 import L1PeerStoreState_pkg::*;
 import L1PeerInvalidateComb_pkg::*;
 import DescriptorFetcher_Register_pkg::*;
-import PacketDMA16_14_64_32_4_256_31_64_64_Command_pkg::*;
-import PacketDMA16_14_64_32_4_256_31_64_64_BackingBeat_pkg::*;
-import PacketDMA16_14_64_32_4_256_31_64_64_Register_pkg::*;
+import PacketDMA17_14_64_32_4_256_31_32_64_Command_pkg::*;
+import PacketDMA17_14_64_32_4_256_31_32_64_Register_pkg::*;
 import PacketDmaState_pkg::*;
 import PacketDmaError_pkg::*;
 import PacketDmaOperation_pkg::*;
 import PacketDmaPrefetchState_pkg::*;
-import PacketDMA16_14_64_32_4_256_31_64_64_BackingState_pkg::*;
+import PacketDMA17_14_64_32_4_256_31_32_64_BackingState_pkg::*;
 import PacketDMA_Command_pkg::*;
-import PacketDMA_BackingBeat_pkg::*;
 import PacketDMA_Register_pkg::*;
 import PacketDMA_BackingState_pkg::*;
 import Axi4WriteArbiterState_pkg::*;
@@ -76,7 +74,7 @@ import CPU_pkg::*;
 
 module Processing #(
     parameter CPU_COUNT = 'h1
-,   parameter HANDLE_BITS = 'h10
+,   parameter HANDLE_BITS = 'h11
 ,   parameter FRAME_LENGTH_BITS = 'hE
  )
  (
@@ -163,7 +161,6 @@ module Processing #(
     logic[CPU_COUNT*HANDLE_BITS-1:0] rx_read_handle_comb;
     logic[CPU_COUNT*FRAME_LENGTH_BITS-1:0] rx_read_length_comb;
     logic[CPU_COUNT-1:0] rx_ready_comb;
-    logic[290-1:0] rx_stream_pack_comb[CPU_COUNT];
     logic[290-1:0] from_system_pack_comb[CPU_COUNT];
     logic[CPU_COUNT-1:0] to_system_valid_comb;
     logic[CPU_COUNT*'h100-1:0] to_system_data_comb;
@@ -355,6 +352,8 @@ module Processing #(
     wire[14-1:0] descriptor_fetcher__packet_command_length_out[CPU_COUNT];
     wire descriptor_fetcher__packet_command_system_out[CPU_COUNT];
     wire descriptor_fetcher__packet_command_cache_out[CPU_COUNT];
+    wire descriptor_fetcher__packet_command_network_out[CPU_COUNT];
+    wire[8-1:0] descriptor_fetcher__packet_command_network_port_out[CPU_COUNT];
     wire[32-1:0] descriptor_fetcher__packet_command_destination_out[CPU_COUNT];
     wire descriptor_fetcher__mmio__awvalid_in[CPU_COUNT];
     wire descriptor_fetcher__mmio__awready_out[CPU_COUNT];
@@ -406,6 +405,8 @@ module Processing #(
         ,           .packet_command_length_out(descriptor_fetcher__packet_command_length_out[__i])
         ,           .packet_command_system_out(descriptor_fetcher__packet_command_system_out[__i])
         ,           .packet_command_cache_out(descriptor_fetcher__packet_command_cache_out[__i])
+        ,           .packet_command_network_out(descriptor_fetcher__packet_command_network_out[__i])
+        ,           .packet_command_network_port_out(descriptor_fetcher__packet_command_network_port_out[__i])
         ,           .packet_command_destination_out(descriptor_fetcher__packet_command_destination_out[__i])
         ,           .mmio__awvalid_in(descriptor_fetcher__mmio__awvalid_in[__i])
         ,           .mmio__awready_out(descriptor_fetcher__mmio__awready_out[__i])
@@ -542,12 +543,14 @@ module Processing #(
     wire[FRAME_LENGTH_BITS-1:0] packet_dma__descriptor_command_length_in[CPU_COUNT];
     wire packet_dma__descriptor_command_system_in[CPU_COUNT];
     wire packet_dma__descriptor_command_cache_in[CPU_COUNT];
+    wire packet_dma__descriptor_command_network_in[CPU_COUNT];
+    wire[8-1:0] packet_dma__descriptor_command_network_port_in[CPU_COUNT];
     wire[32-1:0] packet_dma__descriptor_command_destination_in[CPU_COUNT];
     wire[32-1:0] packet_dma__completed_count_out[CPU_COUNT];
     wire[32-1:0] packet_dma__cache_completed_count_out[CPU_COUNT];
     wire[32-1:0] packet_dma__command_completed_count_out[CPU_COUNT];
     wire[32-1:0] packet_dma__clear_completed_count_out[CPU_COUNT];
-    wire[$clog2('h40 + 'h1)-1:0] packet_dma__backing_pending_count_out[CPU_COUNT];
+    wire[$clog2('h20 + 'h1)-1:0] packet_dma__backing_pending_count_out[CPU_COUNT];
     wire[32-1:0] packet_dma__backing_completed_beat_count_out[CPU_COUNT];
     wire[2-1:0] packet_dma__last_operation_out[CPU_COUNT];
     wire packet_dma__protocol_error_out[CPU_COUNT];
@@ -562,7 +565,7 @@ module Processing #(
 ,       'h4
 ,       'h100
 ,       CPU_pkg::EXTERNAL_ADDR_WIDTH
-,       'h40
+,       'h20
 ,       'h40
         ) packet_dma (
             .clk(clk)
@@ -674,6 +677,8 @@ module Processing #(
         ,           .descriptor_command_length_in(packet_dma__descriptor_command_length_in[__i])
         ,           .descriptor_command_system_in(packet_dma__descriptor_command_system_in[__i])
         ,           .descriptor_command_cache_in(packet_dma__descriptor_command_cache_in[__i])
+        ,           .descriptor_command_network_in(packet_dma__descriptor_command_network_in[__i])
+        ,           .descriptor_command_network_port_in(packet_dma__descriptor_command_network_port_in[__i])
         ,           .descriptor_command_destination_in(packet_dma__descriptor_command_destination_in[__i])
         ,           .completed_count_out(packet_dma__completed_count_out[__i])
         ,           .cache_completed_count_out(packet_dma__cache_completed_count_out[__i])
@@ -684,6 +689,83 @@ module Processing #(
         ,           .last_operation_out(packet_dma__last_operation_out[__i])
         ,           .protocol_error_out(packet_dma__protocol_error_out[__i])
         ,           .protocol_error_reason_out(packet_dma__protocol_error_reason_out[__i])
+        );
+    end
+    endgenerate
+    wire rx_line_buffer__valid_in[CPU_COUNT];
+    wire[256-1:0] rx_line_buffer__data_in[CPU_COUNT];
+    wire[256/'h8-1:0] rx_line_buffer__keep_in[CPU_COUNT];
+    wire rx_line_buffer__sop_in[CPU_COUNT];
+    wire rx_line_buffer__eop_in[CPU_COUNT];
+    wire rx_line_buffer__ready_out[CPU_COUNT];
+    wire rx_line_buffer__valid_out[CPU_COUNT];
+    wire[256-1:0] rx_line_buffer__data_out[CPU_COUNT];
+    wire[256/'h8-1:0] rx_line_buffer__keep_out[CPU_COUNT];
+    wire rx_line_buffer__sop_out[CPU_COUNT];
+    wire rx_line_buffer__eop_out[CPU_COUNT];
+    wire rx_line_buffer__ready_in[CPU_COUNT];
+    generate
+    for (__i=0; __i < CPU_COUNT; __i = __i + 1) begin
+        RxLineBuffer #(
+        256
+,       4
+        ) rx_line_buffer (
+            .clk(clk)
+        ,           .l2_clock(l2_clock)
+        ,           .reset(reset)
+        ,           .valid_in(rx_line_buffer__valid_in[__i])
+        ,           .data_in(rx_line_buffer__data_in[__i])
+        ,           .keep_in(rx_line_buffer__keep_in[__i])
+        ,           .sop_in(rx_line_buffer__sop_in[__i])
+        ,           .eop_in(rx_line_buffer__eop_in[__i])
+        ,           .ready_out(rx_line_buffer__ready_out[__i])
+        ,           .valid_out(rx_line_buffer__valid_out[__i])
+        ,           .data_out(rx_line_buffer__data_out[__i])
+        ,           .keep_out(rx_line_buffer__keep_out[__i])
+        ,           .sop_out(rx_line_buffer__sop_out[__i])
+        ,           .eop_out(rx_line_buffer__eop_out[__i])
+        ,           .ready_in(rx_line_buffer__ready_in[__i])
+        );
+    end
+    endgenerate
+    wire tx_line_buffer__valid_in[CPU_COUNT];
+    wire[256-1:0] tx_line_buffer__data_in[CPU_COUNT];
+    wire[256/'h8-1:0] tx_line_buffer__keep_in[CPU_COUNT];
+    wire tx_line_buffer__sop_in[CPU_COUNT];
+    wire tx_line_buffer__eop_in[CPU_COUNT];
+    wire[8-1:0] tx_line_buffer__port_in[CPU_COUNT];
+    wire tx_line_buffer__ready_out[CPU_COUNT];
+    wire tx_line_buffer__valid_out[CPU_COUNT];
+    wire[256-1:0] tx_line_buffer__data_out[CPU_COUNT];
+    wire[256/'h8-1:0] tx_line_buffer__keep_out[CPU_COUNT];
+    wire tx_line_buffer__sop_out[CPU_COUNT];
+    wire tx_line_buffer__eop_out[CPU_COUNT];
+    wire[8-1:0] tx_line_buffer__port_out[CPU_COUNT];
+    wire tx_line_buffer__ready_in[CPU_COUNT];
+    generate
+    for (__i=0; __i < CPU_COUNT; __i = __i + 1) begin
+        TxLineBuffer #(
+        256
+,       8
+,       2
+        ) tx_line_buffer (
+            .clk(clk)
+        ,           .l2_clock(l2_clock)
+        ,           .reset(reset)
+        ,           .valid_in(tx_line_buffer__valid_in[__i])
+        ,           .data_in(tx_line_buffer__data_in[__i])
+        ,           .keep_in(tx_line_buffer__keep_in[__i])
+        ,           .sop_in(tx_line_buffer__sop_in[__i])
+        ,           .eop_in(tx_line_buffer__eop_in[__i])
+        ,           .port_in(tx_line_buffer__port_in[__i])
+        ,           .ready_out(tx_line_buffer__ready_out[__i])
+        ,           .valid_out(tx_line_buffer__valid_out[__i])
+        ,           .data_out(tx_line_buffer__data_out[__i])
+        ,           .keep_out(tx_line_buffer__keep_out[__i])
+        ,           .sop_out(tx_line_buffer__sop_out[__i])
+        ,           .eop_out(tx_line_buffer__eop_out[__i])
+        ,           .port_out(tx_line_buffer__port_out[__i])
+        ,           .ready_in(tx_line_buffer__ready_in[__i])
         );
     end
     endgenerate
@@ -966,23 +1048,7 @@ module Processing #(
         logic[31:0] index;
         rx_ready_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
-            rx_ready_comb[index] = packet_dma__rx_ready_out[index];
-        end
-    end
-
-    always_comb begin : rx_stream_pack_comb_func  // rx_stream_pack_comb_func
-        logic[31:0] index;
-        logic[31:0] _bit;
-        for (index='h0;index < CPU_COUNT;index=index+1) begin
-            rx_stream_pack_comb[index] = 'h0;
-            for (_bit='h0;_bit < 'h100;_bit=_bit+1) begin
-                rx_stream_pack_comb[index][_bit] = rx_data_in[(index*'h100) + _bit];
-            end
-            for (_bit='h0;_bit < 'h20;_bit=_bit+1) begin
-                rx_stream_pack_comb[index]['h100 + _bit] = rx_keep_in[(index*'h20) + _bit];
-            end
-            rx_stream_pack_comb[index]['h120] = rx_sop_in[index];
-            rx_stream_pack_comb[index]['h121] = rx_eop_in[index];
+            rx_ready_comb[index] = rx_line_buffer__ready_out[index];
         end
     end
 
@@ -1052,7 +1118,7 @@ module Processing #(
         logic[31:0] index;
         to_network_valid_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
-            to_network_valid_comb[index] = packet_dma__network_tx_valid_out[index];
+            to_network_valid_comb[index] = tx_line_buffer__valid_out[index];
         end
     end
 
@@ -1062,7 +1128,7 @@ module Processing #(
         to_network_data_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
             for (_bit='h0;_bit < 'h100;_bit=_bit+1) begin
-                to_network_data_comb[(index*'h100) + _bit] = packet_dma__network_tx_data_out[index][_bit];
+                to_network_data_comb[(index*'h100) + _bit] = tx_line_buffer__data_out[index][_bit];
             end
         end
     end
@@ -1073,7 +1139,7 @@ module Processing #(
         to_network_keep_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
             for (_bit='h0;_bit < 'h20;_bit=_bit+1) begin
-                to_network_keep_comb[(index*'h20) + _bit] = packet_dma__network_tx_keep_out[index][_bit];
+                to_network_keep_comb[(index*'h20) + _bit] = tx_line_buffer__keep_out[index][_bit];
             end
         end
     end
@@ -1082,7 +1148,7 @@ module Processing #(
         logic[31:0] index;
         to_network_sop_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
-            to_network_sop_comb[index] = packet_dma__network_tx_sop_out[index];
+            to_network_sop_comb[index] = tx_line_buffer__sop_out[index];
         end
     end
 
@@ -1090,7 +1156,7 @@ module Processing #(
         logic[31:0] index;
         to_network_eop_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
-            to_network_eop_comb[index] = packet_dma__network_tx_eop_out[index];
+            to_network_eop_comb[index] = tx_line_buffer__eop_out[index];
         end
     end
 
@@ -1100,7 +1166,7 @@ module Processing #(
         to_network_port_comb = 'h0;
         for (index='h0;index < CPU_COUNT;index=index+1) begin
             for (_bit='h0;_bit < 'h8;_bit=_bit+1) begin
-                to_network_port_comb[(index*'h8) + _bit] = packet_dma__network_tx_port_out[index][_bit];
+                to_network_port_comb[(index*'h8) + _bit] = tx_line_buffer__port_out[index][_bit];
             end
         end
     end
@@ -1134,6 +1200,19 @@ module Processing #(
         assign to_network_eop_out = to_network_eop_comb;
         assign to_network_port_out = to_network_port_comb;
         for (gindex='h0;gindex < CPU_COUNT;gindex=gindex+1) begin
+            assign rx_line_buffer__valid_in[gindex] = rx_valid_in[gindex];
+            assign rx_line_buffer__data_in[gindex] = rx_data_in[gindex*'h100 +:256];
+            assign rx_line_buffer__keep_in[gindex] = rx_keep_in[gindex*'h20 +:32];
+            assign rx_line_buffer__sop_in[gindex] = rx_sop_in[gindex];
+            assign rx_line_buffer__eop_in[gindex] = rx_eop_in[gindex];
+            assign rx_line_buffer__ready_in[gindex] = packet_dma__rx_ready_out[gindex];
+            assign tx_line_buffer__valid_in[gindex] = packet_dma__network_tx_valid_out[gindex];
+            assign tx_line_buffer__data_in[gindex] = packet_dma__network_tx_data_out[gindex];
+            assign tx_line_buffer__keep_in[gindex] = packet_dma__network_tx_keep_out[gindex];
+            assign tx_line_buffer__sop_in[gindex] = packet_dma__network_tx_sop_out[gindex];
+            assign tx_line_buffer__eop_in[gindex] = packet_dma__network_tx_eop_out[gindex];
+            assign tx_line_buffer__port_in[gindex] = unsigned'(8'(packet_dma__network_tx_port_out[gindex]));
+            assign tx_line_buffer__ready_in[gindex] = to_network_ready_in[gindex];
             assign descriptor_fetcher__descriptor_valid_in[gindex] = descriptor_valid_in;
             assign descriptor_fetcher__descriptor_data_in[gindex] = descriptor_data_in;
             assign descriptor_fetcher__descriptor_word_in[gindex] = descriptor_word_in;
@@ -1145,6 +1224,8 @@ module Processing #(
             assign packet_dma__descriptor_command_length_in[gindex] = descriptor_fetcher__packet_command_length_out[gindex];
             assign packet_dma__descriptor_command_system_in[gindex] = descriptor_fetcher__packet_command_system_out[gindex];
             assign packet_dma__descriptor_command_cache_in[gindex] = descriptor_fetcher__packet_command_cache_out[gindex];
+            assign packet_dma__descriptor_command_network_in[gindex] = descriptor_fetcher__packet_command_network_out[gindex];
+            assign packet_dma__descriptor_command_network_port_in[gindex] = descriptor_fetcher__packet_command_network_port_out[gindex];
             assign packet_dma__descriptor_command_destination_in[gindex] = descriptor_fetcher__packet_command_destination_out[gindex];
             assign iomem_mux__slave_in__awvalid_in[gindex] = cpu__iomem__awvalid_out[gindex];
             assign iomem_mux__slave_in__awaddr_in[gindex] = cpu__iomem__awaddr_out[gindex];
@@ -1241,18 +1322,18 @@ module Processing #(
             assign cpu__dma_line_eop_in[gindex] = packet_dma__l2_line_eop_out[gindex];
             assign packet_dma__l2_line_ready_in[gindex] = cpu__dma_line_ready_out[gindex];
             assign packet_dma__rx_read_ready_in[gindex] = rx_read_ready_in[gindex];
-            assign packet_dma__rx_valid_in[gindex] = rx_valid_in[gindex];
-            assign packet_dma__rx_data_in[gindex] = rx_data_in[gindex*'h100 +:256];
-            assign packet_dma__rx_keep_in[gindex] = rx_keep_in[gindex*'h20 +:32];
-            assign packet_dma__rx_sop_in[gindex] = rx_sop_in[gindex];
-            assign packet_dma__rx_eop_in[gindex] = rx_eop_in[gindex];
+            assign packet_dma__rx_valid_in[gindex] = rx_line_buffer__valid_out[gindex];
+            assign packet_dma__rx_data_in[gindex] = rx_line_buffer__data_out[gindex];
+            assign packet_dma__rx_keep_in[gindex] = rx_line_buffer__keep_out[gindex];
+            assign packet_dma__rx_sop_in[gindex] = rx_line_buffer__sop_out[gindex];
+            assign packet_dma__rx_eop_in[gindex] = rx_line_buffer__eop_out[gindex];
             assign packet_dma__system_tx_ready_in[gindex] = to_system_ready_in[gindex];
             assign packet_dma__system_rx_valid_in[gindex] = from_system_valid_in[gindex];
             assign packet_dma__system_rx_data_in[gindex] = from_system_data_in[gindex*'h100 +:256];
             assign packet_dma__system_rx_keep_in[gindex] = from_system_keep_in[gindex*'h20 +:32];
             assign packet_dma__system_rx_sop_in[gindex] = from_system_sop_in[gindex];
             assign packet_dma__system_rx_eop_in[gindex] = from_system_eop_in[gindex];
-            assign packet_dma__network_tx_ready_in[gindex] = to_network_ready_in[gindex];
+            assign packet_dma__network_tx_ready_in[gindex] = tx_line_buffer__ready_out[gindex];
             assign ddr_arbiter__cpu__awvalid_in[gindex] = cpu__memory__awvalid_out[gindex];
             assign ddr_arbiter__cpu__awaddr_in[gindex] = cpu__memory__awaddr_out[gindex];
             assign ddr_arbiter__cpu__awid_in[gindex] = cpu__memory__awid_out[gindex];
@@ -1326,6 +1407,14 @@ module Processing #(
                 assign cpu__timer_irq_in[gindex][gcore] = timer_irq_in[(gindex*CPU_pkg::CORES) + gcore];
                 assign cpu__external_irq_in[gindex][gcore] = external_irq_in[(gindex*CPU_pkg::CORES) + gcore];
             end
+            assign rx_line_buffer__ready_in[gindex] = packet_dma__rx_ready_out[gindex];
+            assign tx_line_buffer__valid_in[gindex] = packet_dma__network_tx_valid_out[gindex];
+            assign tx_line_buffer__data_in[gindex] = packet_dma__network_tx_data_out[gindex];
+            assign tx_line_buffer__keep_in[gindex] = packet_dma__network_tx_keep_out[gindex];
+            assign tx_line_buffer__sop_in[gindex] = packet_dma__network_tx_sop_out[gindex];
+            assign tx_line_buffer__eop_in[gindex] = packet_dma__network_tx_eop_out[gindex];
+            assign tx_line_buffer__port_in[gindex] = unsigned'(8'(packet_dma__network_tx_port_out[gindex]));
+            assign packet_dma__network_tx_ready_in[gindex] = tx_line_buffer__ready_out[gindex];
             assign iomem_mux__slave_in__awvalid_in[gindex] = cpu__iomem__awvalid_out[gindex];
             assign iomem_mux__slave_in__awaddr_in[gindex] = cpu__iomem__awaddr_out[gindex];
             assign iomem_mux__slave_in__awid_in[gindex] = cpu__iomem__awid_out[gindex];
@@ -1479,6 +1568,8 @@ module Processing #(
             assign packet_dma__descriptor_command_length_in[gindex] = descriptor_fetcher__packet_command_length_out[gindex];
             assign packet_dma__descriptor_command_system_in[gindex] = descriptor_fetcher__packet_command_system_out[gindex];
             assign packet_dma__descriptor_command_cache_in[gindex] = descriptor_fetcher__packet_command_cache_out[gindex];
+            assign packet_dma__descriptor_command_network_in[gindex] = descriptor_fetcher__packet_command_network_out[gindex];
+            assign packet_dma__descriptor_command_network_port_in[gindex] = descriptor_fetcher__packet_command_network_port_out[gindex];
             assign packet_dma__descriptor_command_destination_in[gindex] = descriptor_fetcher__packet_command_destination_out[gindex];
             assign debug_dma_busy_out = packet_dma__busy_out['h0];
             assign debug_dma_error_out = packet_dma__protocol_error_out['h0];

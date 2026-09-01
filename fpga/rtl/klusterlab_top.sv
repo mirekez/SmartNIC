@@ -202,7 +202,19 @@ module klusterlab_top #(
     always @(posedge net_clk)
         net_reset_sync <= {net_reset_sync[2:0],
             (startup_reset | ~eth_reset_done)};
-    wire design_reset = net_reset_sync[3];
+
+    // Do not use the final synchronizer stage as a 70k-load reset tree.  The
+    // ordinary (non-ASYNC_REG) distribution stages below let synthesis clone
+    // each domain-local reset near its consumers.  All three stages sample the
+    // same synchronized value, so their assertion/deassertion is cycle exact.
+    (* max_fanout = 512 *) reg design_reset = 1'b1;
+    (* max_fanout = 512 *) reg nic_reset = 1'b1;
+    (* max_fanout = 512 *) reg processing_reset = 1'b1;
+    always @(posedge net_clk) begin
+        design_reset <= net_reset_sync[3];
+        nic_reset <= net_reset_sync[3];
+        processing_reset <= net_reset_sync[3];
+    end
 
     // Lossless clock compensation between each independently clocked remote
     // transmitter and the common FPGA transmit clock.  InputBalancer raises
@@ -331,22 +343,29 @@ module klusterlab_top #(
     wire [255:0] descriptor_data;
     wire [2:0] descriptor_word;
     wire descriptor_sop, descriptor_eop, descriptor_ready;
-    wire [1:0] rx_read_valid, rx_read_ready;
-    wire [33:0] rx_read_handle;
-    wire [27:0] rx_read_length;
-    wire [1:0] l2_rx_valid, l2_rx_ready, l2_rx_sop, l2_rx_eop;
-    wire [511:0] l2_rx_data;
-    wire [63:0] l2_rx_keep;
+    localparam integer NIC_READ_PORTS = USE_PROCESSING_STUB ? 2 : 1;
+    wire [NIC_READ_PORTS-1:0] rx_read_valid, rx_read_ready;
+    wire [NIC_READ_PORTS*17-1:0] rx_read_handle;
+    wire [NIC_READ_PORTS*14-1:0] rx_read_length;
+    wire [NIC_READ_PORTS-1:0]
+        l2_rx_valid, l2_rx_ready, l2_rx_sop, l2_rx_eop;
+    wire [NIC_READ_PORTS*256-1:0] l2_rx_data;
+    wire [NIC_READ_PORTS*32-1:0] l2_rx_keep;
     wire [1:0] l2_tx_valid, l2_tx_ready, l2_tx_sop, l2_tx_eop;
     wire [511:0] l2_tx_data;
     wire [63:0] l2_tx_keep;
     wire nic_protocol_error;
     wire nic_storage_full;
     wire nic_rx_ready;
+    wire [NIC_READ_PORTS-1:0] nic_release_valid;
+    wire [NIC_READ_PORTS*17-1:0] nic_release_handle;
+    wire [NIC_READ_PORTS*14-1:0] nic_release_length;
+    wire [29:0] nic_rx_used_rows;
+    wire [27:0] nic_rx_release_row;
 
     SmartNIC #(.BANK_DEPTH(4096), .RX_FIFO_DEPTH(64),
                .TX_FIFO_WORDS(2048), .ENABLE_RAW(1)) nic (
-        .net_clk(net_clk), .l2_clk(net_clk), .reset(design_reset),
+        .net_clk(net_clk), .l2_clk(net_clk), .reset(nic_reset),
         .net_rx_valid_in(net_rx_valid), .net_rx_data_in(net_rx_data),
         .net_rx_keep_in(net_rx_keep), .net_rx_sop_in(net_rx_sop),
         .net_rx_eop_in(net_rx_eop), .net_rx_raw_in(1'b1),
@@ -373,7 +392,12 @@ module klusterlab_top #(
         .l2_tx_keep_in(l2_tx_keep), .l2_tx_sop_in(l2_tx_sop),
         .l2_tx_eop_in(l2_tx_eop), .l2_tx_ready_out(l2_tx_ready),
         .protocol_error_out(nic_protocol_error),
-        .storage_full_out(nic_storage_full));
+        .storage_full_out(nic_storage_full),
+        .debug_release_valid_out(nic_release_valid),
+        .debug_release_handle_out(nic_release_handle),
+        .debug_release_length_out(nic_release_length),
+        .debug_rx_used_rows_out(nic_rx_used_rows),
+        .debug_rx_release_row_out(nic_rx_release_row));
 
     wire processing_protocol_error;
     wire processing_probe_dumping;
@@ -423,7 +447,7 @@ module klusterlab_top #(
 
     generate if (USE_PROCESSING_STUB) begin : processing_stub_mode
         ProcessingStub #(.HANDLE_BITS(17)) processing_stub (
-            .clk(net_clk), .reset(design_reset),
+            .clk(net_clk), .reset(processing_reset),
             .descriptor_valid_in(descriptor_valid),
             .descriptor_data_in(descriptor_data),
             .descriptor_word_in(descriptor_word),
@@ -492,10 +516,10 @@ module klusterlab_top #(
         wire external_irq [0:3];
         wire cache_invalidate [0:0];
 
-        assign rx_read_valid = {1'b0, proc_rx_read_valid};
-        assign rx_read_handle = {17'd0, proc_rx_read_handle};
-        assign rx_read_length = {14'd0, proc_rx_read_length};
-        assign l2_rx_ready = {1'b0, proc_rx_ready};
+        assign rx_read_valid = proc_rx_read_valid;
+        assign rx_read_handle = proc_rx_read_handle;
+        assign rx_read_length = proc_rx_read_length;
+        assign l2_rx_ready = proc_rx_ready;
         assign l2_tx_valid = {
             proc_tx_valid && proc_tx_port[0],
             proc_tx_valid && !proc_tx_port[0]};
@@ -513,7 +537,7 @@ module klusterlab_top #(
         axi_boot_bram #(
             .BYTES(131072), .INIT_FILE("cpu_loopback.mem")
         ) boot_memory (
-            .clk(net_clk), .reset(design_reset),
+            .clk(net_clk), .reset(processing_reset),
             .awvalid(ddr_awvalid[0]), .awready(ddr_awready[0]),
             .awaddr(ddr_awaddr[0]), .awid(ddr_awid[0]),
             .wvalid(ddr_wvalid[0]), .wready(ddr_wready[0]),
@@ -535,7 +559,7 @@ module klusterlab_top #(
         assign cache_invalidate[0] = 1'b0;
 
         Processing #(.HANDLE_BITS(17)) processing (
-            .clk(net_clk), .l2_clock(net_clk), .reset(design_reset),
+            .clk(net_clk), .l2_clock(net_clk), .reset(processing_reset),
             .descriptor_valid_in(descriptor_valid),
             .descriptor_data_in(descriptor_data),
             .descriptor_word_in(descriptor_word),
@@ -591,12 +615,18 @@ module klusterlab_top #(
         reg [15:0] rx_word_count = 16'd0;
         reg [15:0] tx_word_count = 16'd0;
         reg [15:0] tx_packet_count = 16'd0;
+        reg [7:0] release_count = 8'd0;
+        reg [16:0] last_release_handle = 17'd0;
+        reg [13:0] last_release_length = 14'd0;
         always @(posedge net_clk) begin
-            if (design_reset) begin
+            if (processing_reset) begin
                 descriptor_count <= 16'd0;
                 rx_word_count <= 16'd0;
                 tx_word_count <= 16'd0;
                 tx_packet_count <= 16'd0;
+                release_count <= 8'd0;
+                last_release_handle <= 17'd0;
+                last_release_length <= 14'd0;
             end else begin
                 if (descriptor_valid && descriptor_ready && descriptor_eop)
                     descriptor_count <= descriptor_count + 1'b1;
@@ -606,6 +636,11 @@ module klusterlab_top #(
                     tx_word_count <= tx_word_count + 1'b1;
                 if (proc_tx_valid && proc_tx_ready && proc_tx_eop)
                     tx_packet_count <= tx_packet_count + 1'b1;
+                if (|nic_release_valid) begin
+                    release_count <= release_count + 1'b1;
+                    last_release_handle <= nic_release_handle[16:0];
+                    last_release_length <= nic_release_length[13:0];
+                end
             end
         end
         wire [15:0] cpu_probe_flags = {
@@ -615,19 +650,30 @@ module klusterlab_top #(
             proc_rx_read_valid, descriptor_ready, descriptor_valid,
             eth_status[1][0], eth_status[0][0], eth_qpll_lock,
             startup_locked};
-        wire [7:0] cpu_probe_status = {4'd0, proc_dma_error_reason};
-        wire [7:0] cpu_probe_event = {
-            proc_tx_port[0], proc_tx_eop, proc_tx_sop, l2_rx_eop[0],
-            l2_rx_sop[0], descriptor_eop, descriptor_sop,
-            proc_dma_completed[0]};
+        // Keep allocator failures and receive pressure distinct on the
+        // no-JTAG target. Bits 7:6 are protocol/storage errors and bits 5:4
+        // identify the physical RxRAM stream requesting PAUSE.
+        wire [7:0] cpu_probe_status = {
+            nic_protocol_error, nic_storage_full,
+            nic_rx_almost_full, proc_dma_error_reason};
+        wire [7:0] cpu_probe_event = release_count;
+        wire [2:0] last_release_stream = last_release_handle[2:0];
+        wire [14:0] selected_used_rows = last_release_stream == 3'd1
+            ? nic_rx_used_rows[29:15] : nic_rx_used_rows[14:0];
+        wire [13:0] selected_release_row = last_release_stream == 3'd1
+            ? nic_rx_release_row[27:14] : nic_rx_release_row[13:0];
+        // Release-focused schema PCRL. The 92 payload bits below retain live
+        // CPU/link/error flags while exposing the exact reclaim transaction
+        // and allocator state selected by the last release handle.
         wire [95:0] cpu_probe_data = {
-            tx_packet_count, tx_word_count, rx_word_count, descriptor_count,
+            4'd0, selected_release_row, selected_used_rows,
+            last_release_length, last_release_handle,
             cpu_probe_event, cpu_probe_status, cpu_probe_flags};
         UARTProbe #(
             .CLOCK_HZ(156250000), .BAUD(115200), .SAMPLE_DIV(15625),
-            .DEPTH(1024), .SCHEMA(32'h55504350)
+            .DEPTH(1024), .SCHEMA(32'h4c524350)
         ) cpu_uart_probe (
-            .clk(net_clk), .reset(design_reset),
+            .clk(net_clk), .reset(processing_reset),
             .uart_rx_in(uart_usb_txd), .dump_trigger_in(uart_usb_rts),
             .uart_tx_out(uart_usb_rxd), .probe_in(cpu_probe_data),
             .dumping_out(processing_probe_dumping));
